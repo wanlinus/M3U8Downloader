@@ -6,11 +6,15 @@ publish/
 *.suo
 
 # 应用内下载的 FFmpeg（体积大，且属第三方构建，不入库）
-ffmpeg/
+# 注意：不要写成裸的 ffmpeg/ —— Windows 上 git 不区分大小写，那条规则会把
+# 源码目录 src/M3U8Downloader.Core/Ffmpeg/ 一起忽略掉（曾因此漏提交三个源文件）。
 **/ffmpeg/ffmpeg.exe
 **/ffmpeg/ffprobe.exe
+**/ffmpeg/ffplay.exe
+**/ffmpeg/*.zip
+**/ffmpeg/*.tar.xz
 
-# 下载产物与临时文件
+# 下载产物与临时文件（*.ts 指 MPEG-TS 视频；本项目没有 TypeScript 源文件）
 *.ts
 *.mp4
 *.part
