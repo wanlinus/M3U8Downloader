@@ -47,7 +47,28 @@ public sealed class TaskListViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(SpeedText));
         OnPropertyChanged(nameof(UploadSpeedText));
         OnPropertyChanged(nameof(IsBusy));
+        OnPropertyChanged(nameof(HasNotice));
     }
+
+    private string? _notice;
+
+    /// <summary>一次性提示（例如「已恢复上次的任务」）。留空表示不显示。</summary>
+    public string? Notice
+    {
+        get => _notice;
+        private set
+        {
+            if (_notice == value) return;
+            _notice = value;
+            OnPropertyChanged(nameof(Notice));
+            OnPropertyChanged(nameof(HasNotice));
+        }
+    }
+
+    public bool HasNotice => !string.IsNullOrWhiteSpace(_notice);
+
+    /// <summary>在任务面板上提示一句（留空则清除）</summary>
+    public void SetNotice(string? text) => Notice = text;
 
     public bool HasTasks => Tasks.Count > 0;
     public bool HasNoTasks => !HasTasks;

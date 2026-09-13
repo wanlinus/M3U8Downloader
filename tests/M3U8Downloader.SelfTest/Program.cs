@@ -43,6 +43,9 @@ var segments = new byte[SegmentCount][];
 for (var i = 0; i < SegmentCount; i++)
     segments[i] = BuildFakeTs(188 * (2000 + i * 7), (byte)(i + 1));
 
+// 每个分片被请求了多少次 —— 续传自检靠它判断「已完成的集有没有被重下」
+var requestCounts = new ConcurrentDictionary<string, int>();
+
 var listener = new HttpListener();
 listener.Prefixes.Add($"http://localhost:{Port}/");
 listener.Start();
@@ -73,6 +76,8 @@ _ = Task.Run(async () =>
                     var name = Path.GetFileNameWithoutExtension(path);          // seg12
                     var index = int.TryParse(name.AsSpan(3), out var n) ? n : 0;
                     var body = segments[Math.Clamp(index, 0, segments.Length - 1)];
+
+                    requestCounts.AddOrUpdate(name, 1, (_, v) => v + 1);
 
                     ctx.Response.ContentType = "video/mp2t";
                     ctx.Response.ContentLength64 = body.Length;
@@ -332,18 +337,146 @@ foreach (var f in Directory.GetFiles(outputDir, "*", SearchOption.AllDirectories
     Console.WriteLine($"  {Path.GetRelativePath(outputDir, f)}  ({new FileInfo(f).Length / 1024.0:0.0} KB)");
 Console.WriteLine($"报告文件       : {task.ReportPath ?? "(未生成)"}");
 
-var ok = task.State == SeriesTaskState.Completed
-         && task.Episodes.Count == 3
-         && task.Episodes.All(e => e.Percent >= 100 && e.Bytes > 0)
-         && midSamples.Count == 3
-         && speedSamples > 0
-         && peakBytes > 0
-         && stateSequence.Contains("已完成")
-         && observedStates.Contains("下载中")
-         && dispatcher.Executed > 0;
+var okB = task.State == SeriesTaskState.Completed
+          && task.Episodes.Count == 3
+          && task.Episodes.All(e => e.Percent >= 100 && e.Bytes > 0)
+          && midSamples.Count == 3
+          && speedSamples > 0
+          && peakBytes > 0
+          && stateSequence.Contains("已完成")
+          && observedStates.Contains("下载中")
+          && dispatcher.Executed > 0;
+
+// ---------------------------------------------------------------- 阶段 C：断点续传
 
 Console.WriteLine();
-Console.WriteLine(ok ? "自检结果       : ✔ 通过" : "自检结果       : ✘ 失败");
+Console.WriteLine("阶段 C：断点续传（保存任务 → 关程序 → 重开恢复）");
+
+var resumeRoot = Path.Combine(Path.GetTempPath(), "m3u8-selftest-resume-" + Guid.NewGuid().ToString("N")[..6]);
+var resumeOut = Path.Combine(resumeRoot, "out");
+Directory.CreateDirectory(resumeOut);
+var store = new TaskStore(Path.Combine(resumeRoot, "tasks.json"));
+
+var resumeOptions = new SeriesDownloadOptions
+{
+    OutputDirectory = resumeOut,
+    EpisodeConcurrency = 1,      // 串行下：保证第 1 集先完成，才能模拟「下到一半关掉程序」
+    SegmentConcurrency = 2,
+    FfmpegPath = null,
+    WriteReport = true,
+    SeriesSubdirectory = true,
+    MaxRetries = 1,
+    RetryBaseDelayMs = 200,
+};
+
+var dispatcher1 = new FakeDispatcher();
+var manager1 = new DownloadTaskManager(null, dispatcher1.Post, store)
+{
+    // 恢复时要重新解析站点；自检不去访问真实网站，直接给本地剧集数据
+    SeriesParser = (_, _) => Task.FromResult(BuildSeries()),
+};
+
+var task1 = manager1.Enqueue(BuildSeries(), resumeOptions);
+await dispatcher1.InvokeAsync(() => { });
+
+// 等「第 1 集已完成、第 2 集正在进行」—— 这就是用户关掉程序的那一刻
+var halfDone = new TaskCompletionSource();
+var halfPercent = 0.0;
+var watcher = Task.Run(async () =>
+{
+    while (true)
+    {
+        var (firstDone, secondPercent) = await dispatcher1.InvokeAsync(() =>
+            (task1.Episodes[0].State == EpisodeDownloadStatus.Completed, task1.Episodes[1].Percent));
+
+        if (firstDone && secondPercent >= 15 && secondPercent < 100)
+        {
+            halfPercent = secondPercent;
+            halfDone.TrySetResult();
+            return;
+        }
+
+        if (halfDone.Task.IsCompleted) return;
+        await Task.Delay(50);
+    }
+});
+await halfDone.Task.WaitAsync(TimeSpan.FromMinutes(2));
+
+var firstEpisodeFile = await dispatcher1.InvokeAsync(() => task1.Episodes[0].OutputPath);
+var firstWriteTime = firstEpisodeFile is not null && File.Exists(firstEpisodeFile)
+    ? File.GetLastWriteTimeUtc(firstEpisodeFile)
+    : DateTime.MinValue;
+var requestsBefore = requestCounts.Values.Sum();
+
+Console.WriteLine($"  关程序前：第01集已完成（{firstEpisodeFile}），" +
+                  $"第02集 {halfPercent:0}%，第03集还在排队");
+Console.WriteLine($"  未完成的暂存目录：{Directory.GetDirectories(resumeOut, ".m3u8tmp-*", SearchOption.AllDirectories).Length} 个");
+
+// 「关掉程序」：保存进度并释放（与窗口关闭时做的事一致）
+await dispatcher1.InvokeAsync(() => manager1.SaveNow());
+manager1.Dispose();
+await Task.WhenAny(watcher, Task.Delay(TimeSpan.FromSeconds(2)));
+
+var savedRecords = store.Load();
+var stagingKept = Directory.GetDirectories(resumeOut, ".m3u8tmp-*", SearchOption.AllDirectories).Length;
+
+// 「重新打开程序」：同一个 tasks.json，新建 manager 恢复
+var dispatcher2 = new FakeDispatcher();
+using var manager2 = new DownloadTaskManager(null, dispatcher2.Post, store)
+{
+    SeriesParser = (_, _) => Task.FromResult(BuildSeries()),
+};
+
+var restoredCount = await manager2.RestoreAsync();
+var restoredTask = await dispatcher2.InvokeAsync(() => manager2.Tasks.FirstOrDefault());
+
+var deadline = DateTime.UtcNow.AddMinutes(2);
+while (restoredTask is not null && DateTime.UtcNow < deadline)
+{
+    var state = await dispatcher2.InvokeAsync(() => restoredTask.State);
+    if (state is SeriesTaskState.Completed or SeriesTaskState.PartiallyCompleted
+        or SeriesTaskState.Failed or SeriesTaskState.Canceled) break;
+    await Task.Delay(200);
+}
+
+await dispatcher2.InvokeAsync(() => { });
+
+var finalEpisodes = restoredTask is null
+    ? new List<(int Number, string Status, long Bytes)>()
+    : await dispatcher2.InvokeAsync(() => restoredTask.Episodes
+        .Select(e => (e.Number, Status: e.StatusText, e.Bytes)).ToList());
+
+var reportEpisodeCount = restoredTask?.Report?.Episodes.Count ?? 0;
+var finalStateText = restoredTask?.StateText ?? "(无)";
+var finalWriteTime = firstEpisodeFile is not null && File.Exists(firstEpisodeFile)
+    ? File.GetLastWriteTimeUtc(firstEpisodeFile)
+    : DateTime.MinValue;
+var requestsAfter = requestCounts.Values.Sum();
+
+Console.WriteLine($"  落盘任务数：{savedRecords.Count}（关程序后暂存目录保留 {stagingKept} 个）");
+Console.WriteLine($"  恢复任务数：{restoredCount}   最终状态：{finalStateText}");
+foreach (var ep in finalEpisodes)
+    Console.WriteLine($"    第{ep.Number:00}集 {ep.Status}  {ep.Bytes / 1024.0 / 1024.0:0.0} MB");
+Console.WriteLine($"  报告里的集数：{reportEpisodeCount}（含上次已完成的集）");
+Console.WriteLine($"  第01集文件时间未变：{firstWriteTime == finalWriteTime}（说明没有重下）");
+Console.WriteLine($"  恢复期间新增分片请求：{requestsAfter - requestsBefore} 个" +
+                  $"（{SegmentCount * 2} = 两集全部重下；更少说明复用了已下载的分片）");
+
+var okC = restoredCount == 1
+          && savedRecords.Count == 1
+          && stagingKept >= 1
+          && firstEpisodeFile is not null
+          && firstWriteTime == finalWriteTime
+          && finalStateText == "已完成"
+          && finalEpisodes.Count == 3
+          && finalEpisodes.All(e => e.Status == "已完成")
+          && reportEpisodeCount == 3
+          && requestsAfter - requestsBefore > 0
+          && requestsAfter - requestsBefore < SegmentCount * 2;
+
+Console.WriteLine();
+var ok = okB && okC;
+Console.WriteLine(ok ? "自检结果       : ✔ 通过" : $"自检结果       : ✘ 失败（阶段B {okB} / 阶段C {okC}）");
 
 listener.Stop();
 return ok ? 0 : 1;

@@ -30,7 +30,8 @@ public sealed partial class MainWindow : Window
         try { AppWindow.Resize(new SizeInt32(1180, 840)); } catch { }
 
         // 任务状态是从后台线程改的，必须封送回 UI 线程，否则界面不会刷新（表现为「卡在下载中」）
-        _taskManager = new DownloadTaskManager(null, a => DispatcherQueue.TryEnqueue(() => a()));
+        // store：任务列表落盘到 %APPDATA%\M3U8Downloader\tasks.json，重开程序能接着下
+        _taskManager = new DownloadTaskManager(null, a => DispatcherQueue.TryEnqueue(() => a()), new TaskStore());
 
         _single = new MainViewModel(DispatcherQueue);
         _batch = new SeriesBatchViewModel(DispatcherQueue);
@@ -45,6 +46,8 @@ public sealed partial class MainWindow : Window
         _single.Logs.CollectionChanged += (_, __) => ScrollLogToEnd();
         Closed += (_, __) =>
         {
+            // 关窗前把当前进度写进盘：下次打开才能接着下，而不是从头再来
+            _taskManager.SaveNow();
             _batch.Dispose();
             _taskManager.Dispose();
         };
@@ -54,6 +57,29 @@ public sealed partial class MainWindow : Window
 
         // 支持 --mode=batch 直接以批量模式启动
         ApplyStartupMode();
+
+        // 恢复上次没下完的任务（关掉程序再打开会接着下）
+        RestorePreviousTasks();
+    }
+
+    /// <summary>
+    /// 启动时把上次的任务列表读回来，未完成的自动排队续传。
+    /// 已完成的任务只恢复显示，不会重新下载。
+    /// </summary>
+    private async void RestorePreviousTasks()
+    {
+        try
+        {
+            var count = await _taskManager.RestoreAsync();
+            if (count == 0) return;
+
+            _tasks.SetNotice($"已恢复上次的 {count} 个任务；没下完的会接着下（已完成的集不会重下）");
+            ShowTasksPanel();
+        }
+        catch (Exception ex)
+        {
+            _tasks.SetNotice("恢复上次任务失败：" + ex.Message);
+        }
     }
 
     // ==================== 设置 / 关于 ====================
@@ -162,7 +188,9 @@ public sealed partial class MainWindow : Window
         TaskPanel.Visibility = Visibility.Collapsed;
     }
 
-    private void OnModeTasks(object sender, RoutedEventArgs e)
+    private void OnModeTasks(object sender, RoutedEventArgs e) => ShowTasksPanel();
+
+    private void ShowTasksPanel()
     {
         SingleModeButton.IsChecked = false;
         BatchModeButton.IsChecked = false;
@@ -182,6 +210,22 @@ public sealed partial class MainWindow : Window
     private void OnTaskCancel(object sender, RoutedEventArgs e)
     {
         if (TaskOf(sender) is { } task) _taskManager.Cancel(task);
+    }
+
+    /// <summary>继续下载：重新解析站点，只补下没完成的集</summary>
+    private async void OnTaskResume(object sender, RoutedEventArgs e)
+    {
+        if (TaskOf(sender) is not { } task) return;
+
+        try
+        {
+            if (!await _taskManager.ResumeAsync(task))
+                task.Message ??= "没有需要继续下载的分集。";
+        }
+        catch (Exception ex)
+        {
+            task.Message = "继续下载失败：" + ex.Message;
+        }
     }
 
     private void OnTaskRemove(object sender, RoutedEventArgs e)

@@ -127,6 +127,9 @@ public sealed class EpisodeProgressSnapshot
     /// <summary>大小：下载中是已下载字节（实时增长），完成后是最终产物大小</summary>
     public long OutputBytes { get; set; }
 
+    /// <summary>产物路径（完成后才有）—— 续传时用它判断这一集是否已经在磁盘上</summary>
+    public string? OutputPath { get; set; }
+
     public string Error { get; set; } = "";
 
     public string StatusText => Status switch
@@ -232,6 +235,13 @@ public sealed class SeriesDownloadOptions
 
     /// <summary>额外请求头，会与剧集解析出的 Referer/Origin 合并（同名以这里为准）</summary>
     public Dictionary<string, string> ExtraHeaders { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 续传：上次已经下载完成的集（含产物路径）。
+    /// 传进来以后，报告与"整部剧"的总进度会把它们一起算上，
+    /// 否则续传一次的报告会缺掉之前下好的那些集。
+    /// </summary>
+    public List<EpisodeDownloadReport>? PreviousEpisodes { get; set; }
 }
 
 /// <summary>
@@ -296,8 +306,24 @@ public sealed class SeriesDownloader : IDisposable
         report.SourceName = series.Sources.FirstOrDefault(s => s.Episodes.Any(e => e.IsSelected))?.ToString();
         report.Log.Add($"输出目录：{seriesDir}");
 
+        // 续传：把上次已经下好的集先放进报告与进度里，
+        // 这样报告不会缺集，总进度也是「整部剧」的口径。
+        var previous = options.PreviousEpisodes ?? new List<EpisodeDownloadReport>();
+        foreach (var prev in previous)
+        {
+            if (prev.Status != EpisodeDownloadStatus.Completed) continue;
+            report.Episodes.Add(prev);
+        }
+        var previousCompleted = report.Episodes.Count;
+
         var clock = System.Diagnostics.Stopwatch.StartNew();
-        var state = new SeriesDownloadProgress { Title = series.Title, TotalEpisodes = episodes.Count };
+        var state = new SeriesDownloadProgress
+        {
+            Title = series.Title,
+            TotalEpisodes = episodes.Count + previousCompleted,
+            FinishedEpisodes = previousCompleted,
+            SucceededEpisodes = previousCompleted,
+        };
         var gate = new SemaphoreSlim(Math.Max(1, options.EpisodeConcurrency));
         var sync = new object();
 
@@ -310,6 +336,26 @@ public sealed class SeriesDownloader : IDisposable
         // 先把所有要下载的集建成"待下载"快照，界面一进来就能看到分集清单
         foreach (var ep in episodes.OrderBy(e => e.Number))
             state.Episodes.Add(new EpisodeProgressSnapshot { Number = ep.Number, Title = ep.DisplayTitle });
+
+        // 上次已完成的集也要进快照（100%），否则总进度（分集平均值）会偏高
+        foreach (var prev in previous)
+        {
+            if (prev.Status != EpisodeDownloadStatus.Completed) continue;
+            state.Episodes.Add(new EpisodeProgressSnapshot
+            {
+                Number = prev.Episode.Number,
+                Title = prev.Episode.DisplayTitle,
+                Status = EpisodeDownloadStatus.Completed,
+                Percent = 100,
+                OutputBytes = prev.OutputBytes,
+                OutputPath = prev.OutputPath,
+            });
+        }
+
+        if (previousCompleted > 0)
+        {
+            report.Log.Add($"续传：跳过上次已完成的 {previousCompleted} 集，本次需要下载 {episodes.Count} 集。");
+        }
 
         // 清晰度只需挑一次，全集复用同一个 variant
         string? preferredVariant = null;
@@ -473,7 +519,7 @@ public sealed class SeriesDownloader : IDisposable
                     }
 
                     item.Status = EpisodeDownloadStatus.Completed;
-                    SetEpisodeSnapshot(episode, EpisodeDownloadStatus.Completed, 100, final.Bytes, null);
+                    SetEpisodeSnapshot(episode, EpisodeDownloadStatus.Completed, 100, final.Bytes, null, final.Path);
                     lock (sync)
                     {
                         state.SucceededEpisodes++;
@@ -529,7 +575,7 @@ public sealed class SeriesDownloader : IDisposable
         }
 
         void SetEpisodeSnapshot(SiteEpisode ep, EpisodeDownloadStatus status,
-            double percent, long bytes, string? error)
+            double percent, long bytes, string? error, string? outputPath = null)
         {
             lock (sync)
             {
@@ -540,6 +586,7 @@ public sealed class SeriesDownloader : IDisposable
                 snapshot.Percent = percent;
                 if (bytes > 0) snapshot.OutputBytes = bytes;
                 if (!string.IsNullOrWhiteSpace(error)) snapshot.Error = error!;
+                if (!string.IsNullOrWhiteSpace(outputPath)) snapshot.OutputPath = outputPath;
             }
         }
 
@@ -583,14 +630,34 @@ public sealed class SeriesDownloader : IDisposable
     }
 
     /// <summary>
-    /// 在下载目录里为本集创建一个暂存目录，名字形如
-    /// <c>.m3u8tmp-007-a1b2c3d4</c>。
+    /// 取本集的暂存目录，名字形如 <c>.m3u8tmp-007-a1b2c3d4</c>。
     ///
     /// - 放在下载目录里（而不是系统临时目录）：便于用户发现与清理，出问题时也容易找到；
-    /// - 结尾的随机串保证同一集并发/重试时不会互相踩。
+    /// - **已存在就直接复用**：里面可能存着上次下到一半的分片，这就是断点续传的关键。
+    ///   分片能不能用由引擎按「清单指纹」判断（播放列表变了就整批清掉重下），所以复用是安全的；
+    /// - 只有确实没有历史目录时才新建一个带随机串的，避免与并发下载互相踩。
     /// </summary>
     public static string CreateStagingDirectory(string seriesDirectory, int episodeNumber)
     {
+        try
+        {
+            if (Directory.Exists(seriesDirectory))
+            {
+                var candidates = Directory.GetDirectories(seriesDirectory, $".m3u8tmp-{episodeNumber:000}-*");
+                if (candidates.Length > 0)
+                {
+                    // 同集有多个残留时取最近用过的那个
+                    return candidates
+                        .OrderByDescending(Directory.GetLastWriteTimeUtc)
+                        .First();
+                }
+            }
+        }
+        catch
+        {
+            // 目录枚举失败就按新建处理
+        }
+
         var suffix = Guid.NewGuid().ToString("N")[..8];
         var dir = Path.Combine(seriesDirectory, $".m3u8tmp-{episodeNumber:000}-{suffix}");
         Directory.CreateDirectory(dir);
