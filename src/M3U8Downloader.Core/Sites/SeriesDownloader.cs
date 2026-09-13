@@ -124,7 +124,7 @@ public sealed class EpisodeProgressSnapshot
         set { _percent = value; }
     }
 
-    /// <summary>最终产物大小（完成后才有）</summary>
+    /// <summary>大小：下载中是已下载字节（实时增长），完成后是最终产物大小</summary>
     public long OutputBytes { get; set; }
 
     public string Error { get; set; } = "";
