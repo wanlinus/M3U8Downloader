@@ -37,7 +37,27 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
     }
 
     private string _outputDirectory = "";
-    public string OutputDirectory { get => _outputDirectory; set => Set(ref _outputDirectory, value); }
+    public string OutputDirectory
+    {
+        get => _outputDirectory;
+        set
+        {
+            if (!Set(ref _outputDirectory, value)) return;
+
+            // 手动改（输入框 / 「选择…」/ 设置同步）时，它就是新的根目录；
+            // 识别后自动接上「剧名 - 站点」的那次赋值不算（见 AppendSeriesFolder）
+            if (!_appendingSeriesFolder) _outputRoot = value;
+        }
+    }
+
+    /// <summary>
+    /// 用户真正选的根目录。识别时自动接上去的「剧名 - 站点」不算在里面 ——
+    /// 否则换一部剧再识别就会套成「交锋 - 努努影院\另一部剧 - 站点」。
+    /// </summary>
+    private string _outputRoot = "";
+
+    /// <summary>true = 这次赋值是程序在自动接目录，别把它当成新的根</summary>
+    private bool _appendingSeriesFolder;
 
     private int _episodeConcurrency = 2;
     public int EpisodeConcurrency { get => _episodeConcurrency; set => Set(ref _episodeConcurrency, value); }
@@ -284,6 +304,8 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
             ApplySource(preferred);
 
             HasSeries = VisibleEpisodes.Count > 0;
+            if (HasSeries) AppendSeriesFolder(series);
+
             StatusText = HasSeries
                 ? $"已识别：{SeriesTitle}，共 {VisibleEpisodes.Count} 集" +
                   (HasMultipleSources
@@ -327,6 +349,34 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
         ResetResults();
         PageUrl = "";
         StatusText = "任务已加入「下载任务」，可继续识别下一部剧。";
+    }
+
+    /// <summary>
+    /// 识别成功后，把「剧名 - 站点」接到保存目录后面。
+    ///
+    /// 目的是让用户**点完识别就能看到东西会下到哪**，而不是等任务跑起来才在卡片上看。
+    /// 两个已覆盖的情况：
+    /// - 重复识别同一部剧不会叠加（<see cref="SeriesDownloader.ResolveSeriesDirectory"/>
+    ///   里对「目录名已经等于这个名字」有判断）；
+    /// - 换一部剧再识别会整段替换，而不是套在上一次的路径下面（靠 <see cref="_outputRoot"/>）。
+    ///
+    /// 目录本身不在这里创建：真正落盘时 <c>SeriesDownloader.DownloadAsync</c> 会
+    /// <c>Directory.CreateDirectory</c>，所以「点了下载但文件夹不存在」不会失败。
+    /// </summary>
+    private void AppendSeriesFolder(SiteSeries series)
+    {
+        var root = string.IsNullOrWhiteSpace(_outputRoot) ? OutputDirectory : _outputRoot;
+
+        var full = SeriesDownloader.ResolveSeriesDirectory(series, new SeriesDownloadOptions
+        {
+            // 留空时交给 ResolveSeriesDirectory 回落到系统「下载」目录
+            OutputDirectory = root,
+            SeriesSubdirectory = SeriesSubdirectory,
+        });
+
+        _appendingSeriesFolder = true;
+        try { OutputDirectory = full; }
+        finally { _appendingSeriesFolder = false; }
     }
 
     private void ResetResults()
