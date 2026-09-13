@@ -373,7 +373,9 @@ public sealed partial class MainWindow : Window
 
         try
         {
-            var dir = task.OutputDirectory;
+            // 打开的是**实际产物目录**（…\交锋 - 努努影院），而不是用户填的根目录 ——
+            // 点「打开目录」就是想看下好的视频在哪
+            var dir = task.DisplayDirectory;
             if (!Directory.Exists(dir))
             {
                 // 目录还没建出来（任务还在排队），退而打开上级
@@ -385,7 +387,7 @@ public sealed partial class MainWindow : Window
             }
             else
             {
-                task.Message = $"目录不存在：{task.OutputDirectory}";
+                task.Message = $"目录不存在：{task.DisplayDirectory}";
             }
         }
         catch (Exception ex)

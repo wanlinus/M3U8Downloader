@@ -446,51 +446,61 @@
                             <Expander HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
                                       VerticalAlignment="Top" IsExpanded="True" Padding="0,2,0,0">
                                 <Expander.Header>
-                                    <Grid ColumnSpacing="10" Padding="0,2">
+                                    <!--
+                                        标题行分两排：上排是速览（状态 / 剧名·站点 / 分集进度 / 总进度 / 速度），
+                                        下排单独放**完整的输出目录** —— 以前它跟剧名挤在一格里，
+                                        被 MaxWidth 截成 "D:\wanli\Downlo…"，不看悬停提示根本不知道下到哪了。
+                                    -->
+                                    <Grid ColumnSpacing="10" RowSpacing="1" Padding="0,2">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
                                             <ColumnDefinition Width="Auto" />
-                                            <ColumnDefinition Width="*" MinWidth="60" />
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
 
                                         <!-- 状态：失败 / 下载中 / 已暂停 … -->
-                                        <TextBlock Grid.Column="0" Text="{Binding StateText}" FontSize="13"
+                                        <TextBlock Grid.Row="0" Grid.Column="0" Text="{Binding StateText}" FontSize="13"
                                                    FontWeight="SemiBold" VerticalAlignment="Center"
                                                    Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
 
-                                        <!-- 剧名 + 站点 · 输出目录 -->
-                                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6"
+                                        <!-- 剧名 + 站点 -->
+                                        <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Spacing="6"
                                                     VerticalAlignment="Center">
                                             <TextBlock Text="{Binding Title}" FontSize="13" FontWeight="SemiBold"
-                                                       MaxWidth="200" TextTrimming="CharacterEllipsis"
+                                                       TextTrimming="CharacterEllipsis"
                                                        ToolTipService.ToolTip="{Binding Title}" />
-                                            <TextBlock FontSize="11" MaxWidth="150" TextTrimming="CharacterEllipsis"
+                                            <TextBlock Text="{Binding SiteName}" FontSize="11"
                                                        VerticalAlignment="Center"
-                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                                       ToolTipService.ToolTip="{Binding OutputDirectory}">
-                                                <Run Text="·" />
-                                                <Run Text="{Binding SiteName}" />
-                                                <Run Text="·" />
-                                                <Run Text="{Binding OutputDirectory}" />
-                                            </TextBlock>
+                                                       TextTrimming="CharacterEllipsis"
+                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                         </StackPanel>
 
                                         <!-- 分集进度：已完成 / 总数 -->
-                                        <TextBlock Grid.Column="2" Text="{Binding EpisodeCountText}" FontSize="11"
+                                        <TextBlock Grid.Row="0" Grid.Column="2" Text="{Binding EpisodeCountText}" FontSize="11"
                                                    VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
                                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
 
                                         <!-- 整体进度 -->
-                                        <ProgressBar Grid.Column="3" Value="{Binding Percent}" Maximum="100"
-                                                     Height="6" MinWidth="60" VerticalAlignment="Center" />
+                                        <ProgressBar Grid.Row="0" Grid.Column="3" Value="{Binding Percent}" Maximum="100"
+                                                     Width="120" Height="6" VerticalAlignment="Center" />
 
                                         <!-- 下载中=速度/耗时/已下载，停下=为什么停的 -->
-                                        <TextBlock Grid.Column="4" Text="{Binding DownloadStatusText}" FontSize="11"
+                                        <TextBlock Grid.Row="0" Grid.Column="4" Text="{Binding DownloadStatusText}" FontSize="11"
                                                    MaxWidth="220" TextTrimming="CharacterEllipsis"
                                                    VerticalAlignment="Center"
                                                    ToolTipService.ToolTip="{Binding MessageText}"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+                                        <!-- 完整输出目录（允许换行，不截断） -->
+                                        <TextBlock Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="4"
+                                                   Text="{Binding DisplayDirectory}" FontSize="11"
+                                                   TextWrapping="Wrap" Margin="0,2,0,0"
                                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                     </Grid>
                                 </Expander.Header>

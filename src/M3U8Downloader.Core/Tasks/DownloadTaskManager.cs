@@ -118,6 +118,28 @@ public sealed class SeriesTask : INotifyPropertyChanged
     public required string SiteName { get; init; }
     public required string PageUrl { get; init; }
     public required string OutputDirectory { get; init; }
+
+    /// <summary>
+    /// 这批视频**实际**会落进哪个目录（= 输出目录 + 「剧名 - 站点」子目录）。
+    ///
+    /// 界面上显示的是它，而不是 <see cref="OutputDirectory"/>：用户填的往往只是「下载」
+    /// 这种根目录，看不出东西到底下到哪个文件夹里。每开一轮下载都会重算一次
+    /// （站点子目录名可能随解析结果变）。
+    /// </summary>
+    public string? ResolvedDirectory
+    {
+        get => _resolvedDirectory;
+        set
+        {
+            if (Set(ref _resolvedDirectory, value)) OnPropertyChanged(nameof(DisplayDirectory));
+        }
+    }
+
+    private string? _resolvedDirectory;
+
+    /// <summary>界面显示用的目录（还没算出来时退回用户填的根目录）</summary>
+    public string DisplayDirectory =>
+        string.IsNullOrWhiteSpace(_resolvedDirectory) ? OutputDirectory : _resolvedDirectory!;
     public int TotalEpisodes { get; init; }
     public int FirstEpisodeNumber { get; init; } = 1;
 
@@ -720,6 +742,7 @@ public sealed class DownloadTaskManager : IDisposable
             SiteName = t.SiteName,
             PageUrl = t.PageUrl,
             OutputDirectory = t.OutputDirectory,
+            ResolvedDirectory = t.ResolvedDirectory,
             SourceName = t.SourceName,
             PreferredSourceId = t.PreferredSourceId,
             State = t.State.ToString(),
@@ -765,6 +788,7 @@ public sealed class DownloadTaskManager : IDisposable
             SiteName = r.SiteName,
             PageUrl = r.PageUrl,
             OutputDirectory = r.OutputDirectory,
+            ResolvedDirectory = r.ResolvedDirectory,
             TotalEpisodes = ordered.Count,
             FirstEpisodeNumber = ordered.Count > 0 ? ordered.Min(e => e.Number) : 1,
             SourceName = r.SourceName,
@@ -1109,6 +1133,10 @@ public sealed class DownloadTaskManager : IDisposable
         {
             task.Series = series;
             task.Options = options;
+
+            // 顺手把「实际输出目录」算出来给界面显示：目录名形如「交锋 - 努努影院」，
+            // 光看用户填的根目录根本不知道东西下到哪了
+            task.ResolvedDirectory = SeriesDownloader.ResolveSeriesDirectory(series, options);
 
             // 记下"这一轮到底要下哪几集"。界面上看不出来，但排查
             // 「继续下载之后下了别的集」这类问题时，这一行就是判据。

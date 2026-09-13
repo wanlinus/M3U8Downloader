@@ -1327,6 +1327,15 @@ var okEmpty = false;
              && parsed.AllEpisodes
                  .Where(e => e.SourceId == firstSource!.Id)
                  .All(e => e.PlaylistUrl!.EndsWith("/index.m3u8", StringComparison.Ordinal));
+
+    // 下载目录要带上站点标识：同一部剧在不同站点往往是不同版本，不能混进同一个目录
+    var folder = SeriesDownloader.ResolveSeriesDirectory(parsed, new SeriesDownloadOptions
+    {
+        OutputDirectory = Path.Combine(Path.GetTempPath(), "m3u8-selftest-out"),
+        SeriesSubdirectory = true,
+    });
+    Console.WriteLine($"  下载目录: {folder}");
+    okNnyy = okNnyy && folder.EndsWith("交锋 - 努努影院", StringComparison.Ordinal);
 }
 
 {

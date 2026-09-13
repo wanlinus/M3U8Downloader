@@ -33,6 +33,10 @@ public sealed class SeriesTaskRecord
     public string SiteName { get; set; } = "";
     public string PageUrl { get; set; } = "";
     public string OutputDirectory { get; set; } = "";
+
+    /// <summary>实际产物目录（输出目录 + 「剧名 - 站点」子目录）；老记录里没有，为 null 时界面退回根目录</summary>
+    public string? ResolvedDirectory { get; set; }
+
     public string? SourceName { get; set; }
     public int? PreferredSourceId { get; set; }
 

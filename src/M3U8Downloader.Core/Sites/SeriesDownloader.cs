@@ -822,12 +822,17 @@ public sealed class SeriesDownloader : IDisposable
     }
 
     /// <summary>
-    /// 解析整部剧的实际输出目录：按网站下载时自动套一层「剧名」目录，
+    /// 解析整部剧的实际输出目录：按网站下载时自动套一层「剧名 - 站点」目录，
     /// 下载好的视频都放进这个目录里。
     ///
-    /// 两个细节：
+    /// 目录名里为什么要带站点：同一部剧在不同站点常常是**不同版本**
+    /// （清晰度、剪辑、片头广告都不一样），全下进同一个「交锋」目录会互相混淆，
+    /// 续传时也认不出里面的分片是哪个站的。
+    ///
+    /// 另外两个细节：
     /// - OutputDirectory 为空时回落到系统的「下载」文件夹；
-    /// - 用户选的目录本身就叫这个名字时不再重复套一层（避免出现 <c>交锋\交锋\</c>）。
+    /// - 用户选的目录本身就叫这个名字时不再重复套一层（避免出现
+    ///   <c>交锋 - 努努影院\交锋 - 努努影院\</c>）。
     /// </summary>
     public static string ResolveSeriesDirectory(SiteSeries series, SeriesDownloadOptions options)
     {
@@ -840,11 +845,32 @@ public sealed class SeriesDownloader : IDisposable
 
         if (!options.SeriesSubdirectory) return root;
 
-        var folderName = Sanitize(series.Title);
+        var folderName = BuildFolderName(series);
         var leaf = Path.GetFileName(root);
         if (string.Equals(leaf, folderName, StringComparison.OrdinalIgnoreCase)) return root;
 
         return Path.Combine(root, folderName);
+    }
+
+    /// <summary>剧名子目录的名字：<c>剧名 - 站点标识</c></summary>
+    public static string BuildFolderName(SiteSeries series)
+    {
+        var title = Sanitize(series.Title);
+        var site = BuildSiteTag(series);
+        return site.Length == 0 ? title : $"{title} - {site}";
+    }
+
+    /// <summary>
+    /// 站点标识：优先用站点名；通用兜底解析出来的站点名常常只是 &lt;title&gt; 里的泛化词
+    /// （「在线观看」这种），那还不如用域名。
+    /// </summary>
+    private static string BuildSiteTag(SiteSeries series)
+    {
+        if (series.Kind != SiteKind.Generic && !string.IsNullOrWhiteSpace(series.SiteName))
+            return Sanitize(series.SiteName);
+
+        try { return Sanitize(new Uri(series.PageUrl).Host); }
+        catch { return ""; }
     }
 
     /// <summary>
