@@ -47,6 +47,7 @@ public sealed class TaskListViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(SpeedText));
         OnPropertyChanged(nameof(UploadSpeedText));
         OnPropertyChanged(nameof(IsBusy));
+        OnPropertyChanged(nameof(ShowUploadSpeed));
         OnPropertyChanged(nameof(HasNotice));
     }
 
@@ -81,12 +82,14 @@ public sealed class TaskListViewModel : INotifyPropertyChanged
 
             var running = Tasks.Count(t => t.State == SeriesTaskState.Running);
             var queued = Tasks.Count(t => t.State == SeriesTaskState.Queued);
+            var paused = Tasks.Count(t => t.State == SeriesTaskState.Paused);
             var done = Tasks.Count(t => t.State == SeriesTaskState.Completed);
             var failed = Tasks.Count(t => t.State is SeriesTaskState.Failed or SeriesTaskState.PartiallyCompleted);
 
             var parts = new List<string> { $"共 {Tasks.Count} 个任务" };
             if (running > 0) parts.Add($"下载中 {running}");
             if (queued > 0) parts.Add($"排队 {queued}");
+            if (paused > 0) parts.Add($"已暂停 {paused}");
             if (done > 0) parts.Add($"已完成 {done}");
             if (failed > 0) parts.Add($"有失败 {failed}");
             return string.Join(" · ", parts);
@@ -101,8 +104,13 @@ public sealed class TaskListViewModel : INotifyPropertyChanged
     /// <summary>
     /// 上传速度。本程序只下载、不上传任何数据，因此恒为 0；
     /// 保留这一项是为了让状态栏信息结构与常见下载工具一致。
+    /// 界面上只在真的有任务在跑时才显示它（见 <see cref="ShowUploadSpeed"/>）——
+    /// 空闲时挂一个「↑ 0 B/s」纯属占地方。
     /// </summary>
     public string UploadSpeedText => $"↑ {SeriesTask.FormatSpeed(Manager.TotalUploadSpeed)}";
+
+    /// <summary>是否在下载中（用于决定要不要显示上传速度）</summary>
+    public bool ShowUploadSpeed => IsBusy;
 
     /// <summary>是否有任务在跑</summary>
     public bool IsBusy => Manager.RunningCount > 0;

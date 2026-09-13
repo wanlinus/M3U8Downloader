@@ -375,14 +375,17 @@
                     <TextBlock Text="下载任务" FontWeight="SemiBold" FontSize="15" VerticalAlignment="Center" />
                     <TextBlock Text="{Binding SummaryText}" FontSize="12" VerticalAlignment="Center"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                    <!-- 实时速度：↓ 下载 / ↑ 上传（本程序不上传数据，恒为 0） -->
+                    <!-- 实时速度：↓ 下载在前，↑ 上传在后（本程序不上传数据，且只在下载时才显示） -->
                     <TextBlock Text="{Binding SpeedText}" FontSize="13" FontWeight="SemiBold"
                                VerticalAlignment="Center" Margin="6,0,0,0"
                                Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
                     <TextBlock Text="{Binding UploadSpeedText}" FontSize="13" VerticalAlignment="Center"
-                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               Visibility="{Binding ShowUploadSpeed, Converter={StaticResource BoolToVis}}" />
                 </StackPanel>
                 <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                    <Button Content="日志" Click="OnOpenTaskLogs" FontSize="12" Padding="10,4"
+                            ToolTipService.ToolTip="打开诊断日志目录（每次启动一个文件：哪一轮下了哪几集、何时结束）" />
                     <Button Content="清理已完成" Click="OnClearFinishedTasks" FontSize="12" Padding="10,4" />
                 </StackPanel>
 
@@ -415,116 +418,131 @@
                           ScrollViewer.VerticalScrollBarVisibility="Auto">
                     <ListView.ItemTemplate>
                         <DataTemplate>
-                            <Grid Padding="8,10" RowSpacing="8">
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                </Grid.RowDefinitions>
+                            <!--
+                                整条任务 = 一个展开栏：
+                                **标题行**就是任务速览（状态 / 剧名 / 站点与目录 / 分集进度 / 总进度 / 速度或说明），
+                                展开后才是分集清单与操作按钮。
+                                这样收起时也能一眼看清是哪部剧、下到哪了，界面上也不会再出现
+                                "上面一行信息 + 下面一个只写着分集进度的标题"这种重复。
+                            -->
+                            <Expander HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
+                                      VerticalAlignment="Top" IsExpanded="True" Padding="0,2,0,0">
+                                <Expander.Header>
+                                    <Grid ColumnSpacing="10" Padding="0,2">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" MinWidth="60" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
 
-                                <!-- 上：状态 / 进度 / 分集清单 -->
-                                <StackPanel Grid.Row="0" Spacing="6">
-                                    <StackPanel Orientation="Horizontal" Spacing="8">
-                                        <TextBlock Text="{Binding StateText}" FontSize="13" FontWeight="SemiBold"
-                                                   VerticalAlignment="Center"
+                                        <!-- 状态：失败 / 下载中 / 已暂停 … -->
+                                        <TextBlock Grid.Column="0" Text="{Binding StateText}" FontSize="13"
+                                                   FontWeight="SemiBold" VerticalAlignment="Center"
                                                    Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
-                                        <TextBlock Text="{Binding EpisodeCountText}" FontSize="11"
+
+                                        <!-- 剧名 + 站点 · 输出目录 -->
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6"
+                                                    VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding Title}" FontSize="13" FontWeight="SemiBold"
+                                                       MaxWidth="200" TextTrimming="CharacterEllipsis"
+                                                       ToolTipService.ToolTip="{Binding Title}" />
+                                            <TextBlock FontSize="11" MaxWidth="150" TextTrimming="CharacterEllipsis"
+                                                       VerticalAlignment="Center"
+                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                       ToolTipService.ToolTip="{Binding OutputDirectory}">
+                                                <Run Text="·" />
+                                                <Run Text="{Binding SiteName}" />
+                                                <Run Text="·" />
+                                                <Run Text="{Binding OutputDirectory}" />
+                                            </TextBlock>
+                                        </StackPanel>
+
+                                        <!-- 分集进度：已完成 / 总数 -->
+                                        <TextBlock Grid.Column="2" Text="{Binding EpisodeCountText}" FontSize="11"
+                                                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+                                        <!-- 整体进度 -->
+                                        <ProgressBar Grid.Column="3" Value="{Binding Percent}" Maximum="100"
+                                                     Height="6" MinWidth="60" VerticalAlignment="Center" />
+
+                                        <!-- 下载中=速度/耗时/已下载，停下=为什么停的 -->
+                                        <TextBlock Grid.Column="4" Text="{Binding DownloadStatusText}" FontSize="11"
+                                                   MaxWidth="220" TextTrimming="CharacterEllipsis"
                                                    VerticalAlignment="Center"
+                                                   ToolTipService.ToolTip="{Binding MessageText}"
                                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    </Grid>
+                                </Expander.Header>
+
+                                <StackPanel Spacing="6">
+                                    <ScrollViewer MaxHeight="260" VerticalScrollBarVisibility="Auto"
+                                                  HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
+                                        <ItemsControl ItemsSource="{Binding Episodes}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <!-- 左右各留 20px：分集清单原来紧贴卡片左边框，连缝隙都没有；20px 后集号与标题行内容大致对齐，进度条仍有 300px 以上 -->
+                                                    <StackPanel Padding="20,3,20,2" Spacing="2">
+                                                        <Grid ColumnSpacing="10">
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="190" />
+                                                                <ColumnDefinition Width="*" />
+                                                                <ColumnDefinition Width="56" />
+                                                                <ColumnDefinition Width="96" />
+                                                                <ColumnDefinition Width="100" />
+                                                            </Grid.ColumnDefinitions>
+
+                                                            <TextBlock Grid.Column="0" Text="{Binding Title}" FontSize="12"
+                                                                       VerticalAlignment="Center"
+                                                                       TextTrimming="CharacterEllipsis"
+                                                                       ToolTipService.ToolTip="{Binding Title}" />
+                                                            <ProgressBar Grid.Column="1" Value="{Binding Percent}"
+                                                                         Maximum="100" Height="4"
+                                                                         VerticalAlignment="Center" />
+                                                            <TextBlock Grid.Column="2" Text="{Binding PercentText}"
+                                                                       FontSize="11" HorizontalAlignment="Right"
+                                                                       VerticalAlignment="Center"
+                                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                            <!-- 分片计数：一集上千片时百分比会长时间不动，这片数才是"在动"的证据 -->
+                                                            <TextBlock Grid.Column="3" Text="{Binding SegmentText}"
+                                                                       FontSize="11" VerticalAlignment="Center"
+                                                                       TextTrimming="CharacterEllipsis"
+                                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                            <TextBlock Grid.Column="4" Text="{Binding StatusText}"
+                                                                       FontSize="11" VerticalAlignment="Center"
+                                                                       TextTrimming="CharacterEllipsis"
+                                                                       Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                                        </Grid>
+                                                        <TextBlock Text="{Binding Error}" FontSize="11"
+                                                                   TextWrapping="Wrap"
+                                                                   Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                                                                   Visibility="{Binding HasError, Converter={StaticResource BoolToVis}}" />
+                                                    </StackPanel>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </ScrollViewer>
+
+                                    <!-- 按钮组也跟着留出 20px 右缩进，避免贴在边框上 -->
+                                    <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Right"
+                                                Margin="0,0,20,2">
+                                        <Button Content="暂停" FontSize="12" Padding="10,4" Click="OnTaskPause"
+                                                Visibility="{Binding CanPause, Converter={StaticResource BoolToVis}}" />
+                                        <Button Content="继续下载" FontSize="12" Padding="10,4" Click="OnTaskResume"
+                                                Visibility="{Binding CanResume, Converter={StaticResource BoolToVis}}" />
+                                        <Button Content="取消" FontSize="12" Padding="10,4" Click="OnTaskCancel"
+                                                Visibility="{Binding CanCancel, Converter={StaticResource BoolToVis}}" />
+                                        <Button Content="重试失败集" FontSize="12" Padding="10,4" Click="OnTaskRetryFailed"
+                                                Visibility="{Binding NeedsRetry, Converter={StaticResource BoolToVis}}" />
+                                        <Button Content="下载报告" FontSize="12" Padding="10,4" Click="OnTaskOpenReport"
+                                                Visibility="{Binding HasReport, Converter={StaticResource BoolToVis}}" />
+                                        <Button Content="打开目录" FontSize="12" Padding="10,4" Click="OnTaskOpenFolder" />
+                                        <Button Content="移除" FontSize="12" Padding="10,4" Click="OnTaskRemove" />
                                     </StackPanel>
-
-                                    <TextBlock FontSize="11" TextTrimming="CharacterEllipsis"
-                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}">
-                                        <Run Text="{Binding SiteName}" />
-                                        <Run Text=" · " />
-                                        <Run Text="{Binding OutputDirectory}" />
-                                    </TextBlock>
-
-                                    <ProgressBar Value="{Binding Percent}" Maximum="100" Height="6" />
-
-                                    <StackPanel Orientation="Horizontal" Spacing="10">
-                                        <TextBlock Text="{Binding ProgressText}" FontSize="11"
-                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                        <TextBlock Text="{Binding CurrentEpisodeText}" FontSize="11"
-                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                        <TextBlock Text="{Binding Message}" FontSize="11" TextTrimming="CharacterEllipsis"
-                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                    </StackPanel>
-
-                                    <!-- 分集明细：整体进度看上面的进度条，每一集的进度看这里 -->
-                                    <Expander HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
-                                              IsExpanded="True" Padding="0,2,0,0">
-                                        <Expander.Header>
-                                            <!-- 剧名放这里：收起分集清单时也能看到是哪部剧 -->
-                                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                                <TextBlock Text="{Binding Title}" FontSize="13" FontWeight="SemiBold"
-                                                           TextTrimming="CharacterEllipsis"
-                                                           ToolTipService.ToolTip="{Binding Title}" />
-                                                <TextBlock Text="{Binding EpisodeHeaderText}" FontSize="12"
-                                                           VerticalAlignment="Center"
-                                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                            </StackPanel>
-                                        </Expander.Header>
-                                        <ScrollViewer MaxHeight="260" VerticalScrollBarVisibility="Auto"
-                                                      HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
-                                            <ItemsControl ItemsSource="{Binding Episodes}">
-                                                <ItemsControl.ItemTemplate>
-                                                    <DataTemplate>
-                                                        <StackPanel Padding="0,3" Spacing="2">
-                                                            <Grid ColumnSpacing="10">
-                                                                <Grid.ColumnDefinitions>
-                                                                    <ColumnDefinition Width="190" />
-                                                                    <ColumnDefinition Width="*" />
-                                                                    <ColumnDefinition Width="50" />
-                                                                    <ColumnDefinition Width="60" />
-                                                                    <ColumnDefinition Width="64" />
-                                                                </Grid.ColumnDefinitions>
-
-                                                                <TextBlock Grid.Column="0" Text="{Binding Title}" FontSize="12"
-                                                                           VerticalAlignment="Center"
-                                                                           TextTrimming="CharacterEllipsis"
-                                                                           ToolTipService.ToolTip="{Binding Title}" />
-                                                                <ProgressBar Grid.Column="1" Value="{Binding Percent}"
-                                                                             Maximum="100" Height="4"
-                                                                             VerticalAlignment="Center" />
-                                                                <TextBlock Grid.Column="2" Text="{Binding PercentText}"
-                                                                           FontSize="11" HorizontalAlignment="Right"
-                                                                           VerticalAlignment="Center"
-                                                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                                                <TextBlock Grid.Column="3" Text="{Binding StatusText}"
-                                                                           FontSize="11" VerticalAlignment="Center"
-                                                                           Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
-                                                                <TextBlock Grid.Column="4" Text="{Binding SizeText}"
-                                                                           FontSize="11" HorizontalAlignment="Right"
-                                                                           VerticalAlignment="Center"
-                                                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                                            </Grid>
-                                                            <TextBlock Text="{Binding Error}" FontSize="11"
-                                                                       TextWrapping="Wrap"
-                                                                       Foreground="{ThemeResource SystemFillColorCriticalBrush}"
-                                                                       Visibility="{Binding HasError, Converter={StaticResource BoolToVis}}" />
-                                                        </StackPanel>
-                                                    </DataTemplate>
-                                                </ItemsControl.ItemTemplate>
-                                            </ItemsControl>
-                                        </ScrollViewer>
-                                    </Expander>
                                 </StackPanel>
-
-                                <!-- 下：操作按钮（放在分集清单后面） -->
-                                <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="6"
-                                            HorizontalAlignment="Right">
-                                    <Button Content="继续下载" FontSize="12" Padding="10,4" Click="OnTaskResume"
-                                            Visibility="{Binding CanResume, Converter={StaticResource BoolToVis}}" />
-                                    <Button Content="取消" FontSize="12" Padding="10,4" Click="OnTaskCancel"
-                                            Visibility="{Binding CanCancel, Converter={StaticResource BoolToVis}}" />
-                                    <Button Content="重试失败集" FontSize="12" Padding="10,4" Click="OnTaskRetryFailed"
-                                            Visibility="{Binding NeedsRetry, Converter={StaticResource BoolToVis}}" />
-                                    <Button Content="下载报告" FontSize="12" Padding="10,4" Click="OnTaskOpenReport"
-                                            Visibility="{Binding HasReport, Converter={StaticResource BoolToVis}}" />
-                                    <Button Content="打开目录" FontSize="12" Padding="10,4" Click="OnTaskOpenFolder" />
-                                    <Button Content="移除" FontSize="12" Padding="10,4" Click="OnTaskRemove" />
-                                </StackPanel>
-                            </Grid>
+                            </Expander>
                         </DataTemplate>
                     </ListView.ItemTemplate>
                 </ListView>

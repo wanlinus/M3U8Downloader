@@ -52,6 +52,10 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
     private bool _seriesSubdirectory = true;
     public bool SeriesSubdirectory { get => _seriesSubdirectory; set => Set(ref _seriesSubdirectory, value); }
 
+    /// <summary>下载完成后是否对每集做全量解码检查（来自设置，耗时但能发现源站坏包）</summary>
+    private bool _fullDecodeCheck = true;
+    public bool FullDecodeCheck { get => _fullDecodeCheck; set => Set(ref _fullDecodeCheck, value); }
+
     // ---------------- 解析结果 ----------------
 
     /// <summary>全部播放源的剧集（供下载状态回填与映射，界面不直接绑定）</summary>
@@ -392,6 +396,7 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
             SegmentConcurrency = Math.Clamp(SegmentConcurrency, 1, 64),
             AutoSkipInvalidSegments = AutoSkipAds,
             SeriesSubdirectory = SeriesSubdirectory,
+            FullDecodeCheck = FullDecodeCheck,
             // 暂存目录留空 = 用下载目录下的 .m3u8tmp（不散落到系统临时目录）
             FfmpegPath = FfmpegPath,
         };

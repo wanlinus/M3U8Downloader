@@ -8,11 +8,14 @@ using M3U8Downloader.Core.Tasks;
 // ============================================================================
 // 下载任务自检（无界面，不依赖外网）
 //
-// 分三个阶段验证「整部剧下载」的进度是否真的在刷新：
+// 分阶段验证「整部剧下载」的进度与状态是否真的对：
 //   阶段 A ：SeriesDownloader（整部剧协调器）—— 上报频率、每集进度、总速度
 //   阶段 A2：HlsDownloader（分片引擎）—— 分片级进度
 //   阶段 B ：DownloadTaskManager（任务队列）—— 入队即可见分集清单、状态流转，
 //            以及"绑定属性一律经 UI 线程封送"这一约定（用假 Dispatcher 模拟）
+//   阶段 C ：断点续传（存盘 → 关程序 → 恢复）
+//   阶段 D ：暂停 → 继续下载（必须停在「已暂停」，续传复用已下载的分片）
+//   阶段 E ：重试失败集（**在原任务上重试**，任务数不能变多 —— 防重复集的回归测试）
 //
 // 做法：本地起一个极简 HLS 服务器（20 个分片，3 集共用同一份播放列表），
 // 分片按块慢慢发以制造真实的中间进度。
@@ -43,8 +46,63 @@ var segments = new byte[SegmentCount][];
 for (var i = 0; i < SegmentCount; i++)
     segments[i] = BuildFakeTs(188 * (2000 + i * 7), (byte)(i + 1));
 
+// ---------------------------------------------------------------- 加密流用例数据
+//
+// 专门复现一个真实踩过的坑：**加密分片的响应是密文，密文首字节约 1/16 概率是 '<'（0x3C）**，
+// 被"假 200 / HTML 嗅探"误判成错误页 → 该片全网重试都失败。
+// 实测某源站第 11 集 1400 片里正好 87 片（≈1/16）栽在这里，表现为"每 16 片失败 1 片"。
+// 这里构造一条加密清单，并特意让 3 个分片的**密文首字节都等于 0x3C**。
+var aesKey = new byte[16] { 0x37, 0x33, 0x63, 0x30, 0x62, 0x65, 0x62, 0x31,
+                            0x65, 0x61, 0x65, 0x64, 0x63, 0x39, 0x64, 0x66 };
+var encryptedSegments = new byte[3][];
+
+for (var i = 0; i < encryptedSegments.Length; i++)
+{
+    var plain = BuildFakeTs(188 * (300 + i * 20), (byte)(0xA0 + i));
+
+    // 第一块密文的第一个字节只取决于明文前 16 字节，所以随机化首块里除同步字节外的内容，
+    // 直到 PKCS7 加密后的首个字节正好是 0x3C（'<'）。命中概率约 1/16。
+    var found = false;
+    var rng = new Random(1234 + i);
+    for (var attempt = 0; attempt < 4000 && !found; attempt++)
+    {
+        for (var k = 1; k < 16; k++) plain[k] = (byte)rng.Next(256);
+
+        var cipher = AesEncryptPkcs7(plain, aesKey);
+        if (cipher.Length > 0 && cipher[0] == 0x3C)
+        {
+            encryptedSegments[i] = cipher;
+            found = true;
+        }
+    }
+
+    if (!found) throw new InvalidOperationException("构造密文首字节 0x3C 失败");
+
+    // 构造出来的密文解密回去必须仍是合法 TS，否则这条用例本身就不成立
+    var back = AesDecryptPkcs7(encryptedSegments[i], aesKey);
+    if (back is null || back[0] != 0x47 || back.Length % 188 != 0)
+        throw new InvalidOperationException("构造出的密文解密后不是合法 TS");
+}
+
+var encPlaylistBuilder = new StringBuilder();
+encPlaylistBuilder.AppendLine("#EXTM3U");
+encPlaylistBuilder.AppendLine("#EXT-X-VERSION:3");
+encPlaylistBuilder.AppendLine("#EXT-X-TARGETDURATION:4");
+encPlaylistBuilder.AppendLine("#EXT-X-MEDIA-SEQUENCE:0");
+encPlaylistBuilder.AppendLine($"#EXT-X-KEY:METHOD=AES-128,URI=\"/enc/key.key\",IV=0x{new string('0', 32)}");
+for (var i = 0; i < encryptedSegments.Length; i++)
+{
+    encPlaylistBuilder.AppendLine("#EXTINF:4.000,");
+    encPlaylistBuilder.AppendLine($"/enc/seg{i}.ts");
+}
+encPlaylistBuilder.AppendLine("#EXT-X-ENDLIST");
+var encPlaylist = encPlaylistBuilder.ToString();
+
 // 每个分片被请求了多少次 —— 续传自检靠它判断「已完成的集有没有被重下」
 var requestCounts = new ConcurrentDictionary<string, int>();
+
+// 打开后分片请求一律 404 —— 阶段 E 用它真实制造「失败的分集」
+var failSegments = false;
 
 var listener = new HttpListener();
 listener.Prefixes.Add($"http://localhost:{Port}/");
@@ -64,7 +122,41 @@ _ = Task.Run(async () =>
             try
             {
                 var path = ctx.Request.Url!.AbsolutePath;
-                if (path.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase))
+
+                // ---- 加密流用例：/enc/index.m3u8 + /enc/key.key + /enc/segN.ts（AES-128 密文）----
+                if (path.StartsWith("/enc/", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (path.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var body = Encoding.UTF8.GetBytes(encPlaylist);
+                        ctx.Response.ContentType = "application/vnd.apple.mpegurl";
+                        ctx.Response.ContentLength64 = body.Length;
+                        await ctx.Response.OutputStream.WriteAsync(body);
+                    }
+                    else if (path.EndsWith("key.key", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ctx.Response.ContentType = "application/octet-stream";
+                        ctx.Response.ContentLength64 = aesKey.Length;
+                        await ctx.Response.OutputStream.WriteAsync(aesKey);
+                    }
+                    else
+                    {
+                        var name = Path.GetFileNameWithoutExtension(path);
+                        var idx = int.TryParse(name.AsSpan(3), out var en) ? en : 0;
+                        var body = encryptedSegments[Math.Clamp(idx, 0, encryptedSegments.Length - 1)];
+
+                        ctx.Response.ContentType = "video/mp2t";
+                        ctx.Response.ContentLength64 = body.Length;
+                        await ctx.Response.OutputStream.WriteAsync(body);
+                    }
+                }
+                else if (failSegments && !path.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase))
+                {
+                    // 源站抽风：分片一直 404，重试也救不回来
+                    ctx.Response.StatusCode = 404;
+                    ctx.Response.ContentLength64 = 0;
+                }
+                else if (path.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase))
                 {
                     var body = Encoding.UTF8.GetBytes(playlist);
                     ctx.Response.ContentType = "application/vnd.apple.mpegurl";
@@ -103,7 +195,7 @@ _ = Task.Run(async () =>
 var outputDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-" + Guid.NewGuid().ToString("N")[..6]);
 Directory.CreateDirectory(outputDir);
 
-SiteSeries BuildSeries()
+SiteSeries BuildSeries(int episodeCount = 3)
 {
     var s = new SiteSeries
     {
@@ -117,7 +209,7 @@ SiteSeries BuildSeries()
     var playSource = new SitePlaySource { Id = 1, Name = "本地源" };
     s.Sources.Add(playSource);
 
-    for (var n = 1; n <= 3; n++)
+    for (var n = 1; n <= episodeCount; n++)
     {
         playSource.Episodes.Add(new SiteEpisode
         {
@@ -131,6 +223,36 @@ SiteSeries BuildSeries()
     }
 
     return s;
+}
+
+/// <summary>造一部剧，但只勾选其中某几集（模拟"用户只挑了一集下载"）</summary>
+SiteSeries BuildSeriesSelected(int episodeCount, params int[] selected)
+{
+    var s = BuildSeries(episodeCount);
+    foreach (var e in s.AllEpisodes) e.IsSelected = selected.Contains(e.Number);
+    return s;
+}
+
+/// <summary>追加拿第二个播放源（同集号会重复），并把勾选切到新源上</summary>
+SiteSeries AddSecondSource(SiteSeries series, int episodeCount, params int[] selected)
+{
+    var second = new SitePlaySource { Id = 2, Name = "备用源" };
+    for (var n = 1; n <= episodeCount; n++)
+    {
+        second.Episodes.Add(new SiteEpisode
+        {
+            Number = n,
+            SourceId = 2,
+            PageUrl = $"http://localhost:{Port}/vodplay/1-2-{n}.html",
+            Title = $"第{n:00}集",
+            PlaylistUrl = $"http://localhost:{Port}/index.m3u8",
+            IsSelected = selected.Contains(n),
+        });
+    }
+
+    series.Sources.Add(second);
+    foreach (var e in series.AllEpisodes) e.IsSelected = e.SourceId == 2 && selected.Contains(e.Number);
+    return series;
 }
 
 var options = new SeriesDownloadOptions
@@ -435,7 +557,7 @@ while (restoredTask is not null && DateTime.UtcNow < deadline)
 {
     var state = await dispatcher2.InvokeAsync(() => restoredTask.State);
     if (state is SeriesTaskState.Completed or SeriesTaskState.PartiallyCompleted
-        or SeriesTaskState.Failed or SeriesTaskState.Canceled) break;
+        or SeriesTaskState.Failed or SeriesTaskState.Canceled or SeriesTaskState.Paused) break;
     await Task.Delay(200);
 }
 
@@ -474,14 +596,587 @@ var okC = restoredCount == 1
           && requestsAfter - requestsBefore > 0
           && requestsAfter - requestsBefore < SegmentCount * 2;
 
+// ---------------------------------------------------------------- 阶段 D：暂停 / 继续
+//
+// 用户点「暂停」后任务要停在「已暂停」，已下载的分片保留；点「继续下载」接着下完。
+
 Console.WriteLine();
-var ok = okB && okC;
-Console.WriteLine(ok ? "自检结果       : ✔ 通过" : $"自检结果       : ✘ 失败（阶段B {okB} / 阶段C {okC}）");
+Console.WriteLine("阶段 D：暂停 → 继续下载");
+
+var pauseDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-pause-" + Guid.NewGuid().ToString("N")[..6]);
+Directory.CreateDirectory(pauseDir);
+
+var dispatcher3 = new FakeDispatcher();
+using var manager3 = new DownloadTaskManager(null, dispatcher3.Post)
+{
+    // 「继续下载」会重新解析站点；自检不去访问真实网站，直接给本地剧集数据
+    SeriesParser = (_, _) => Task.FromResult(BuildSeries()),
+};
+var task3 = manager3.Enqueue(BuildSeries(), new SeriesDownloadOptions
+{
+    OutputDirectory = pauseDir,
+    EpisodeConcurrency = 1,      // 串行：第 1 集下到一半时才有机会按暂停
+    SegmentConcurrency = 2,
+    FfmpegPath = null,
+    WriteReport = true,
+    SeriesSubdirectory = true,
+    MaxRetries = 1,
+    RetryBaseDelayMs = 200,
+});
+await dispatcher3.InvokeAsync(() => { });
+
+// 等某一集下到一半 → 暂停 → 等它停下来
+// （EpisodeConcurrency=1，所以只有一集在跑，其余在排队等名额 ——
+//   这正好覆盖「暂停时还有集没轮到」这条路径）
+await WaitUntilAsync(async () => await dispatcher3.InvokeAsync(() =>
+    task3.Episodes.Any(e => e.Percent >= 5 && e.Percent < 100)), TimeSpan.FromMinutes(1),
+    "有分集下到 5% 以上");
+manager3.Pause(task3);
+await WaitUntilAsync(async () => await dispatcher3.InvokeAsync(() => task3.IsFinished),
+    TimeSpan.FromMinutes(1), "任务进入停止态");
+
+// 立刻读一次（不排空 UI 队列）：此刻若已不是收尾写进去的值，说明有别的地方在写进度
+Console.WriteLine($"  暂停刚返回时 : 进度 {await dispatcher3.InvokeAsync(() => task3.Percent):0.0}%" +
+                  $"，状态 {await dispatcher3.InvokeAsync(() => task3.StateText)}");
+
+// 停止之后不许自己再跑起来：等"所有集都到了终态且任务不在运行中"，再观察几秒。
+// （注意不能只看 IsFinished —— 多集并发时它会短暂变 true，然后下一个集开跑又变回去）
+try
+{
+    await WaitUntilAsync(async () => await dispatcher3.InvokeAsync(() =>
+            !task3.IsRunning
+            && task3.Episodes.All(e => e.State is EpisodeDownloadStatus.Completed
+                or EpisodeDownloadStatus.Failed or EpisodeDownloadStatus.Canceled
+                or EpisodeDownloadStatus.Pending)),
+        TimeSpan.FromSeconds(20), "暂停后各集都停下");
+}
+catch (TimeoutException)
+{
+    var dump = await dispatcher3.InvokeAsync(() => string.Join("、",
+        task3.Episodes.Select(e => $"第{e.Number:00}集={e.State}/{e.StatusText}/{e.Percent:0}%")));
+    Console.WriteLine($"  ⚠ 暂停后仍有集没停下：{await dispatcher3.InvokeAsync(() => task3.StateText)} / " +
+                      $"仍在运行={await dispatcher3.InvokeAsync(() => task3.IsRunning)}");
+    Console.WriteLine($"    {dump}");
+    throw;
+}
+
+var pausedPercentAtRest = await dispatcher3.InvokeAsync(() => task3.Percent);
+await Task.Delay(6000);                       // 观察窗口：真"停不下来"的话这里就会看到它在动
+var stillState = await dispatcher3.InvokeAsync(() => task3.State);
+var stillPercent = await dispatcher3.InvokeAsync(() => task3.Percent);
+var stillRunning = await dispatcher3.InvokeAsync(() => task3.IsRunning);
+
+Console.WriteLine($"  暂停后 6 秒   : 状态 {await dispatcher3.InvokeAsync(() => task3.StateText)}" +
+                  $"，进度 {pausedPercentAtRest:0.0}% → {stillPercent:0.0}%，仍在运行={stillRunning}");
+
+var okStopped = !stillRunning
+                && stillState == SeriesTaskState.Paused
+                && Math.Abs(stillPercent - pausedPercentAtRest) < 0.01;
+
+// 一集都没下完就被暂停：整体进度不该显示成 100%（看起来像"下完了"），
+// 也不该被拍成 0%（用户明明已经下了一部分）
+var pausedPercentAfterPause = await dispatcher3.InvokeAsync(() => task3.Percent);
+Console.WriteLine($"  一集未完成时暂停的整体进度：{pausedPercentAfterPause:0.0}%（应在 0 与 100 之间）");
+okStopped = okStopped && pausedPercentAfterPause is > 0 and < 100;
+
+await dispatcher3.InvokeAsync(() => { });      // 把界面上排队的进度回填排空
+await Task.Delay(200);
+await dispatcher3.InvokeAsync(() => { });      // 收尾的那次回填可能刚刚才排队
+
+var pausedState = await dispatcher3.InvokeAsync(() => task3.State);
+var pausedFinished = await dispatcher3.InvokeAsync(() => task3.FinishedEpisodes);
+var pausedTotal = task3.TotalEpisodes;
+var pausedStillTodo = await dispatcher3.InvokeAsync(() =>
+    task3.Episodes.Count(e => e.State != EpisodeDownloadStatus.Completed));
+var pausedSucceeded = await dispatcher3.InvokeAsync(() => task3.SucceededEpisodes);
+var pausedProgress = await dispatcher3.InvokeAsync(() => task3.ProgressText);
+var pausedMessage = await dispatcher3.InvokeAsync(() => task3.MessageText);
+var pausedCanResume = await dispatcher3.InvokeAsync(() => task3.CanResume);
+var pausedCanPause = await dispatcher3.InvokeAsync(() => task3.CanPause);
+var pausedNeedsRetry = await dispatcher3.InvokeAsync(() => task3.NeedsRetry);
+var pausedFailed = await dispatcher3.InvokeAsync(() => task3.FailedEpisodes);
+var pausedRows = await dispatcher3.InvokeAsync(() => task3.Episodes
+    .Select(e => $"第{e.Number:00}集 {e.StatusText} {e.Percent:0}%").ToList());
+var pausedRowList = await dispatcher3.InvokeAsync(() => task3.Episodes
+    .Select(e => (e.Number, e.State, e.StatusText)).ToList());
+
+Console.WriteLine($"  暂停后状态   : {await dispatcher3.InvokeAsync(() => task3.StateText)}" +
+                  $"（已完成 {pausedSucceeded} 集，未完成 {pausedStillTodo} 集，已结束 {pausedFinished}/{pausedTotal}）");
+Console.WriteLine($"  进度文本     : {pausedProgress}");
+Console.WriteLine($"  可继续       : {pausedCanResume}");
+Console.WriteLine($"  界面提示     : {pausedMessage}");
+foreach (var line in pausedRows) Console.WriteLine($"    {line}");
+Console.WriteLine($"  报告明细     : 成功 {task3.Report?.SucceededCount} / 失败 {task3.Report?.FailedCount}" +
+                  $" / 取消 {task3.Report?.CanceledCount}，" +
+                  $"{string.Join("、", task3.Report?.Episodes.Select(e => $"第{e.Episode.Number:00}集 {e.Status} {e.Percent:0}%") ?? new List<string>())}");
+
+// 暂停必须被当作「暂停」而不是「失败」：被打断的集显示「已暂停」，
+// 但**真的**失败（暂停那一刻分片恰好挂了）的集要如实保留，继续下载时会自动重下
+var okPaused = pausedState == SeriesTaskState.Paused
+               && pausedStillTodo > 0
+               && pausedCanResume
+               && !pausedCanPause
+               && !pausedNeedsRetry
+               && pausedFailed == 0
+               && pausedMessage.Contains("已暂停")
+               && pausedRowList.All(e => e.State != EpisodeDownloadStatus.Canceled
+                                         && e.StatusText is "已完成" or "失败" or "已暂停");
+
+var requestsBeforeResume = requestCounts.Values.Sum();
+var resumeStarted = await manager3.ResumeAsync(task3);
+Console.WriteLine($"  调用继续下载 : 返回 {resumeStarted}，界面提示 {await dispatcher3.InvokeAsync(() => task3.MessageText)}");
+await WaitUntilAsync(async () => await dispatcher3.InvokeAsync(() => task3.IsFinished),
+    TimeSpan.FromMinutes(3), "继续下载跑完");
+
+// 跑完之后**不许再有动静** —— 「继续下载之后就停不下来」就是这一条
+await Task.Delay(800);
+await dispatcher3.InvokeAsync(() => { });
+var resumeRequestsSettled = requestCounts.Values.Sum() - requestsBeforeResume;
+await Task.Delay(5000);
+var resumeRequestsAfterSettle = requestCounts.Values.Sum() - requestsBeforeResume;
+var resumeStateAfterSettle = await dispatcher3.InvokeAsync(() => task3.State);
+var resumeRunningAfterSettle = await dispatcher3.InvokeAsync(() => task3.IsRunning);
+
+Console.WriteLine($"  跑完后再等 5 秒：状态 {await dispatcher3.InvokeAsync(() => task3.StateText)}" +
+                  $"，仍在运行={resumeRunningAfterSettle}，" +
+                  $"分片请求 {resumeRequestsSettled} → {resumeRequestsAfterSettle}（应相等）");
+
+var okSettled = !resumeRunningAfterSettle
+                && resumeStateAfterSettle == SeriesTaskState.Completed
+                && resumeRequestsAfterSettle == resumeRequestsSettled;
+
+var resumeRequests = resumeRequestsAfterSettle;
+var resumedEpisodes = await dispatcher3.InvokeAsync(() => task3.Episodes
+    .Select(e => (e.Number, e.StatusText, e.Percent)).ToList());
+
+Console.WriteLine($"  续传后状态   : {await dispatcher3.InvokeAsync(() => task3.StateText)}" +
+                  $"（界面提示 {await dispatcher3.InvokeAsync(() => task3.MessageText)}）");
+foreach (var ep in resumedEpisodes)
+    Console.WriteLine($"    第{ep.Number:00}集 {ep.StatusText} {ep.Percent:0.0}%");
+Console.WriteLine($"  续传期间新增分片请求：{resumeRequests} 个" +
+                  $"（全重下最多 {SegmentCount * 3} 个；复用已下载的分片会更少）");
+
+var okResume = await dispatcher3.InvokeAsync(() => task3.State) == SeriesTaskState.Completed
+               && resumedEpisodes.Count == 3
+               && resumedEpisodes.All(e => e.StatusText == "已完成")
+               && resumeRequests > 0
+               && resumeRequests < SegmentCount * 3;
+// ---------------------------------------------------------------- 阶段 E：重试失败集不再重复建任务
+//
+// 曾经的 bug：RetryFailed 走 Enqueue 新建一个任务，同一个任务在列表里出现两份
+// （一份「已取消/失败」+ 一份从头再列的），点几次就冒出几批重复的集。
+// 现在必须：任务数不变，失败的那几集就地回到「等待中」并重下。
+
+Console.WriteLine();
+Console.WriteLine("阶段 E：重试失败集（任务数不能变多）");
+
+var retryDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-retry-" + Guid.NewGuid().ToString("N")[..6]);
+Directory.CreateDirectory(retryDir);
+
+var dispatcher4 = new FakeDispatcher();
+using var manager4 = new DownloadTaskManager(null, dispatcher4.Post);
+var task4 = manager4.Enqueue(BuildSeries(), new SeriesDownloadOptions
+{
+    OutputDirectory = retryDir,
+    EpisodeConcurrency = 1,      // 串行：失败的分片只影响当前这一集
+    SegmentConcurrency = 2,
+    FfmpegPath = null,
+    WriteReport = true,
+    SeriesSubdirectory = true,
+    MaxRetries = 1,
+    RetryBaseDelayMs = 200,
+});
+await dispatcher4.InvokeAsync(() => { });
+
+// 先让第 1 集下完，再让分片请求开始 404（等价于源站抽风），
+// 这样失败的是后面两集，而第 1 集是「已经下好的、重试时不该重下」的那一集
+await WaitUntilAsync(async () => await dispatcher4.InvokeAsync(() =>
+    task4.Episodes[0].State == EpisodeDownloadStatus.Completed), TimeSpan.FromMinutes(2), "第 1 集下载完成");
+failSegments = true;
+await WaitUntilAsync(async () => await dispatcher4.InvokeAsync(() => task4.IsFinished),
+    TimeSpan.FromMinutes(3), "首次下载跑完（含失败集）");
+
+var taskCountBefore = manager4.Tasks.Count;
+var rowsBefore = await dispatcher4.InvokeAsync(() => task4.Episodes.Count);
+var canRetry = await dispatcher4.InvokeAsync(() => task4.NeedsRetry);
+var firstRunEpisodes = await dispatcher4.InvokeAsync(() => task4.Episodes
+    .Select(e => (e.Number, e.StatusText)).ToList());
+var firstRunState = await dispatcher4.InvokeAsync(() => task4.StateText);
+
+// 第 1 集在「重试」时不能被重下 —— 用产物文件的写入时间来证明
+var firstEpisodePath = await dispatcher4.InvokeAsync(() =>
+    task4.Episodes.First(e => e.Number == 1).OutputPath);
+var firstEpisodeWrite = firstEpisodePath is not null && File.Exists(firstEpisodePath)
+    ? File.GetLastWriteTimeUtc(firstEpisodePath)
+    : DateTime.MinValue;
+
+// 源站恢复正常，再点「重试失败集」
+failSegments = false;
+var requestsBeforeRetry = requestCounts.Values.Sum();
+var retried = await manager4.RetryFailedAsync(task4);
+
+// 重试**立刻**就要检查一次：老实现是 Enqueue 新建任务，这里会当场变成 2
+var taskCountRightAfter = manager4.Tasks.Count;
+var rowsRightAfter = await dispatcher4.InvokeAsync(() => task4.Episodes.Count);
+
+await WaitUntilAsync(async () => await dispatcher4.InvokeAsync(() => task4.IsFinished),
+    TimeSpan.FromMinutes(3), "重试跑完");
+await dispatcher4.InvokeAsync(() => { });
+
+var taskCountAfter = manager4.Tasks.Count;
+var rowsAfter = await dispatcher4.InvokeAsync(() => task4.Episodes.Count);
+var retryRequests = requestCounts.Values.Sum() - requestsBeforeRetry;
+var finalEpisodesD = await dispatcher4.InvokeAsync(() => task4.Episodes
+    .Select(e => (e.Number, e.StatusText, HasError: e.HasError)).ToList());
+var finalWrite = firstEpisodePath is not null && File.Exists(firstEpisodePath)
+    ? File.GetLastWriteTimeUtc(firstEpisodePath)
+    : DateTime.MinValue;
+
+Console.WriteLine($"  首次下载     : {firstRunState}（" +
+                  $"{string.Join("、", firstRunEpisodes.Select(e => $"第{e.Number:00}集{e.StatusText}"))}）");
+Console.WriteLine($"  任务数       : 重试前 {taskCountBefore} → 调用后立刻 {taskCountRightAfter}" +
+                  $" → 跑完 {taskCountAfter}（同一个任务对象：{ReferenceEquals(retried, task4)}）");
+Console.WriteLine($"  分集行数     : 重试前 {rowsBefore} → 调用后立刻 {rowsRightAfter} → 跑完 {rowsAfter}");
+Console.WriteLine($"  重试后状态   : {await dispatcher4.InvokeAsync(() => task4.StateText)}");
+foreach (var ep in finalEpisodesD)
+    Console.WriteLine($"    第{ep.Number:00}集 {ep.StatusText}{(ep.HasError ? "（有错误信息）" : "")}");
+Console.WriteLine($"  第01集产物未被动过：{firstEpisodeWrite == finalWrite}（说明已完成的集没重下）");
+Console.WriteLine($"  重试期间新增分片请求：{retryRequests} 个" +
+                  $"（失败的 2 集全重下应为 {SegmentCount * 2} 个；三集全重下会是 {SegmentCount * 3} 个）");
+
+var okRetry = canRetry
+              && firstRunState == "部分完成"
+              && retried is not null
+              && ReferenceEquals(retried, task4)
+              && taskCountRightAfter == taskCountBefore
+              && taskCountAfter == taskCountBefore
+              && rowsRightAfter == rowsBefore
+              && rowsAfter == rowsBefore
+              && finalEpisodesD.Count == 3
+              && finalEpisodesD.Single(e => e.Number == 1).StatusText == "已完成"
+              && firstEpisodeWrite == finalWrite
+              && retryRequests > 0
+              && retryRequests <= SegmentCount * 3;
+
+// ---------------------------------------------------------------- 阶段 F：续传只能下"选中的那一集"
+//
+// 真实事故：用户在剧集列表里只勾了第 12 集，下载后暂停，点「继续下载」——
+// 结果 21 集全被排进队列，开始整部剧重下（诊断日志里是 `开始下载：21 集（1）`）。
+// 这条断言就是钉住"续传只下原本选中的集"。
+
+Console.WriteLine();
+Console.WriteLine("阶段 F：续传只下选中的那一集（21 集里只勾了第 12 集）");
+
+const int FullEpisodeCount = 21;
+const int PickedEpisode = 12;
+
+var subsetDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-subset-" + Guid.NewGuid().ToString("N")[..6]);
+Directory.CreateDirectory(subsetDir);
+
+var dispatcher5 = new FakeDispatcher();
+using var manager5 = new DownloadTaskManager(null, dispatcher5.Post)
+{
+    // 站点上仍然是完整的 21 集 —— 续传要能从中只挑回第 12 集
+    SeriesParser = (_, _) => Task.FromResult(BuildSeries(FullEpisodeCount)),
+};
+
+var task5 = manager5.Enqueue(BuildSeriesSelected(FullEpisodeCount, PickedEpisode),
+    new SeriesDownloadOptions
+    {
+        OutputDirectory = subsetDir,
+        EpisodeConcurrency = 1,
+        SegmentConcurrency = 2,
+        FfmpegPath = null,
+        WriteReport = true,
+        SeriesSubdirectory = true,
+        MaxRetries = 1,
+        RetryBaseDelayMs = 200,
+    });
+await dispatcher5.InvokeAsync(() => { });
+
+var subsetStarted = new List<int>();
+var subsetDone = new TaskCompletionSource();
+task5.PropertyChanged += (_, e) =>
+{
+    if (e.PropertyName is not (nameof(SeriesTask.CurrentEpisode) or nameof(SeriesTask.State))) return;
+
+    var current = task5.CurrentEpisode;
+    if (!string.IsNullOrWhiteSpace(current) && !subsetStarted.Contains(PickedEpisode))
+        subsetStarted.Add(PickedEpisode);
+
+    if (task5.IsFinished) subsetDone.TrySetResult();
+};
+
+// 一开始就暂停：这一轮一集都下不完
+await WaitUntilAsync(async () => await dispatcher5.InvokeAsync(() => task5.IsRunning),
+    TimeSpan.FromSeconds(30), "任务开始下载");
+manager5.Pause(task5);
+await subsetDone.Task.WaitAsync(TimeSpan.FromSeconds(60));
+await dispatcher5.InvokeAsync(() => { });
+
+var requestsBeforeSubsetResume = requestCounts.Values.Sum();
+var subsetResumed = await manager5.ResumeAsync(task5);
+await WaitUntilAsync(async () => await dispatcher5.InvokeAsync(() => task5.IsFinished),
+    TimeSpan.FromMinutes(3), "续传跑完");
+await dispatcher5.InvokeAsync(() => { });
+
+var subsetRequests = requestCounts.Values.Sum() - requestsBeforeSubsetResume;
+var subsetTaskEpisodes = await dispatcher5.InvokeAsync(() => task5.Episodes
+    .Select(e => (e.Number, e.StatusText)).ToList());
+var subsetPlanned = await dispatcher5.InvokeAsync(() => task5.PlannedEpisodeNumbers.ToList());
+
+Console.WriteLine($"  首次入队     : {FullEpisodeCount} 集里只勾了第 {PickedEpisode} 集 → " +
+                  $"任务里 {await dispatcher5.InvokeAsync(() => task5.Episodes.Count)} 行");
+Console.WriteLine($"  续传调用     : 返回 {subsetResumed}，这一轮计划要下 {subsetPlanned.Count} 集" +
+                  $"（{string.Join(",", subsetPlanned)}，应为 1 集：{PickedEpisode}）");
+Console.WriteLine($"  续传期间分片请求：{subsetRequests} 个（只下 1 集约 {SegmentCount} 个；" +
+                  $"{FullEpisodeCount} 集全下会是 {SegmentCount * FullEpisodeCount} 个）");
+foreach (var ep in subsetTaskEpisodes)
+    Console.WriteLine($"    第{ep.Number:00}集 {ep.StatusText}");
+
+var okResumeSubset = subsetResumed
+                     && subsetPlanned.Count == 1
+                     && subsetPlanned[0] == PickedEpisode
+                     && subsetRequests > 0
+                     && subsetRequests < SegmentCount * 2
+                     && subsetTaskEpisodes.Count == 1
+                     && subsetTaskEpisodes[0].Number == PickedEpisode
+                     && subsetTaskEpisodes[0].StatusText == "已完成";
+
+// ---- 阶段 F2：多播放源 + 源 id 失效，兜底也绝不能整源全下 ----
+//
+// 这是「继续下载变成整部剧重下」最容易复发的分支：
+// 首选源在重新解析后对不上（源改版/重新编号），只能退到"按集号找"。
+
+Console.WriteLine();
+Console.WriteLine("阶段 F2：首选源对不上时的兜底（21 集 × 2 个源，只有备源有第 12 集）");
+
+var fallbackDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-fallback-" + Guid.NewGuid().ToString("N")[..6]);
+Directory.CreateDirectory(fallbackDir);
+
+var dispatcher6 = new FakeDispatcher();
+using var manager6 = new DownloadTaskManager(null, dispatcher6.Post)
+{
+    SeriesParser = (_, _) => Task.FromResult(AddSecondSource(BuildSeries(FullEpisodeCount), FullEpisodeCount, PickedEpisode)),
+};
+
+var task6 = manager6.Enqueue(AddSecondSource(BuildSeries(FullEpisodeCount), FullEpisodeCount, PickedEpisode),
+    new SeriesDownloadOptions
+    {
+        OutputDirectory = fallbackDir,
+        EpisodeConcurrency = 1,
+        SegmentConcurrency = 2,
+        FfmpegPath = null,
+        WriteReport = true,
+        SeriesSubdirectory = true,
+        MaxRetries = 1,
+        RetryBaseDelayMs = 200,
+    });
+task6.PreferredSourceId = 99;      // 故意指向一个重新解析后不存在的源
+await dispatcher6.InvokeAsync(() => { });
+
+var fallbackDone = new TaskCompletionSource();
+task6.PropertyChanged += (_, e) =>
+{
+    if (e.PropertyName == nameof(SeriesTask.State) && task6.IsFinished) fallbackDone.TrySetResult();
+};
+
+await WaitUntilAsync(async () => await dispatcher6.InvokeAsync(() => task6.IsRunning),
+    TimeSpan.FromSeconds(30), "任务开始下载");
+manager6.Pause(task6);
+await fallbackDone.Task.WaitAsync(TimeSpan.FromSeconds(60));
+await dispatcher6.InvokeAsync(() => { });
+
+var requestsBeforeFallback = requestCounts.Values.Sum();
+Console.WriteLine($"  入队后（尚未续传）：{await dispatcher6.InvokeAsync(() => task6.PlannedSeriesSummary)}");
+var fallbackResumed = await manager6.ResumeAsync(task6);
+Console.WriteLine($"  续传返回后立刻  ：{await dispatcher6.InvokeAsync(() => task6.PlannedSeriesSummary)}");
+await WaitUntilAsync(async () => await dispatcher6.InvokeAsync(() => task6.IsFinished),
+    TimeSpan.FromMinutes(3), "兜底续传跑完");
+await dispatcher6.InvokeAsync(() => { });
+
+var fallbackRequests = requestCounts.Values.Sum() - requestsBeforeFallback;
+var fallbackPlanned = await dispatcher6.InvokeAsync(() => task6.PlannedEpisodeNumbers.ToList());
+var fallbackSelection = await dispatcher6.InvokeAsync(() => task6.PlannedSelection.ToList());
+
+Console.WriteLine($"  续传调用     : 返回 {fallbackResumed}，计划要下 {fallbackPlanned.Count} 集" +
+                  $"（{string.Join(",", fallbackPlanned)}，应为 1 集：{PickedEpisode}）");
+Console.WriteLine($"  选中明细     : {string.Join(",", fallbackSelection)}（应为 1 项）");
+Console.WriteLine($"  续传期间分片请求：{fallbackRequests} 个（整源 21 集全下会是 {SegmentCount * FullEpisodeCount} 个）");
+
+var okFallback = fallbackResumed
+                 && fallbackPlanned.Count == 1
+                 && fallbackPlanned[0] == PickedEpisode
+                 && fallbackRequests > 0
+                 && fallbackRequests < SegmentCount * 2;
+
+// ---------------------------------------------------------------- 阶段 G：带 ffmpeg 的转封装 + 时长核对
+//
+// 这条路径（转 MP4）在自检里一直没被走过，而"下载完有没有做完整校验"的最大缺口
+// 恰好在这里：ffmpeg 退出码 0 只说明封装成功，**说明不了没缺片**。
+// 这里用真实 ffmpeg 跑一遍，要求核对结果里出现"时长核对通过"。
+
+Console.WriteLine();
+Console.WriteLine("阶段 G：转 MP4 后的时长核对（用真实 ffmpeg）");
+
+// G1：先单独验证"内置时长探测"本身（不依赖任何外部工具）
+var pcrDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-pcr-" + Guid.NewGuid().ToString("N")[..6]);
+Directory.CreateDirectory(pcrDir);
+var pcrPath = Path.Combine(pcrDir, "pcr-42s.ts");
+File.WriteAllBytes(pcrPath, BuildTsWithPcr(42));
+
+var probedSeconds = MediaDurationProbe.TryProbeSeconds(pcrPath);
+var probeOk = probedSeconds is > 41.0 and < 43.0;
+Console.WriteLine($"  内置探测（PCR）: 构造 42.0s 的 TS，读出 {probedSeconds?.ToString("0.00") ?? "null"}s " +
+                  $"→ {(probeOk ? "通过 ✔" : "不通过 ✘")}");
+
+var ffmpegPath = new[]
+{
+    @"D:\wanli\Downloads\视频\M3U8Downloader\publish\app-win-x64\ffmpeg\ffmpeg.exe",
+    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "M3U8Downloader", "ffmpeg", "ffmpeg.exe"),
+}.FirstOrDefault(File.Exists);
+
+// G2：完整下载（自检的假分片没有真实音视频，ffmpeg 认不出，所以这里只验证
+//     "核对逻辑不会误报通过"：要么读不出来并如实报告，要么读出来且与 80s 相符）
+var okDuration = probeOk;
+{
+    var mp4Dir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-mp4-" + Guid.NewGuid().ToString("N")[..6]);
+    Directory.CreateDirectory(mp4Dir);
+
+    using var mp4Downloader = new SeriesDownloader();
+    var mp4Report = await mp4Downloader.DownloadAsync(BuildSeries(), new SeriesDownloadOptions
+    {
+        OutputDirectory = mp4Dir,
+        EpisodeConcurrency = 3,
+        SegmentConcurrency = 2,
+        FfmpegPath = ffmpegPath,
+        WriteReport = true,
+        SeriesSubdirectory = true,
+        MaxRetries = 1,
+        RetryBaseDelayMs = 200,
+    });
+
+    var durationLines = mp4Report.Log.Where(l => l.Contains("时长核对")).ToList();
+    var verdictOk = durationLines.Count == 3 && durationLines.All(l =>
+        l.Contains("时长核对通过") || l.Contains("时长核对未完成") || l.Contains("时长核对不通过"));
+
+    Console.WriteLine($"  ffmpeg       : {(ffmpegPath is null ? "未找到（跳过转 MP4）" : "已找到")}");
+    foreach (var line in durationLines) Console.WriteLine("    " + line);
+
+    okDuration = okDuration && verdictOk;
+}
+
+// ---------------------------------------------------------------- 阶段 H：密文首字节是 '<' 的分片必须能下下来
+//
+// 这是"第 11 集每 16 片失败 1 片"那个真实故障的回归测试：
+// 加密分片的响应是密文，密文首字节有 1/16 概率是 0x3C（'<'），
+// 被"假 200 / HTML 嗅探"误判成错误页后，**重试多少次都没用**（内容一直是那个密文）。
+
+Console.WriteLine();
+Console.WriteLine("阶段 H：密文首字节为 '<'（0x3C）的加密分片必须下载成功");
+
+var encDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-enc-" + Guid.NewGuid().ToString("N")[..6]);
+Directory.CreateDirectory(encDir);
+
+var encOk = false;
+{
+    using var encDownloader = new HlsDownloader();
+    var (encMedia, encLogs) = await encDownloader.ResolveMediaPlaylistAsync(
+        $"http://localhost:{Port}/enc/index.m3u8");
+    foreach (var l in encLogs) Console.WriteLine("  [解析] " + l);
+
+    Console.WriteLine($"  分片 {encMedia.Segments.Count} 个；" +
+                      $"密文首字节: {string.Join(", ", encryptedSegments.Select(s => $"0x{s[0]:X2}"))}");
+
+    var encResult = await encDownloader.DownloadAsync(encMedia, new DownloadOptions
+    {
+        Concurrency = 3,
+        MaxRetries = 1,
+        TempDirectory = Path.Combine(encDir, "staging"),
+        OutputPath = Path.Combine(encDir, "out.ts"),
+        DeleteTempOnSuccess = false,
+    });
+
+    Console.WriteLine($"  结果: Success={encResult.Success} 成功 {encResult.CompletedSegments} / " +
+                      $"失败 {encResult.FailedSegments} / 共 {encResult.TotalSegments}，输出 " +
+                      $"{encResult.OutputBytes / 1024.0 / 1024.0:0.00} MB");
+    if (encResult.Error is not null) Console.WriteLine($"  Error: {encResult.Error}");
+    foreach (var r in encResult.FailureReasons) Console.WriteLine("  失败原因: " + r);
+
+    // 产物应等于 3 个明文分片之和（密文比明文多 16 字节填充）
+    var expectedBytes = (long)encryptedSegments.Sum(s => s.Length - 16);
+    encOk = encResult.Success
+            && encResult.CompletedSegments == 3
+            && encResult.FailedSegments == 0
+            && encResult.OutputBytes == expectedBytes;
+    Console.WriteLine($"  产物应等于三个明文分片之和：{encResult.OutputBytes} vs {expectedBytes} → " +
+                      $"{(encResult.OutputBytes == expectedBytes ? "一致 ✔" : "不一致 ✘")}");
+}
+
+Console.WriteLine();
+var ok = okB && okC && okPaused && okStopped && okResume && okSettled && okRetry
+         && okResumeSubset && okFallback && okDuration && encOk;
+Console.WriteLine(ok
+    ? "自检结果       : ✔ 通过"
+    : $"自检结果       : ✘ 失败（阶段B {okB} / 阶段C {okC} / 暂停 {okPaused} / 暂停后静止 {okStopped}" +
+      $" / 续传 {okResume} / 续传后静止 {okSettled} / 重试 {okRetry}" +
+      $" / 续传只下选中集 {okResumeSubset} / 多源兜底 {okFallback} / 时长核对 {okDuration}" +
+      $" / 密文首字节 0x3C {encOk}）");
 
 listener.Stop();
 return ok ? 0 : 1;
 
 // ---------------------------------------------------------------- 辅助
+
+/// <summary>轮询等待条件成立，超时就抛异常（自检失败要立刻可见）</summary>
+static async Task WaitUntilAsync(Func<Task<bool>> condition, TimeSpan timeout, string what)
+{
+    var deadline = DateTime.UtcNow + timeout;
+    while (DateTime.UtcNow < deadline)
+    {
+        if (await condition()) return;
+        await Task.Delay(50);
+    }
+
+    throw new TimeoutException($"等待超时：{what}");
+}
+
+/// <summary>
+/// 造一条只用于"时长探测"的 TS：2 秒一个带 PCR 的包，跨度 <paramref name="seconds"/> 秒。
+/// 自检里的假分片没有 PCR，所以内置探测读不出时长 —— 这个构造件专门把那条路验证掉。
+/// </summary>
+static byte[] BuildTsWithPcr(double seconds)
+{
+    const int packet = 188;
+    const int pcrPeriodMs = 2000;
+    const int ticksPerSecond = 90000;
+
+    var packetCount = (int)(seconds * 1000 / pcrPeriodMs) + 1;
+    var buffer = new byte[packetCount * packet];
+    long pcr = 0;
+
+    for (var n = 0; n < packetCount; n++)
+    {
+        var i = n * packet;
+        buffer[i] = 0x47;
+        buffer[i + 1] = 0x01;              // PID 0x0100 的负载起始包（探测只看自适应字段）
+        buffer[i + 2] = 0x00;
+        buffer[i + 3] = 0x30;              // afc=3（自适应字段 + 负载）
+        buffer[i + 4] = 7;                 // 自适应字段长度
+        buffer[i + 5] = 0x10;              // PCR_flag
+        buffer[i + 6] = (byte)(pcr >> 25);
+        buffer[i + 7] = (byte)(pcr >> 17);
+        buffer[i + 8] = (byte)(pcr >> 9);
+        buffer[i + 9] = (byte)(pcr >> 1);
+        buffer[i + 10] = (byte)(((pcr & 1) << 7) | 0x7E);   // 保留位 + 扩展高 1 位
+        buffer[i + 11] = 0x00;             // 扩展低 8 位
+
+        pcr += (long)pcrPeriodMs * ticksPerSecond / 1000;
+    }
+
+    return buffer;
+}
 
 static byte[] BuildFakeTs(int size, byte marker)
 {
@@ -492,6 +1187,34 @@ static byte[] BuildFakeTs(int size, byte marker)
         for (var j = 1; j < 188 && i + j < size; j++) buffer[i + j] = marker;
     }
     return buffer;
+}
+
+/// <summary>AES-128-CBC + PKCS7 加密（自检里扮演源站的加密分片）</summary>
+static byte[] AesEncryptPkcs7(byte[] plain, byte[] key)
+{
+    using var aes = System.Security.Cryptography.Aes.Create();
+    aes.Mode = System.Security.Cryptography.CipherMode.CBC;
+    aes.Padding = System.Security.Cryptography.PaddingMode.PKCS7;
+    aes.Key = key;
+    aes.IV = new byte[16];                       // 与清单里的 IV=0x0000… 对应
+    using var enc = aes.CreateEncryptor();
+    return enc.TransformFinalBlock(plain, 0, plain.Length);
+}
+
+/// <summary>解密回明文（用于自检自查构造件是否成立）；填充非法返回 null</summary>
+static byte[]? AesDecryptPkcs7(byte[] cipher, byte[] key)
+{
+    try
+    {
+        using var aes = System.Security.Cryptography.Aes.Create();
+        aes.Mode = System.Security.Cryptography.CipherMode.CBC;
+        aes.Padding = System.Security.Cryptography.PaddingMode.PKCS7;
+        aes.Key = key;
+        aes.IV = new byte[16];
+        using var dec = aes.CreateDecryptor();
+        return dec.TransformFinalBlock(cipher, 0, cipher.Length);
+    }
+    catch { return null; }
 }
 
 /// <summary>单线程假 Dispatcher：模拟 WinUI 的 DispatcherQueue.TryEnqueue（异步封送）</summary>

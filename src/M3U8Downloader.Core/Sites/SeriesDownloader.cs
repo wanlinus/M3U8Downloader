@@ -43,6 +43,18 @@ public sealed class EpisodeDownloadReport
     /// <summary>失败时保留的暂存目录（便于排查或续传）</summary>
     public string? StagingDirectory { get; set; }
 
+    /// <summary>产物容器探测结果（ffprobe）：格式、时长、每条流的编码与参数</summary>
+    public ContainerProbe? Container { get; set; }
+
+    /// <summary>全量解码检查结果（ffmpeg -f null -）：能发现"格式全对但内容坏了"</summary>
+    public DecodeCheckResult? DecodeCheck { get; set; }
+
+    /// <summary>时长核对结论（清单声明 vs 产物实际）</summary>
+    public string? DurationVerdict { get; set; }
+
+    /// <summary>合并字节核对结论（应拼入的分片之和 vs 产物大小）</summary>
+    public string? MergeVerdict { get; set; }
+
     /// <summary>被判为插播广告而跳过的分片数</summary>
     public int SkippedAdSegments { get; set; }
 
@@ -130,6 +142,10 @@ public sealed class EpisodeProgressSnapshot
     /// <summary>产物路径（完成后才有）—— 续传时用它判断这一集是否已经在磁盘上</summary>
     public string? OutputPath { get; set; }
 
+    /// <summary>已下完的分片数 / 分片总数（界面显示"183/185 片"用）</summary>
+    public int CompletedSegments { get; set; }
+    public int TotalSegments { get; set; }
+
     public string Error { get; set; } = "";
 
     public string StatusText => Status switch
@@ -163,6 +179,19 @@ public sealed class SeriesDownloadProgress
     public long DownloadedBytes { get; set; }
     public long TotalBytes { get; set; }
     public double SpeedBytesPerSecond { get; set; }
+
+    /// <summary>
+    /// 本集已完成/已取消/已失败的集数（不含等待中的）。
+    /// 暂停时用它算真实进度：<see cref="OverallPercent"/> 在取消路径上不可靠
+    /// （进度回调可能停在只报了一部分集的时刻），拿它当"总进度"会显示成 100%。
+    /// </summary>
+    public int CompletedEpisodes { get; set; }
+
+    /// <summary>本集已下完的分片数（用于界面显示"正在下载 第12集 · 183/185 片"）</summary>
+    public int CompletedSegments { get; set; }
+
+    /// <summary>本集分片总数（播放列表还没解析出来时为 0）</summary>
+    public int TotalSegments { get; set; }
 
     /// <summary>
     /// 整部剧的总体进度（0-100）：所有分集进度的平均值。
@@ -220,6 +249,13 @@ public sealed class SeriesDownloadOptions
 
     /// <summary>整部剧下载完成后写出下载报告（Markdown），默认开启</summary>
     public bool WriteReport { get; set; } = true;
+
+    /// <summary>
+    /// 是否对每集产物做**全量解码检查**（<c>ffmpeg -f null -</c>，默认开）。
+    /// 这是唯一能发现"格式全对但内容坏了"的检查，代价是要把产物整条解一遍
+    /// （实测 400 MB 约 35 秒）。批量下大剧想省时间可以关掉，报告里会标明"未执行"。
+    /// </summary>
+    public bool FullDecodeCheck { get; set; } = true;
 
     /// <summary>文件名模板。支持 {title} 剧名、{number} 集号、{number:00} 补零集号、{site} 站点名。</summary>
     public string FileNamePattern { get; set; } = "{title}.{number:00}";
@@ -406,7 +442,29 @@ public sealed class SeriesDownloader : IDisposable
             var item = new EpisodeDownloadReport { Episode = episode };
             lock (sync) report.Episodes.Add(item);
 
-            await gate.WaitAsync(ct).ConfigureAwait(false);
+            // 注意：这一段**不能**并进下面那个 try —— 那个 try 的 finally 会 Release 名额，
+            // 而这里根本没拿到名额，Release 会把信号量计数搞坏（后续集会挤进多余的名额）。
+            try
+            {
+                await gate.WaitAsync(ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // 用户暂停/取消时，还在排队等「同时下载几集」名额的这一集会让 WaitAsync 抛异常。
+                // 不能让它冒到外面去：那会让整批下载以异常收场，任务被判成「失败」，
+                // 连报告也拿不到（界面上就只剩一句莫名的 "The operation was canceled."）。
+                // 这里按「还没开始下载」处理 —— 暂存目录里的分片原样保留，可以继续下。
+                item.Status = EpisodeDownloadStatus.Canceled;
+                SetEpisodeSnapshot(episode, EpisodeDownloadStatus.Canceled, 0, 0, null);
+                lock (sync)
+                {
+                    state.FinishedEpisodes++;
+                    report.Log.Add($"[{item.DisplayTitle}] 已停止（尚未开始下载）");
+                }
+                Publish();
+                return;
+            }
+
             try
             {
                 if (ct.IsCancellationRequested)
@@ -479,13 +537,20 @@ public sealed class SeriesDownloader : IDisposable
                     }
 
                     SetEpisodeSnapshot(episode, EpisodeDownloadStatus.Downloading,
-                        Math.Clamp(p.Percent, 0, 100), p.DownloadedBytes, null);
+                        Math.Clamp(p.Percent, 0, 100), p.DownloadedBytes, null,
+                        segments: (p.CompletedSegments, p.TotalSegments));
                     Publish(currentEpisode: episode, currentPercent: p.Percent);
                 });
 
                 var result = await _hls.DownloadAsync(media, downloadOptions, inner, ct).ConfigureAwait(false);
                 one.Stop();
 
+                // 合并/校验结论也留档，写进报告
+                item.MergeVerdict = result.Messages
+                    .FirstOrDefault(m => m.StartsWith("合并核对", StringComparison.Ordinal));
+
+                // 下载耗时要在转封装之前定格：转 MP4 与产物校验都算在后面，
+                // 否则报告里的"耗时"会把这两步也算进去（大文件能差出几十秒）
                 item.Elapsed = one.Elapsed;
                 item.DurationSeconds = media.TotalDuration;
                 item.TotalSegments = result.TotalSegments > 0 ? result.TotalSegments : item.TotalSegments;
@@ -498,13 +563,23 @@ public sealed class SeriesDownloader : IDisposable
                 if (result.Success)
                 {
                     // ---- 4. 转成常用格式（MP4）----
+                    // 清单声明的时长要减掉被跳过的广告片，否则"时长核对"会误判成缺片
+                    var skipped = result.SkippedSegmentIndices.ToHashSet();
+                    var expectedSeconds = media.Segments
+                        .Where(s => !skipped.Contains(s.Index))
+                        .Sum(s => s.Duration);
+
                     var final = await FinalizeOutputAsync(
                         seriesDir, fileName, intermediate, media.IsFmp4, options,
-                        report.Log, item.DisplayTitle, ct).ConfigureAwait(false);
+                        report.Log, item.DisplayTitle, ct, expectedSeconds).ConfigureAwait(false);
 
                     item.OutputPath = final.Path;
                     item.OutputBytes = final.Bytes;
                     item.Format = final.Format;
+                    item.DurationVerdict = final.DurationVerdict;
+
+                    // ---- 4b. 产物体检：容器信息 + 全量解码检查 ----
+                    await InspectProductAsync(options, final.Path, item, report.Log, ct).ConfigureAwait(false);
 
                     // ---- 5. 全部成功 → 删除暂存目录（含中间文件）----
                     if (StagingStore.TryRemoveStagingDirectory(stagingDir))
@@ -519,7 +594,8 @@ public sealed class SeriesDownloader : IDisposable
                     }
 
                     item.Status = EpisodeDownloadStatus.Completed;
-                    SetEpisodeSnapshot(episode, EpisodeDownloadStatus.Completed, 100, final.Bytes, null, final.Path);
+                    SetEpisodeSnapshot(episode, EpisodeDownloadStatus.Completed, 100, final.Bytes, null, final.Path,
+                        segments: (item.CompletedSegments, item.TotalSegments));
                     lock (sync)
                     {
                         state.SucceededEpisodes++;
@@ -535,7 +611,8 @@ public sealed class SeriesDownloader : IDisposable
                     item.Error = result.Error
                         ?? $"分片统计 成功 {result.CompletedSegments} / 跳过 {result.SkippedSegments} / " +
                            $"失败 {result.FailedSegments} / 共 {result.TotalSegments}，输出 {result.OutputBytes} 字节";
-                    SetEpisodeSnapshot(episode, EpisodeDownloadStatus.Failed, item.Percent, 0, item.Error);
+                    SetEpisodeSnapshot(episode, EpisodeDownloadStatus.Failed, item.Percent, 0, item.Error,
+                        segments: (item.CompletedSegments, item.TotalSegments));
                     lock (sync)
                     {
                         state.FailedEpisodes++;
@@ -575,7 +652,8 @@ public sealed class SeriesDownloader : IDisposable
         }
 
         void SetEpisodeSnapshot(SiteEpisode ep, EpisodeDownloadStatus status,
-            double percent, long bytes, string? error, string? outputPath = null)
+            double percent, long bytes, string? error, string? outputPath = null,
+            (int Completed, int Total)? segments = null)
         {
             lock (sync)
             {
@@ -587,6 +665,12 @@ public sealed class SeriesDownloader : IDisposable
                 if (bytes > 0) snapshot.OutputBytes = bytes;
                 if (!string.IsNullOrWhiteSpace(error)) snapshot.Error = error!;
                 if (!string.IsNullOrWhiteSpace(outputPath)) snapshot.OutputPath = outputPath;
+
+                if (segments is { } s)
+                {
+                    snapshot.CompletedSegments = s.Completed;
+                    snapshot.TotalSegments = s.Total;
+                }
             }
         }
 
@@ -624,6 +708,21 @@ public sealed class SeriesDownloader : IDisposable
                 state.DownloadedBytes = finishedBytes + liveBytes;
                 state.TotalBytes = finishedBytes;
                 state.SpeedBytesPerSecond = inFlight.Count > 0 ? liveSpeed : 0;
+                state.CompletedEpisodes = report.Episodes.Count(e =>
+                    e.Status is EpisodeDownloadStatus.Completed
+                        or EpisodeDownloadStatus.Failed
+                        or EpisodeDownloadStatus.Canceled);
+
+                // 正在下载的那一集的分片进度：界面上靠它显示"183/185 片"，
+                // 一集分片多的时候（成百上千片）百分比会长时间卡在同一个数上，
+                // 只有分片数在动 —— 用户得看得见才算"有进度"。
+                if (currentEpisode is not null)
+                {
+                    var current = report.Episodes.FirstOrDefault(e => e.Episode.Number == currentEpisode.Number);
+                    state.CompletedSegments = current?.CompletedSegments ?? 0;
+                    state.TotalSegments = current?.TotalSegments ?? 0;
+                }
+
                 progress.Report(state);
             }
         }
@@ -664,10 +763,18 @@ public sealed class SeriesDownloader : IDisposable
         return dir;
     }
 
-    /// <summary>把合并好的中间文件转成常用格式（MP4）。ffmpeg 不可用时退回保留 TS。</summary>
-    private static async Task<(string Path, long Bytes, string Format)> FinalizeOutputAsync(
+    /// <summary>
+    /// 把合并好的中间文件转成常用格式（MP4）。ffmpeg 不可用时退回保留 TS。
+    ///
+    /// <paramref name="expectedSeconds"/> 是清单声明的时长（跳过广告片后重算）。
+    /// 转完后会用 ffprobe/ffmpeg 读产物**真实时长**比对 ——
+    /// "ffmpeg 退出码 0 + 文件非空"只能说明封装成功，**说明不了没缺片**：
+    /// 少一段照样能转出 MP4。时长对不上就写进日志，由调用方决定是否算完整。
+    /// </summary>
+    private static async Task<(string Path, long Bytes, string Format, string? DurationVerdict)> FinalizeOutputAsync(
         string seriesDir, string fileName, string intermediate, bool alreadyFmp4,
-        SeriesDownloadOptions options, List<string> log, string episodeTitle, CancellationToken ct)
+        SeriesDownloadOptions options, List<string> log, string episodeTitle, CancellationToken ct,
+        double expectedSeconds = 0)
     {
         var ffmpegPath = options.FfmpegPath;
         var finalPath = Path.Combine(seriesDir, fileName + ".mp4");
@@ -680,7 +787,9 @@ public sealed class SeriesDownloader : IDisposable
             if (remux.Success && File.Exists(finalPath) && new FileInfo(finalPath).Length > 0)
             {
                 log.Add($"[{episodeTitle}] 已转封装为 MP4（流复制，无画质损失）。");
-                return (finalPath, new FileInfo(finalPath).Length, "mp4");
+                var verdict = await CheckDurationAsync(ffmpegPath, finalPath, expectedSeconds, log, episodeTitle, ct)
+                    .ConfigureAwait(false);
+                return (finalPath, new FileInfo(finalPath).Length, "mp4", verdict);
             }
 
             log.Add($"[{episodeTitle}] 转 MP4 失败，改为保留原始格式：{remux.Error}");
@@ -702,17 +811,133 @@ public sealed class SeriesDownloader : IDisposable
         catch (Exception ex)
         {
             log.Add($"[{episodeTitle}] 移动产物失败：{ex.Message}");
-            return (intermediate, new FileInfo(intermediate).Length, alreadyFmp4 ? "mp4" : "ts");
+            return (intermediate, new FileInfo(intermediate).Length, alreadyFmp4 ? "mp4" : "ts", null);
         }
 
-        return (fallbackPath, new FileInfo(fallbackPath).Length, alreadyFmp4 ? "mp4" : "ts");
+        // 没有 ffmpeg 时也要核对：内置探测不依赖外部工具
+        var fallbackVerdict = await CheckDurationAsync(ffmpegPath, fallbackPath, expectedSeconds, log, episodeTitle, ct)
+            .ConfigureAwait(false);
+
+        return (fallbackPath, new FileInfo(fallbackPath).Length, alreadyFmp4 ? "mp4" : "ts", fallbackVerdict);
     }
 
     /// <summary>
-    /// 复制一份剧集数据，仅勾选指定集号（用于「重试失败的分集」）。
-    /// SiteSeries 的集合是只读的，因此这里重建一份；返回 null 表示没有可选的集。
+    /// 产物体检：容器信息（ffprobe）+ 全量解码检查（ffmpeg -f null -）。
+    ///
+    /// 这两项是"报告里该有的东西"：
+    /// - 容器信息回答"下出来的是什么"（格式/时长/码率/编码/分辨率/帧率/声道）；
+    /// - 解码检查回答"内容是不是好的"—— 包对齐、字节数、时长全对，
+    ///   源站返回的坏包依然会留在产物里，只有整条解一遍才知道。
     /// </summary>
-    public static SiteSeries? SelectOnly(SiteSeries source, IReadOnlySet<int> episodeNumbers)
+    private static async Task InspectProductAsync(
+        SeriesDownloadOptions options, string path, EpisodeDownloadReport item,
+        List<string> log, CancellationToken ct)
+    {
+        var ffmpegPath = options.FfmpegPath;
+        if (string.IsNullOrWhiteSpace(ffmpegPath) || !File.Exists(ffmpegPath)) return;
+
+        try
+        {
+            item.Container = await FfmpegRunner.TryProbeContainerAsync(ffmpegPath!, path, ct).ConfigureAwait(false);
+            if (item.Container is { Streams.Count: > 0 })
+            {
+                log.Add($"[{item.DisplayTitle}] 容器信息：{item.Container.FormatName}，" +
+                        $"时长 {TimeSpan.FromSeconds(item.Container.DurationSeconds):hh\\:mm\\:ss}" +
+                        (item.Container.BitRate > 0 ? $"，码率 {item.Container.BitRate / 1000} kbps" : "") +
+                        $"；流：{string.Join(" + ", item.Container.Streams.Select(s => s.Describe()))}");
+            }
+        }
+        catch
+        {
+            // 探测失败不影响产物
+        }
+
+        try
+        {
+            if (!options.FullDecodeCheck)
+            {
+                log.Add($"[{item.DisplayTitle}] 已跳过全量解码检查（设置里关掉了；容器与时长核对不受影响）。");
+                return;
+            }
+
+            item.DecodeCheck = await FfmpegRunner.RunDecodeCheckAsync(ffmpegPath!, path, ct).ConfigureAwait(false);
+            if (item.DecodeCheck is not null)
+            {
+                log.Add(item.DecodeCheck.Passed
+                    ? $"[{item.DisplayTitle}] 全量解码检查通过（{item.DecodeCheck.Elapsed.TotalSeconds:0.0}s）。"
+                    : $"[{item.DisplayTitle}] ⚠ 全量解码检查发现异常（退出码 {item.DecodeCheck.ExitCode}）：" +
+                      $"{string.Join("；", item.DecodeCheck.Issues)}。这通常是源站数据问题，不是拼接错位。");
+            }
+        }
+        catch
+        {
+            // 同上
+        }
+    }
+
+    /// <summary>
+    /// 读产物真实时长并与清单声明值比对，差距过大时写一条醒目日志。
+    ///
+    /// 先用**内置探测**（TS 累加 PCR / MP4 读 mvhd）—— 不依赖外部工具，任何机器都能做；
+    /// 内置读不出来再退回 ffmpeg/ffprobe。两边都读不出来就明确报告"读不出"，
+    /// 而不是默默当通过（那等于没校验）。
+    /// </summary>
+    private static async Task<string?> CheckDurationAsync(
+        string? ffmpegPath, string path, double expectedSeconds, List<string> log,
+        string episodeTitle, CancellationToken ct)
+    {
+        if (expectedSeconds <= 0) return null;
+
+        var source = "内置探测";
+        double? actual = MediaDurationProbe.TryProbeSeconds(path);
+
+        if (actual is null && !string.IsNullOrWhiteSpace(ffmpegPath) && File.Exists(ffmpegPath))
+        {
+            source = "ffmpeg";
+            try
+            {
+                actual = await FfmpegRunner.TryGetDurationSecondsAsync(ffmpegPath!, path, ct).ConfigureAwait(false);
+            }
+            catch
+            {
+                actual = null;
+            }
+        }
+
+        if (actual is null)
+        {
+            var note = $"读不出产物时长（清单声明 {expectedSeconds:0.0}s）";
+            log.Add($"[{episodeTitle}] ⚠ 时长核对未完成：{note}；" +
+                    $"产物已保留，建议用播放器确认是否能完整播放。");
+            return $"未完成（{note}）";
+        }
+
+        // 容差：TS 里 PTS/DTS 与容器时长本来就有零点几秒的出入，广告片跳过也会造成偏差，
+        // 所以只在差距明显（>5% 且 >3 秒）时才判定为"缺片"。
+        var diff = Math.Abs(actual.Value - expectedSeconds);
+        var tolerance = Math.Max(3.0, expectedSeconds * 0.05);
+
+        if (diff > tolerance)
+        {
+            log.Add($"[{episodeTitle}] ⚠ 时长核对不通过（{source}）：清单声明 {expectedSeconds:0.0}s，" +
+                    $"产物实际 {actual.Value:0.0}s，相差 {diff:0.0}s（可能缺片，建议核对原播放列表）。");
+            return $"不通过：产物 {actual.Value:0.0}s vs 清单 {expectedSeconds:0.0}s（差 {diff:0.0}s）";
+        }
+
+        log.Add($"[{episodeTitle}] 时长核对通过（{source}）：产物 {actual.Value:0.0}s，清单声明 {expectedSeconds:0.0}s。");
+        return $"通过：{actual.Value:0.0}s / 声明 {expectedSeconds:0.0}s（{source}）";
+    }
+
+    /// <summary>
+    /// 复制一份剧集数据，仅勾选指定集号（用于「重试失败的分集」「续传」）。
+    /// SiteSeries 的集合是只读的，因此这里重建一份；返回 null 表示没有可选的集。
+    ///
+    /// <paramref name="onlySourceId"/> 很关键：**必须**按 (源, 集号) 一起选。
+    /// 多源站点里同一个集号会出现在多个源上，只按集号选会一次选中好几个同号集，
+    /// 引擎就会把同一集下好几遍（实测：21 集 × 2 源时"计划 2 集（12,12）"）。
+    /// </summary>
+    public static SiteSeries? SelectOnly(SiteSeries source, IReadOnlySet<int> episodeNumbers,
+        IReadOnlySet<int>? onlySourceIds = null)
     {
         var clone = new SiteSeries
         {
@@ -730,9 +955,11 @@ public sealed class SeriesDownloader : IDisposable
         foreach (var s in source.Sources)
         {
             var copy = new SitePlaySource { Id = s.Id, Name = s.Name };
+            var sourceMatched = onlySourceIds is null || onlySourceIds.Contains(s.Id);
+
             foreach (var e in s.Episodes)
             {
-                var selected = episodeNumbers.Contains(e.Number);
+                var selected = sourceMatched && episodeNumbers.Contains(e.Number);
                 if (selected) anySelected = true;
 
                 copy.Episodes.Add(new SiteEpisode
@@ -750,6 +977,8 @@ public sealed class SeriesDownloader : IDisposable
 
         if (!anySelected) return null;
         clone.PreferredSourceId = source.PreferredSourceId;
+
+
         return clone;
     }
 
@@ -861,6 +1090,37 @@ public sealed class SeriesDownloader : IDisposable
         }
     }
 
+    /// <summary>
+    /// 分集明细里"时长"列的显示值。
+    /// 优先用**产物实际时长**（ffprobe 探到的，最可信），其次清单声明，
+    /// 最后才回落到下载报告里的值。**绝不能拿 report.Elapsed（整批总耗时）冒充单集时长** ——
+    /// 之前那版报告就把续传时的总耗时 00:47:09 写成了第 11 集的时长。
+    /// </summary>
+    private static string FormatDurationText(EpisodeDownloadReport episode, TimeSpan fallback)
+    {
+        var seconds = episode.Container?.DurationSeconds ?? 0;
+        if (seconds <= 0) seconds = episode.DurationSeconds;
+        if (seconds <= 0) seconds = fallback.TotalSeconds;
+
+        return seconds > 0 ? TimeSpan.FromSeconds(seconds).ToString(@"hh\:mm\:ss") : "-";
+    }
+
+    /// <summary>把 ffprobe 的 "25/1" 这类分数帧率变成 "25fps"</summary>
+    private static string FormatFrameRate(string rFrameRate)
+    {
+        var parts = rFrameRate.Split('/');
+        if (parts.Length == 2
+            && double.TryParse(parts[0], out var num)
+            && double.TryParse(parts[1], out var den)
+            && den > 0)
+        {
+            var fps = num / den;
+            return fps == Math.Floor(fps) ? $"{fps:0}fps" : $"{fps:0.###}fps";
+        }
+
+        return rFrameRate;
+    }
+
     /// <summary>生成报告正文</summary>
     public static string BuildReportMarkdown(SeriesDownloadReport report)
     {
@@ -892,10 +1152,54 @@ public sealed class SeriesDownloader : IDisposable
         sb.AppendLine($"| 自动跳过的广告分片 | {report.TotalSkippedAds} 片 |");
         sb.AppendLine();
 
+        // ---------------- 产物校验 ----------------
+        var completed = report.Episodes
+            .Where(e => e.Status == EpisodeDownloadStatus.Completed)
+            .ToList();
+
+        if (completed.Count > 0)
+        {
+            var probed = completed.Where(e => e.Container is not null).ToList();
+            var decoded = completed.Where(e => e.DecodeCheck is not null).ToList();
+            var durationChecked = completed.Where(e => e.DurationVerdict is not null).ToList();
+            var durationFailed = durationChecked
+                .Where(e => e.DurationVerdict!.StartsWith("不通过", StringComparison.Ordinal)).ToList();
+            var decodeFailed = decoded.Where(e => e.DecodeCheck!.Passed == false).ToList();
+
+            sb.AppendLine("## 产物校验");
+            sb.AppendLine();
+            sb.AppendLine("| 校验项 | 覆盖 | 结果 |");
+            sb.AppendLine("|---|---|---|");
+            sb.AppendLine($"| 分片落盘与合并字节核对 | {completed.Count} 集 | " +
+                          $"{(completed.All(e => e.MergeVerdict?.StartsWith("合并核对通过") == true) ? "✔ 全部通过（不多不少）" : "见运行日志")} |");
+            sb.AppendLine($"| 时长核对（清单声明 vs 产物实际） | {durationChecked.Count}/{completed.Count} 集 | " +
+                          $"{(durationChecked.Count == 0 ? "未执行" : durationFailed.Count == 0 ? "✔ 全部通过" : $"✘ {durationFailed.Count} 集不通过")} |");
+            sb.AppendLine($"| 容器探测（格式/编码/分辨率/帧率） | {probed.Count}/{completed.Count} 集 | " +
+                          $"{(probed.Count == 0 ? "未执行（未配置 ffprobe）" : "✔ 已记录，见明细")} |");
+            sb.AppendLine($"| 全量解码检查（ffmpeg -f null -） | {decoded.Count}/{completed.Count} 集 | " +
+                          $"{(decoded.Count == 0 ? "未执行（未配置 ffmpeg）" :
+                              decodeFailed.Count == 0 ? "✔ 全部通过" : $"⚠ {decodeFailed.Count} 集有解码告警")} |");
+            sb.AppendLine();
+
+            if (decodeFailed.Count > 0)
+            {
+                sb.AppendLine("> ⚠ **解码告警**：下面这些集的容器与时长都正常，但整条流解码时 ffmpeg 报了错。");
+                sb.AppendLine("> 通常是**源站返回的数据有问题**（坏包被原样拼进了产物），不是拼接错位；");
+                sb.AppendLine("> 播放时可能表现为花屏、卡顿或音画不同步。");
+                sb.AppendLine();
+                foreach (var e in decodeFailed)
+                {
+                    sb.AppendLine($"- **第 {e.Episode.Number:00} 集**（`{Path.GetFileName(e.OutputPath)}`）：" +
+                                  $"{string.Join("；", e.DecodeCheck!.Issues)}");
+                }
+                sb.AppendLine();
+            }
+        }
+
         sb.AppendLine("## 分集明细");
         sb.AppendLine();
-        sb.AppendLine("| 集 | 状态 | 时长 | 大小 | 分片(成功/跳过/失败) | 产物 |");
-        sb.AppendLine("|---|---|---|---|---|---|");
+        sb.AppendLine("| 集 | 状态 | 时长 | 大小 | 分片(成功/跳过/失败) | 编码 | 分辨率 / 帧率 | 音频 | 时长核对 | 解码检查 | 产物 |");
+        sb.AppendLine("|---|---|---|---|---|---|---|---|---|---|---|");
         foreach (var e in report.Episodes.OrderBy(x => x.Episode.Number))
         {
             var status = e.Status switch
@@ -908,8 +1212,34 @@ public sealed class SeriesDownloader : IDisposable
             var file = string.IsNullOrWhiteSpace(e.OutputPath)
                 ? "-"
                 : $"`{Path.GetFileName(e.OutputPath)}`";
-            sb.AppendLine($"| {e.Episode.Number} | {status} | {e.DurationText} | {e.SizeText} | " +
-                          $"{e.CompletedSegments}/{e.SkippedSegments}/{e.FailedSegments} | {file} |");
+
+            var video = e.Container?.Streams.FirstOrDefault(s => s.CodecType == "video");
+            var audio = e.Container?.Streams.FirstOrDefault(s => s.CodecType == "audio");
+
+            var codec = video is null ? "-" : video.CodecName.ToUpperInvariant();
+            var geometry = video is null
+                ? "-"
+                : $"{video.Width}x{video.Height}" +
+                  (video.FrameRate.Length > 2 && video.FrameRate != "0/0"
+                      ? $" / {FormatFrameRate(video.FrameRate)}"
+                      : "");
+            var audioText = audio is null
+                ? "-"
+                : $"{audio.CodecName.ToUpperInvariant()} {audio.Channels}ch";
+
+            var durationCell = e.DurationVerdict is null
+                ? "-"
+                : e.DurationVerdict.StartsWith("通过", StringComparison.Ordinal) ? "✔ 通过"
+                : e.DurationVerdict.StartsWith("不通过", StringComparison.Ordinal) ? "✘ 不通过"
+                : "? 未完成";
+
+            var decodeCell = e.DecodeCheck is null
+                ? "-"
+                : e.DecodeCheck.Passed ? "✔ 通过" : "⚠ 有告警";
+
+            sb.AppendLine($"| {e.Episode.Number} | {status} | {FormatDurationText(e, e.Elapsed)} | {e.SizeText} | " +
+                          $"{e.CompletedSegments}/{e.SkippedSegments}/{e.FailedSegments} | {codec} | {geometry} | " +
+                          $"{audioText} | {durationCell} | {decodeCell} | {file} |");
         }
         sb.AppendLine();
 

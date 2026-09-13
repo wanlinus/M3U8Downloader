@@ -54,6 +54,7 @@ public sealed partial class SettingsDialog : ContentDialog
         SegmentConcurrencyBox.Value = _working.SegmentConcurrency;
         SkipAdsCheck.IsChecked = _working.AutoSkipInvalidSegments;
         SeriesSubdirCheck.IsChecked = _working.SeriesSubdirectory;
+        FullDecodeCheckBox.IsChecked = _working.FullDecodeCheck;
     }
 
     private void CollectBack()
@@ -67,6 +68,7 @@ public sealed partial class SettingsDialog : ContentDialog
         _working.SegmentConcurrency = (int)Math.Round(double.IsNaN(SegmentConcurrencyBox.Value) ? 16 : SegmentConcurrencyBox.Value);
         _working.AutoSkipInvalidSegments = SkipAdsCheck.IsChecked == true;
         _working.SeriesSubdirectory = SeriesSubdirCheck.IsChecked == true;
+        _working.FullDecodeCheck = FullDecodeCheckBox.IsChecked == true;
         _working.Normalize();
     }
 

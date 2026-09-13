@@ -110,6 +110,8 @@
 
             <CheckBox x:Name="SkipAdsCheck" Content="自动跳过疑似插播广告分片" FontSize="12" />
             <CheckBox x:Name="SeriesSubdirCheck" Content="按网站下载时自动建「剧名」子目录" FontSize="12" />
+            <CheckBox x:Name="FullDecodeCheckBox" FontSize="12"
+                      Content="下载完成后对每集做全量解码检查（能发现源站坏包，但每集要多花几十秒）" />
         </StackPanel>
     </ScrollViewer>
 </ContentDialog>

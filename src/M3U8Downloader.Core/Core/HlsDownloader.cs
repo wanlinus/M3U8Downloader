@@ -80,7 +80,15 @@ public sealed class HlsDownloader : IDisposable
     public async Task<string> FetchPlaylistTextAsync(string url, CancellationToken ct = default)
         => (await FetchPlaylistAsync(url, ct).ConfigureAwait(false)).Text;
 
-    /// <summary>判断响应体是否为 HTML 页面（而非预期的清单/分片）</summary>
+    /// <summary>
+    /// 判断响应体是否为 HTML 页面（而非预期的清单/分片）。
+    ///
+    /// ⚠ 只在**该是明文**的场合用它。加密分片的响应是**密文**，
+    /// 而密文是均匀随机的 —— 首字节约有 1/16 的概率正好是 <c>0x3C</c>（'&lt;'），
+    /// 用"首字节是 &lt; 就算 HTML"去判，会稳定地把这批正常分片判成错误页。
+    /// 实测某源站第 11 集 1400 片里恰好有 87 片（≈1/16）栽在这里，
+    /// 表现为"每 16 片失败 1 片"的诡异规律。
+    /// </summary>
     internal static bool LooksLikeHtml(ReadOnlySpan<byte> data)
     {
         var head = data.Length > 512 ? data[..512] : data;
@@ -92,9 +100,16 @@ public sealed class HlsDownloader : IDisposable
 
         var text = System.Text.Encoding.ASCII.GetString(head[i..]).TrimStart();
         if (text.Length == 0) return false;
-        if (text[0] == '<') return true;                       // <!DOCTYPE html / <html
-        if (text.StartsWith("{\"", StringComparison.Ordinal)) return true;  // JSON 错误对象
+
+        // 只认真正像文档开头的形式；单个 '<' 不作数（密文里太常见）
+        if (text.StartsWith("<!doctype", StringComparison.OrdinalIgnoreCase)) return true;
+        if (text.StartsWith("<!DOCTYPE", StringComparison.Ordinal)) return true;
+        if (text.StartsWith("<html", StringComparison.OrdinalIgnoreCase)) return true;
+        if (text.StartsWith("<?xml", StringComparison.OrdinalIgnoreCase)) return true;
+        if (text.StartsWith("<head", StringComparison.OrdinalIgnoreCase)) return true;
+        if (text.StartsWith("<body", StringComparison.OrdinalIgnoreCase)) return true;
         if (text.Contains("<html", StringComparison.OrdinalIgnoreCase)) return true;
+
         return false;
     }
 
@@ -293,6 +308,21 @@ public sealed class HlsDownloader : IDisposable
             .Where(i => !states[i].Completed && !skipSet.Contains(i))
             .ToList();
 
+        // 失败原因统计：分片失败时把"到底为什么"记下来（只记原因与条数，不记内容）
+        var failureReasons = new Dictionary<string, int>(StringComparer.Ordinal);
+        var failureSamples = new List<string>();
+        var failureLock = new object();
+
+        void NoteFailure(int index, string reason, string uri)
+        {
+            lock (failureLock)
+            {
+                failureReasons[reason] = failureReasons.TryGetValue(reason, out var n) ? n + 1 : 1;
+                if (failureSamples.Count < 5)
+                    failureSamples.Add($"#{index} {Path.GetFileName(new Uri(uri).AbsolutePath)} → {reason}");
+            }
+        }
+
         try
         {
             await Parallel.ForEachAsync(
@@ -307,7 +337,8 @@ public sealed class HlsDownloader : IDisposable
                     try
                     {
                         var seg = segments[index];
-                        var data = await DownloadSegmentWithRetryAsync(seg, options, fallbackKey, keyCache, token)
+                        var data = await DownloadSegmentWithRetryAsync(seg, options, fallbackKey, keyCache, token,
+                                reason => NoteFailure(index, reason, seg.Uri))
                             .ConfigureAwait(false);
 
                         if (data is { Length: > 0 })
@@ -361,6 +392,15 @@ public sealed class HlsDownloader : IDisposable
         result.CompletedSegments = finalCompleted;
         result.SkippedSegments = finalSkipped;
         result.FailedSegments = finalFailed;
+        result.SkippedSegmentIndices.AddRange(skipSet.OrderBy(i => i));
+
+        // 把失败原因写进结果：只报"有 N 个分片失败"是没法排查的
+        lock (failureLock)
+        {
+            result.FailureReasons.AddRange(
+                failureReasons.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key}（{kv.Value} 片）"));
+            result.FailureSamples.AddRange(failureSamples);
+        }
 
         if (ct.IsCancellationRequested)
         {
@@ -371,6 +411,32 @@ public sealed class HlsDownloader : IDisposable
             return result;
         }
 
+        // ---------- 4c. 落盘核对：应该存在的分片是否真在磁盘上、大小是否对得上 ----------
+        // 合并这一步是"有什么就拼什么"，所以一旦某个分片文件缺失，产物会**静默缺一段**
+        // 而 FailedSegments 仍然是 0 —— 这种"看起来成功、其实少内容"最危险。
+        var missingOnDisk = new List<int>();
+        var sizeMismatch = new List<int>();
+
+        for (var i = 0; i < segments.Count; i++)
+        {
+            if (skipSet.Contains(i) || !states[i].Completed) continue;
+
+            var path = SegmentPath(options.TempDirectory, i);
+            if (!File.Exists(path)) { missingOnDisk.Add(i); continue; }
+
+            var onDisk = new FileInfo(path).Length;
+            if (states[i].Bytes > 0 && onDisk != states[i].Bytes) sizeMismatch.Add(i);
+        }
+
+        if (missingOnDisk.Count > 0 || sizeMismatch.Count > 0)
+        {
+            var detail = sizeMismatch.Count > 0
+                ? $"，另有 {sizeMismatch.Count} 个分片大小与记录不符"
+                : "";
+            result.Messages.Add(
+                $"⚠ 落盘核对异常：{missingOnDisk.Count} 个已下载分片在合并前不见了{detail}；这些分片不会被拼进产物。");
+        }
+
         Report("正在合并分片…");
         await MergeAsync(options, segments, skipSet, ct).ConfigureAwait(false);
 
@@ -379,13 +445,28 @@ public sealed class HlsDownloader : IDisposable
         result.OutputBytes = outInfo.Exists ? outInfo.Length : 0;
         result.Elapsed = sw.Elapsed;
 
+        // 合并必须"一个分片都不少"：把要拼进去的分片字节数加起来与实际产物比对。
+        // 合并用的是纯字节拼接（不重封装），所以字节数不等就说明确实漏了或多了。
+        var expectBytes = 0L;
+        for (var i = 0; i < segments.Count; i++)
+        {
+            if (skipSet.Contains(i) || !states[i].Completed) continue;
+            expectBytes += new FileInfo(SegmentPath(options.TempDirectory, i)).Length;
+        }
+
+        var bytesMatch = outInfo.Exists && outInfo.Length == expectBytes;
+        result.Messages.Add(bytesMatch
+            ? $"合并核对通过：{expectBytes / 1024.0 / 1024.0:0.0} MB 与预期一致（分片不多不少）。"
+            : $"⚠ 合并结果与预期不符：产物 {outInfo.Length / 1024.0 / 1024.0:0.0} MB，" +
+              $"按分片计算应为 {expectBytes / 1024.0 / 1024.0:0.0} MB。");
+
         // 合并结果校验：TS 产物做**全量**逐包对齐检查
         var alignmentOk = true;
         if (outInfo.Exists && outInfo.Length > 0)
         {
             if (playlist.IsFmp4)
             {
-                result.Messages.Add("fMP4 产物，跳过 MPEG-TS 包对齐校验。");
+                result.Messages.Add("fMP4 产物：跳过 MPEG-TS 包对齐校验（由「合并字节数核对」覆盖）。");
             }
             else
             {
@@ -396,9 +477,14 @@ public sealed class HlsDownloader : IDisposable
             }
         }
 
-        result.Success = result.FailedSegments == 0 && result.OutputBytes > 0 && alignmentOk;
+        result.Success = result.FailedSegments == 0 && result.OutputBytes > 0 && alignmentOk && bytesMatch;
         if (!result.Success && result.FailedSegments > 0)
-            result.Error = $"有 {result.FailedSegments} 个分片下载失败。";
+        {
+            var detail = result.FailureReasons.Count > 0
+                ? "：" + string.Join("；", result.FailureReasons)
+                : "";
+            result.Error = $"有 {result.FailedSegments} 个分片下载失败{detail}";
+        }
         else if (result.OutputBytes == 0)
             result.Error = "输出文件为空。";
         else if (!alignmentOk)
@@ -417,8 +503,12 @@ public sealed class HlsDownloader : IDisposable
 
     private async Task<byte[]?> DownloadSegmentWithRetryAsync(
         HlsSegment segment, DownloadOptions options, byte[]? fallbackKey,
-        Dictionary<string, byte[]> keyCache, CancellationToken ct)
+        Dictionary<string, byte[]> keyCache, CancellationToken ct,
+        Action<string>? onFailure = null)
     {
+        // 末尾一次失败的原因要留给调用方统计：分片失败最怕"只知道失败、不知道为什么"
+        var lastReason = "(未尝试)";
+
         for (int attempt = 0; attempt <= options.MaxRetries; attempt++)
         {
             if (ct.IsCancellationRequested) return null;
@@ -431,16 +521,25 @@ public sealed class HlsDownloader : IDisposable
 
             try
             {
-                var raw = await FetchBytesAsync(segment, ct).ConfigureAwait(false);
-                if (raw == null || raw.Length == 0) continue;
+                var (raw, failReason) = await FetchBytesAsync(segment, ct).ConfigureAwait(false);
+                if (raw == null || raw.Length == 0)
+                {
+                    lastReason = failReason ?? "返回空内容";
+                    continue;
+                }
 
                 var decoded = TryDecrypt(segment, raw, fallbackKey, keyCache);
+                if (decoded == null) lastReason = "解密后不是合法的 TS（密钥/填充策略都不匹配）";
                 return decoded ?? raw;
             }
             catch (OperationCanceledException) { return null; }
-            catch { }
+            catch (Exception ex)
+            {
+                lastReason = $"异常 {ex.GetType().Name}：{ex.Message}";
+            }
         }
 
+        onFailure?.Invoke(lastReason);
         return null;
     }
 
@@ -464,7 +563,7 @@ public sealed class HlsDownloader : IDisposable
         return null;
     }
 
-    private async Task<byte[]?> FetchBytesAsync(HlsSegment segment, CancellationToken ct)
+    private async Task<(byte[]? Data, string? FailReason)> FetchBytesAsync(HlsSegment segment, CancellationToken ct)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, segment.Uri);
         if (segment.ByteRangeLength.HasValue && segment.ByteRangeOffset.HasValue)
@@ -476,24 +575,35 @@ public sealed class HlsDownloader : IDisposable
 
         using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct)
             .ConfigureAwait(false);
-        if (!resp.IsSuccessStatusCode) return null;
+        if (!resp.IsSuccessStatusCode)
+            return (null, $"HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
 
         var data = await resp.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
-        if (data.Length == 0) return null;
+        if (data.Length == 0) return (null, "HTTP 200 但响应体为空");
 
-        // 假 200 / 内容校验（原版工具缺失的一环）：
-        // 不少源站用 200 + HTML 错误页、或提前截断响应的方式来"假装成功"，
-        // 只判断状态码会把坏数据当成正常分片，最终拼出无法播放的文件。
-        if (LooksLikeHtml(data)) return null;
+        // 假 200 检查之一：Content-Type 直接声明是 HTML —— 这个最可靠，优先用
+        var mediaType = resp.Content.Headers.ContentType?.MediaType;
+        if (mediaType is not null
+            && (mediaType.Contains("html", StringComparison.OrdinalIgnoreCase)
+                || mediaType.Contains("json", StringComparison.OrdinalIgnoreCase)))
+        {
+            return (null, $"HTTP 200 但 Content-Type 是 {mediaType}，不是分片数据");
+        }
+
+        // 假 200 检查之二：内容看起来是 HTML 文档。
+        // **加密分片不做这个检查** —— 密文是均匀随机的，首字节有 1/16 概率是 '<'，
+        // 判了就会稳定误杀（实测某流 1400 片里 87 片栽在这上面）。
+        if (!segment.Key.IsEncrypted && LooksLikeHtml(data))
+            return (null, $"返回的是 HTML（{data.Length} 字节）而不是分片数据");
 
         var declared = resp.Content.Headers.ContentLength;
         if (declared.HasValue && declared.Value > 0 && data.Length != declared.Value
             && !segment.ByteRangeLength.HasValue)
         {
-            return null; // 响应被截断
+            return (null, $"响应被截断：声明 {declared.Value} 字节，实际收到 {data.Length} 字节");
         }
 
-        return data;
+        return (data, null);
     }
 
     // ==================== 解密 ====================

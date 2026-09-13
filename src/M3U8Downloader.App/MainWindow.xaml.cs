@@ -31,7 +31,12 @@ public sealed partial class MainWindow : Window
 
         // 任务状态是从后台线程改的，必须封送回 UI 线程，否则界面不会刷新（表现为「卡在下载中」）
         // store：任务列表落盘到 %APPDATA%\M3U8Downloader\tasks.json，重开程序能接着下
-        _taskManager = new DownloadTaskManager(null, a => DispatcherQueue.TryEnqueue(() => a()), new TaskStore());
+        // 诊断日志：把「哪一轮领到了哪几集、何时结束」写进 %APPDATA%\M3U8Downloader\logs\，
+        //           排查「暂停了还在下」「继续下载停不下来」这类问题时就靠它
+        _taskManager = new DownloadTaskManager(null, a => DispatcherQueue.TryEnqueue(() => a()), new TaskStore())
+        {
+            Diagnostics = TaskDiagnostics.Create("tasks"),
+        };
 
         _single = new MainViewModel(DispatcherQueue);
         _batch = new SeriesBatchViewModel(DispatcherQueue);
@@ -103,6 +108,7 @@ public sealed partial class MainWindow : Window
         _batch.SegmentConcurrency = settings.SegmentConcurrency;
         _batch.AutoSkipAds = settings.AutoSkipInvalidSegments;
         _batch.SeriesSubdirectory = settings.SeriesSubdirectory;
+        _batch.FullDecodeCheck = settings.FullDecodeCheck;
 
         // 有 ffmpeg 才能把产物转成 MP4；没有就保留 TS（报告里会说明）
         try
@@ -204,12 +210,41 @@ public sealed partial class MainWindow : Window
 
     private void OnClearFinishedTasks(object sender, RoutedEventArgs e) => _taskManager.ClearFinished();
 
+    /// <summary>打开诊断日志目录（排查"暂停了还在下""继续下载停不下来"这类问题时用）</summary>
+    private async void OnOpenTaskLogs(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var path = _taskManager.Diagnostics.FilePath;
+            var dir = path is { Length: > 0 }
+                ? Path.GetDirectoryName(path)!
+                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "M3U8Downloader", "logs");
+
+            Directory.CreateDirectory(dir);
+            await Windows.System.Launcher.LaunchFolderPathAsync(dir);
+        }
+        catch (Exception ex)
+        {
+            _tasks.SetNotice("打开日志目录失败：" + ex.Message);
+        }
+    }
+
     private static SeriesTask? TaskOf(object sender) =>
         (sender as FrameworkElement)?.DataContext as SeriesTask;
 
     private void OnTaskCancel(object sender, RoutedEventArgs e)
     {
         if (TaskOf(sender) is { } task) _taskManager.Cancel(task);
+    }
+
+    /// <summary>
+    /// 暂停：停下这一轮下载，已下载的分片留在暂存目录里。
+    /// 之后点「继续下载」会重新解析站点、只补没下完的集。
+    /// </summary>
+    private void OnTaskPause(object sender, RoutedEventArgs e)
+    {
+        if (TaskOf(sender) is { } task) _taskManager.Pause(task);
     }
 
     /// <summary>继续下载：重新解析站点，只补下没完成的集</summary>
@@ -233,19 +268,29 @@ public sealed partial class MainWindow : Window
         if (TaskOf(sender) is { } task) _taskManager.Remove(task);
     }
 
-    private void OnTaskRetryFailed(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// 重试失败的分集：**在原任务上重试**，不再新建一个任务
+    /// （早先的做法会往列表里插入一条重复的任务，同一个任务看起来出现两份）。
+    /// </summary>
+    private async void OnTaskRetryFailed(object sender, RoutedEventArgs e)
     {
         if (TaskOf(sender) is not { } task) return;
 
-        var retry = _taskManager.RetryFailed(task);
-        if (retry is null)
+        try
         {
-            task.Message = "没有需要重试的分集。";
-            return;
-        }
+            var retried = await _taskManager.RetryFailedAsync(task);
+            if (retried is null)
+            {
+                task.Message = "没有需要重试的分集。";
+                return;
+            }
 
-        task.Message = $"已把失败的 {retry.TotalEpisodes} 集重新加入队列。";
-        OnModeTasks(sender, e);
+            OnModeTasks(sender, e);
+        }
+        catch (Exception ex)
+        {
+            task.Message = "重试失败：" + ex.Message;
+        }
     }
 
     private async void OnTaskOpenReport(object sender, RoutedEventArgs e)

@@ -31,6 +31,15 @@ public sealed class AppSettings
     /// <summary>按网站下载时是否自动建「剧名」子目录</summary>
     public bool SeriesSubdirectory { get; set; } = true;
 
+    /// <summary>
+    /// 每集下完后是否做**全量解码检查**（<c>ffmpeg -f null -</c>，默认开）。
+    ///
+    /// 它是唯一能发现"容器/时长都对、但内容里混了源站坏包"的检查；
+    /// 代价是要把产物整条解一遍（实测 400 MB 约 35 秒）。
+    /// 关掉之后报告里的"解码检查"列会显示为未执行，其余校验不受影响。
+    /// </summary>
+    public bool FullDecodeCheck { get; set; } = true;
+
     /// <summary>自定义 User-Agent（留空用内置的浏览器 UA）</summary>
     public string? UserAgent { get; set; }
 

@@ -74,6 +74,21 @@ public sealed class DownloadResult
     public TimeSpan Elapsed { get; set; }
     public string? Error { get; set; }
     public List<string> Messages { get; } = new();
+
+    /// <summary>
+    /// 被跳过的分片序号（广告/无效片）。产物里没有它们，所以
+    /// "清单时长 vs 产物时长"的核对必须把它们排除，否则会误判成缺片。
+    /// </summary>
+    public List<int> SkippedSegmentIndices { get; } = new();
+
+    /// <summary>
+    /// 分片失败原因汇总，形如 <c>响应被截断：声明 233136 字节，实际收到 100000 字节（87 片）</c>。
+    /// 以前这些原因被 catch 吞掉，只留下"有 N 个分片失败"，无法排查。
+    /// </summary>
+    public List<string> FailureReasons { get; } = new();
+
+    /// <summary>失败样本（最多 5 条，形如 <c>#10 A8LUxiVu.ts → HTTP 503</c>）</summary>
+    public List<string> FailureSamples { get; } = new();
 }
 
 /// <summary>单个分片的下载状态（用于断点续传）</summary>
@@ -82,4 +97,97 @@ public sealed class SegmentState
     public int Index { get; set; }
     public bool Completed { get; set; }
     public long Bytes { get; set; }
+}
+
+/// <summary>一条流（视频/音频/字幕）的容器信息，来自 ffprobe</summary>
+public sealed class MediaStreamInfo
+{
+    public int Index { get; set; }
+    public string CodecType { get; set; } = "";
+    public string CodecName { get; set; } = "";
+    public int Width { get; set; }
+    public int Height { get; set; }
+    public string FrameRate { get; set; } = "";
+    public int SampleRate { get; set; }
+    public int Channels { get; set; }
+    public long FrameCount { get; set; }
+
+    /// <summary>给人看的一行描述，如 <c>h264 1920x818 25fps</c> / <c>aac 44100Hz 2ch</c></summary>
+    public string Describe()
+    {
+        if (CodecType == "video")
+        {
+            var fps = FormatFps(FrameRate);
+            var size = Width > 0 && Height > 0 ? $" {Width}x{Height}" : "";
+            return $"{CodecName}{size}{fps}".Trim();
+        }
+
+        if (CodecType == "audio")
+        {
+            var rate = SampleRate > 0 ? $" {SampleRate}Hz" : "";
+            var ch = Channels > 0 ? $" {Channels}ch" : "";
+            return $"{CodecName}{rate}{ch}".Trim();
+        }
+
+        return $"{CodecType}/{CodecName}";
+    }
+
+    /// <summary>把 ffprobe 的 "25/1" 变成 " 25fps"；拿不到就返回空串</summary>
+    public static string FormatFps(string rFrameRate)
+    {
+        var parts = rFrameRate.Split('/');
+        if (parts.Length == 2
+            && double.TryParse(parts[0], out var num)
+            && double.TryParse(parts[1], out var den)
+            && den > 0)
+        {
+            var fps = num / den;
+            return fps == Math.Floor(fps) ? $" {fps:0}fps" : $" {fps:0.###}fps";
+        }
+
+        return "";
+    }
+}
+
+/// <summary>产物容器探测结果（时长/流结构），由 ffprobe 得到</summary>
+public sealed class ContainerProbe
+{
+    /// <summary>容器格式，如 <c>mov,mp4,m4a</c></summary>
+    public string FormatName { get; set; } = "";
+
+    /// <summary>产物真实时长（秒）</summary>
+    public double DurationSeconds { get; set; }
+
+    /// <summary>容器声明的总码率（bps）</summary>
+    public long BitRate { get; set; }
+
+    public List<MediaStreamInfo> Streams { get; } = new();
+
+    public bool HasVideo => Streams.Any(s => s.CodecType == "video");
+    public bool HasAudio => Streams.Any(s => s.CodecType == "audio");
+}
+
+/// <summary>
+/// 全量解码检查结果（<c>ffmpeg -f null -</c>）。
+///
+/// 为什么必须做这一步：容器、时长、包对齐**全对**也不代表内容没坏 ——
+/// 源站返回的坏包会原样拼进产物，只有把它整条解一遍才看得出来。
+/// </summary>
+public sealed class DecodeCheckResult
+{
+    /// <summary>ffmpeg 退出码（0 = 整条流解码器都吃下去了）</summary>
+    public int ExitCode { get; set; }
+
+    /// <summary>是否完整解码通过</summary>
+    public bool Passed { get; set; }
+
+    /// <summary>告警/错误计数（按类型归类）</summary>
+    public List<string> Issues { get; } = new();
+
+    /// <summary>检查耗时</summary>
+    public TimeSpan Elapsed { get; set; }
+
+    public string Describe() => Passed
+        ? "解码通过"
+        : $"解码异常（{string.Join("；", Issues)}）";
 }
