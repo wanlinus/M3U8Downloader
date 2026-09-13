@@ -1,12 +1,18 @@
 namespace M3U8Downloader.Core.Sites;
 
-/// <summary>站点类型（对应一套 CMS 模板）</summary>
+/// <summary>站点类型（对应一套 CMS 模板 / 一类页面结构）</summary>
 public enum SiteKind
 {
     Unknown = 0,
 
     /// <summary>苹果 CMS（MacCMS v10）及其衍生模板。国内影视站占比最高。</summary>
     MacCms,
+
+    /// <summary>努努影院（nnyy.in）自研站点：集号在 ep_slug，直链走 /_gp/{剧ID}/{ep_slug} 接口</summary>
+    Nnyy,
+
+    /// <summary>通用解析（未适配站点的兜底）：直接从页面里找 m3u8 与分集链接</summary>
+    Generic,
 }
 
 /// <summary>页面上的一个播放源（MacCMS 里对应 URL 中的 sid）。同一部剧常有多个源。</summary>
@@ -40,6 +46,13 @@ public sealed class SiteEpisode
 
     /// <summary>m3u8 直链。列表页往往已含当前集，其余在下载前逐集解析。</summary>
     public string? PlaylistUrl { get; set; }
+
+    /// <summary>
+    /// 站点自定义的集标识（可选）。
+    /// 有些站点的集**没有独立页面地址**，而是靠一个 slug 调接口取流
+    /// （努努影院的 <c>ep_slug="ep12"</c>），这时把它存这里，解析直链时要用。
+    /// </summary>
+    public string? Key { get; init; }
 
     /// <summary>是否勾选下载（供 UI 确认列表使用）</summary>
     public bool IsSelected { get; set; } = true;

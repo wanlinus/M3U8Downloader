@@ -1,12 +1,20 @@
 using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
+using M3U8Downloader.Core.Net;
+using M3U8Downloader.Core.Settings;
 
 namespace M3U8Downloader.Core.Sites;
 
 /// <summary>
 /// 抓取站点页面所需的上下文（HttpClient + 默认请求头 + 解码工具）。
-/// 与下载引擎一致：**不使用代理**，站点页面直连（源站基本都在国内）。
+///
+/// 有两套客户端：
+/// - <see cref="Direct"/>：直连，默认都用它。站点大多在国内，绕代理更慢，
+///   视频分片与站点解析**默认都不走代理**；
+/// - <see cref="Proxied"/>：配了代理地址才有。只给「声明自己需要代理」的适配器用
+///   （典型情况：站点挂在 Cloudflare 后面，国内直连被 RST —— 实测努努影院就是这样，
+///   但它的分片 CDN 直连正常，所以代理只用在页面解析这一步）。
 /// </summary>
 public sealed class SiteContext : IDisposable
 {
@@ -14,10 +22,21 @@ public sealed class SiteContext : IDisposable
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
         "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
-    private readonly bool _ownsHttp;
+    private readonly bool _ownsDirect;
+    private readonly bool _ownsProxy;
 
-    public HttpClient Http { get; }
+    /// <summary>直连客户端</summary>
+    public HttpClient Direct { get; }
+
+    /// <summary>代理客户端；没配代理时为 null</summary>
+    public HttpClient? Proxied { get; }
+
     public string UserAgent { get; }
+
+    /// <summary>生效的代理地址（规范化后）；没配或格式不对为 null</summary>
+    public string? ProxyUrl { get; }
+
+    public bool HasProxy => Proxied is not null;
 
     static SiteContext()
     {
@@ -25,40 +44,132 @@ public sealed class SiteContext : IDisposable
         try { Encoding.RegisterProvider(CodePagesEncodingProvider.Instance); } catch { /* 已注册或不可用 */ }
     }
 
-    public SiteContext(HttpClient? http = null, string? userAgent = null)
+    public SiteContext(HttpClient? http = null, string? userAgent = null, string? proxyUrl = null)
     {
-        _ownsHttp = http is null;
         UserAgent = string.IsNullOrWhiteSpace(userAgent) ? DefaultUserAgent : userAgent!;
 
-        if (http is null)
+        if (http is not null)
         {
-            var handler = new HttpClientHandler
-            {
-                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
-                AllowAutoRedirect = true,
-                MaxAutomaticRedirections = 10,
-            };
-
-            Http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
+            // 外部传入的客户端由调用方负责释放（自检里就是这么用的）
+            Direct = http;
         }
         else
         {
-            Http = http;
+            Direct = CreateClient(null, UserAgent);
+            _ownsDirect = true;
         }
 
-        Http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", UserAgent);
-        Http.DefaultRequestHeaders.TryAddWithoutValidation("Accept",
-            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
-        Http.DefaultRequestHeaders.TryAddWithoutValidation("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
+        // 代理地址来源：显式传入 → 设置里填的地址。
+        // 刻意**不看 ProxyEnabled**：那个开关管的是「下载 FFmpeg 时走代理」，
+        // 而这里要解决的是「被墙站点的页面根本打不开」——
+        // 用户既然填了代理地址，就说明这台机器上有代理可用，不必再开一个开关。
+        var normalized = ProxyHelper.Normalize(proxyUrl ?? TryReadProxyFromSettings());
+        if (normalized is not null)
+        {
+            try
+            {
+                Proxied = CreateClient(normalized, UserAgent);
+                ProxyUrl = normalized;
+                _ownsProxy = true;
+            }
+            catch
+            {
+                // 代理客户端建不起来就只直连，不影响其它站点
+                Proxied = null;
+                ProxyUrl = null;
+            }
+        }
     }
 
-    /// <summary>GET 一个 HTML 页面并按正确编码解码</summary>
-    public async Task<string> GetHtmlAsync(string url, CancellationToken ct = default)
+    private static string? TryReadProxyFromSettings()
     {
-        using var resp = await Http.GetAsync(url, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
+        try { return AppSettingsStore.Load().ProxyUrl; }
+        catch { return null; }
+    }
+
+    private static HttpClient CreateClient(string? proxyUrl, string userAgent)
+    {
+        var handler = new HttpClientHandler
+        {
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
+            AllowAutoRedirect = true,
+            MaxAutomaticRedirections = 10,
+        };
+
+        if (proxyUrl is not null)
+        {
+            handler.Proxy = new WebProxy(new Uri(proxyUrl)) { BypassProxyOnLocal = true };
+            handler.UseProxy = true;
+        }
+
+        var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
+        client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", userAgent);
+        client.DefaultRequestHeaders.TryAddWithoutValidation("Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+        client.DefaultRequestHeaders.TryAddWithoutValidation("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
+        return client;
+    }
+
+    /// <summary>该适配器应该用哪个客户端（声明 NeedsProxy 且配了代理才走代理）</summary>
+    public HttpClient For(ISiteAdapter adapter) =>
+        adapter.NeedsProxy && Proxied is not null ? Proxied : Direct;
+
+    /// <summary>GET 一个 HTML 页面并按正确编码解码（直连）</summary>
+    public Task<string> GetHtmlAsync(string url, CancellationToken ct = default) =>
+        GetHtmlAsync(url, Direct, ct);
+
+    /// <summary>GET 一个 HTML 页面，是否走代理由适配器自己声明</summary>
+    public Task<string> GetHtmlAsync(string url, ISiteAdapter adapter, CancellationToken ct = default) =>
+        GetHtmlAsync(url, For(adapter), ct);
+
+    /// <summary>用指定客户端 GET 一个页面</summary>
+    public async Task<string> GetHtmlAsync(string url, HttpClient client, CancellationToken ct = default)
+    {
+        using var resp = await client.GetAsync(url, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
         var bytes = await resp.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
         return DecodeHtml(bytes, resp.Content.Headers.ContentType?.CharSet);
+    }
+
+    /// <summary>
+    /// 这个地址是不是一个真的 m3u8 清单（只读开头几百字节）。
+    ///
+    /// 用途：同一个剧往往挂着好几个源，其中一部分早已失效（返回 404 或干脆是 HTML）。
+    /// 挨个探测一遍比"直接拿第一个、失败了再报错"体验好得多，代价又很小。
+    /// 先直连试，直连不通再走代理（分片 CDN 通常直连即可）。
+    /// </summary>
+    public async Task<bool> LooksLikePlaylistAsync(string url, CancellationToken ct = default)
+    {
+        foreach (var client in EnumerateClients())
+        {
+            try
+            {
+                using var resp = await client
+                    .GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct)
+                    .ConfigureAwait(false);
+
+                if (!resp.IsSuccessStatusCode) continue;
+
+                await using var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+                var buffer = new byte[512];
+                var read = await stream.ReadAsync(buffer, ct).ConfigureAwait(false);
+                if (read <= 0) continue;
+
+                return Encoding.UTF8.GetString(buffer, 0, read).Contains("#EXTM3U", StringComparison.Ordinal);
+            }
+            catch
+            {
+                // 这个客户端不行就换下一个
+            }
+        }
+
+        return false;
+    }
+
+    private IEnumerable<HttpClient> EnumerateClients()
+    {
+        yield return Direct;
+        if (Proxied is not null) yield return Proxied;
     }
 
     /// <summary>按响应头 charset → &lt;meta charset&gt; → UTF-8 的顺序解码</summary>
@@ -89,18 +200,33 @@ public sealed class SiteContext : IDisposable
 
     public void Dispose()
     {
-        if (_ownsHttp) Http.Dispose();
+        if (_ownsDirect) Direct.Dispose();
+        if (_ownsProxy) Proxied?.Dispose();
     }
 }
 
 /// <summary>
-/// 站点适配器。新增一个站点 = 新增一个实现类，不改动下载引擎。
+/// 站点适配器。**新增一个站点 = 在 Sites 目录下新增一个实现类**，
+/// 不需要改任何注册代码：<see cref="SiteResolver.CreateDefault"/> 会反射扫描本程序集。
 /// </summary>
 public interface ISiteAdapter
 {
     SiteKind Kind { get; }
 
     string Name { get; }
+
+    /// <summary>
+    /// 匹配优先级，大的先匹配（默认 0）。
+    /// 认域名的专用适配器给正值；什么都接的通用兜底适配器给负值，永远排在最后。
+    /// </summary>
+    int Priority => 0;
+
+    /// <summary>
+    /// 抓这个站点的**页面**是否需要代理。
+    /// 只影响页面解析；分片下载始终直连 —— 国内 CDN 基本都能直连，
+    /// 绕代理既慢又容易触发防盗链。
+    /// </summary>
+    bool NeedsProxy => false;
 
     /// <summary>只根据 URL 形态判断能否处理</summary>
     bool CanHandle(Uri url);
@@ -113,8 +239,11 @@ public interface ISiteAdapter
 }
 
 /// <summary>
-/// 站点识别入口。按注册顺序匹配，先命中先用。
-/// 加新站点只需在 <see cref="CreateDefault"/> 里追加。
+/// 站点识别入口。按优先级匹配，先命中先用。
+///
+/// **新增站点不用改这个文件**：在 <c>Sites/</c> 下写一个 <see cref="ISiteAdapter"/> 实现，
+/// 它会被自动登记。通用兜底适配器（<see cref="GenericHtmlAdapter"/>）优先级最低，
+/// 只在前面的专用适配器都不认的时候出手。
 /// </summary>
 public sealed class SiteResolver
 {
@@ -125,10 +254,43 @@ public sealed class SiteResolver
     public SiteResolver Register(ISiteAdapter adapter)
     {
         _adapters.Add(adapter);
+        _adapters.Sort((a, b) =>
+        {
+            var byPriority = b.Priority.CompareTo(a.Priority);
+            return byPriority != 0 ? byPriority : string.CompareOrdinal(a.Name, b.Name);
+        });
         return this;
     }
 
-    public static SiteResolver CreateDefault() => new SiteResolver().Register(new MacCmsAdapter());
+    /// <summary>扫描本程序集里所有适配器实现并登记</summary>
+    public static SiteResolver CreateDefault()
+    {
+        var resolver = new SiteResolver();
+        foreach (var adapter in Discover()) resolver.Register(adapter);
+        return resolver;
+    }
+
+    private static IEnumerable<ISiteAdapter> Discover()
+    {
+        var types = typeof(SiteResolver).Assembly.GetTypes()
+            .Where(t => t is { IsAbstract: false, IsInterface: false } && typeof(ISiteAdapter).IsAssignableFrom(t))
+            .ToList();
+
+        var built = new List<ISiteAdapter>();
+        foreach (var type in types)
+        {
+            try
+            {
+                if (Activator.CreateInstance(type) is ISiteAdapter adapter) built.Add(adapter);
+            }
+            catch
+            {
+                // 某个适配器构造失败不能拖垮整个程序：跳过它，其余站点照常可用
+            }
+        }
+
+        return built.OrderByDescending(a => a.Priority).ThenBy(a => a.Name, StringComparer.Ordinal);
+    }
 
     /// <summary>按 URL 找适配器；找不到返回 null（调用方据此提示"不支持的站点"）</summary>
     public ISiteAdapter? Resolve(Uri url) => _adapters.FirstOrDefault(a => a.CanHandle(url));
@@ -145,8 +307,24 @@ public sealed class SiteResolver
             ?? throw new NotSupportedException(
                 $"暂不支持该站点（{uri.Host}）。当前已登记：{string.Join("、", _adapters.Select(a => a.Name))}");
 
-        var html = await ctx.GetHtmlAsync(uri.ToString(), ct).ConfigureAwait(false);
+        string html;
+        try
+        {
+            html = await ctx.GetHtmlAsync(uri.ToString(), adapter, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (adapter.NeedsProxy && !ctx.HasProxy)
+        {
+            // 这类站点（Cloudflare 等）直连会被直接重置，报错必须说清"差什么"，
+            // 否则用户只会看到一句莫名其妙的连接失败。
+            throw new NotSupportedException(
+                $"{adapter.Name} 的页面需要通过代理访问（当前直连失败：{ex.Message}）。" +
+                "请到「设置 → 代理」填好代理地址后重试；视频分片本身是直连下载的，不受影响。", ex);
+        }
+
         var series = await adapter.ParseAsync(html, uri, ctx, ct).ConfigureAwait(false);
+
+        if (adapter.NeedsProxy && ctx.HasProxy)
+            series.Log.Add($"{adapter.Name}：页面经代理访问（{ctx.ProxyUrl}），分片仍直连下载。");
 
         // 列表页通常只有当前集的 m3u8，这里顺手补一集，失败不影响列表展示
         var first = series.SelectedEpisodes.FirstOrDefault();

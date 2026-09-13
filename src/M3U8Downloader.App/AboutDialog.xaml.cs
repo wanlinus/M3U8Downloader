@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml.Controls;
 using M3U8Downloader.Core;
 using M3U8Downloader.Core.Ffmpeg;
 using M3U8Downloader.Core.Settings;
+using M3U8Downloader.Core.Sites;
 using Windows.ApplicationModel.DataTransfer;
 
 namespace M3U8Downloader;
@@ -33,7 +34,8 @@ public sealed partial class AboutDialog : ContentDialog
         RuntimeText.Text = AppInfo.RuntimeDescription;
         PathsText.Text =
             $"设置文件：{AppSettingsStore.SettingsFilePath}\n" +
-            $"FFmpeg 目录：{FfmpegLocator.PreferredInstallDirectory}";
+            $"FFmpeg 目录：{FfmpegLocator.PreferredInstallDirectory}\n" +
+            $"已适配站点：{string.Join("、", SiteResolver.CreateDefault().Adapters.Select(a => a.Name))}";
         ThirdPartyText.Text = AppInfo.ThirdPartyNotices;
 
         if (!string.IsNullOrWhiteSpace(AppInfo.ProjectUrl))

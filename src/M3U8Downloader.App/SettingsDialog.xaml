@@ -60,10 +60,13 @@
             <Border Height="1" Background="{ThemeResource CardStrokeColorDefaultBrush}" />
 
             <!-- ==================== 代理 ==================== -->
-            <TextBlock Text="代理（仅用于下载 FFmpeg）" FontWeight="SemiBold" FontSize="14" />
+            <TextBlock Text="代理" FontWeight="SemiBold" FontSize="14" />
             <TextBlock FontSize="12" TextWrapping="Wrap"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       Text="视频下载与站点解析始终直连，不走代理：源站基本都在国内，绕代理反而更慢，还可能因出口 IP 变化触发防盗链。只有「自动下载 FFmpeg」要访问 GitHub，那里才需要代理。" />
+                       Text="视频分片下载始终直连：源站基本都在国内，绕代理反而更慢，还可能因出口 IP 变化触发防盗链。" />
+            <TextBlock FontSize="12" TextWrapping="Wrap"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Text="代理只用在两处：①「自动下载 FFmpeg」要访问 GitHub；② 极少数站点挂在 Cloudflare 后面、国内直连会被重置（例如努努影院）—— 下面填了地址，这类站点的页面就会自动经代理打开，分片仍然直连。" />
 
             <CheckBox x:Name="ProxyEnabledCheck" Content="下载 FFmpeg 时使用代理（默认关闭）" FontSize="12" />
             <Grid ColumnSpacing="8">

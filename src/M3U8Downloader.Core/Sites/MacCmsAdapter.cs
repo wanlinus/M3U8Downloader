@@ -213,7 +213,7 @@ public sealed class MacCmsAdapter : ISiteAdapter
     {
         if (!string.IsNullOrWhiteSpace(episode.PlaylistUrl)) return episode.PlaylistUrl!;
 
-        var html = await ctx.GetHtmlAsync(episode.PageUrl, ct).ConfigureAwait(false);
+        var html = await ctx.GetHtmlAsync(episode.PageUrl, this, ct).ConfigureAwait(false);
         var player = TryParsePlayer(html, out _)
             ?? throw new InvalidOperationException($"播放页未找到 player_aaaa：{episode.PageUrl}");
 
@@ -361,7 +361,7 @@ public sealed class MacCmsAdapter : ISiteAdapter
         return map.Count > 0;
     }
 
-    private static async Task<IReadOnlyDictionary<string, string>> GetPlayerListAsync(
+    private async Task<IReadOnlyDictionary<string, string>> GetPlayerListAsync(
         SiteContext ctx, Uri pageUrl, string html, CancellationToken ct)
     {
         var key = pageUrl.Authority;
@@ -376,7 +376,7 @@ public sealed class MacCmsAdapter : ISiteAdapter
             var candidate = FindPlayerConfigUrl(html, pageUrl)
                             ?? new Uri(pageUrl, "/static/js/playerconfig.js").ToString();
 
-            var js = await ctx.GetHtmlAsync(candidate, ct).ConfigureAwait(false);
+            var js = await ctx.GetHtmlAsync(candidate, this, ct).ConfigureAwait(false);
             if (TryParsePlayerList(js, out var map)) result = map;
         }
         catch
@@ -431,7 +431,7 @@ public sealed class MacCmsAdapter : ISiteAdapter
     /// 当前源用本页 player_aaaa.from 查 playerconfig.js；
     /// 其余源各探测一次它的第 1 集（并发上限 3，失败就退回「源N」）。
     /// </summary>
-    private static async Task ResolveSourceNamesAsync(
+    private async Task ResolveSourceNamesAsync(
         SiteSeries series, string? currentSourceFlag, string html, Uri pageUrl,
         SiteContext ctx, List<string> log, CancellationToken ct)
     {
@@ -472,7 +472,7 @@ public sealed class MacCmsAdapter : ISiteAdapter
                     var probe = source.Episodes.OrderBy(e => e.Number).FirstOrDefault();
                     if (probe is null) return;
 
-                    var pageHtml = await ctx.GetHtmlAsync(probe.PageUrl, budget.Token).ConfigureAwait(false);
+                    var pageHtml = await ctx.GetHtmlAsync(probe.PageUrl, this, budget.Token).ConfigureAwait(false);
                     var player = TryParsePlayer(pageHtml, out _);
                     if (player?.From is not { Length: > 0 } flag) return;
 

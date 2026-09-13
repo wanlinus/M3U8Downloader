@@ -105,6 +105,68 @@ var requestCounts = new ConcurrentDictionary<string, int>();
 // 打开后分片请求一律 404 —— 阶段 E 用它真实制造「失败的分集」
 var failSegments = false;
 
+// ---- 适配层用例的页面：真实结构的手工精简版，保证自检不依赖外网 ----
+
+// 努努影院详情页：集号在 ep_slug 属性里，链接是 javascript:;（真实页面的形态）
+const string NnyyDetailHtml = """
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<title>《交锋》全集在线观看 - 电视剧 - 努努影院</title>
+</head>
+<body>
+<header class="product-header">
+  <h1 class="product-title" style="display: inline-block;">
+      交锋
+      <span style="font-size:15px;">(2026)</span>
+  </h1>
+  <img src="/nnimg/20267897.jpg" class="thumb detail-img" alt="交锋">
+</header>
+<div class="playlists" id="slider">
+  <ul id="eps-ul">
+    <li class="play-btn" onclick="on_play_btn(this)" ep_slug="ep3"><a href="javascript:;" >第3集</a></li>
+    <li class="play-btn" onclick="on_play_btn(this)" ep_slug="ep2"><a href="javascript:;" >第02集</a></li>
+    <li class="play-btn" onclick="on_play_btn(this)" ep_slug="ep1"><a href="javascript:;" >第1集</a></li>
+  </ul>
+</div>
+<script>
+  function on_ep(ep_slug) {
+    var url = '/_gp/{0}/{1}'.replace('{0}', '20267897').replace('{1}', ep_slug);
+  }
+  on_ep('ep3');
+</script>
+</body></html>
+""";
+
+// /_gp/ 接口的返回：一个失效源（指向 HTML 页面）+ 一个可用源（本地真清单）
+var nnyyPlaysJson = $$"""
+{
+  "video_plays": [
+    { "play_data": "http://localhost:{{Port}}/not-a-playlist.html", "src_site": "dead" },
+    { "play_data": "http://localhost:{{Port}}/index.m3u8", "src_site": "bfzy" }
+  ],
+  "html_content": "<button onclick=\"play_changed(0)\">BF 第1集</button>"
+}
+""";
+
+// 通用兜底用例：页面里只有一段 JS，地址还是转义斜杠写法
+var genericHtml = $$"""
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>某个小站 - 在线观看</title></head>
+<body>
+<h1>测试影片</h1>
+<script>
+  var player = new Player();
+  player.setup({ url: "http:\/\/localhost:{{Port}}\/index.m3u8" });
+</script>
+</body></html>
+""";
+
+const string EmptyHtml = """
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>空页面 - 某站</title></head>
+<body><p>这里什么都没有。</p></body></html>
+""";
+
 var listener = new HttpListener();
 listener.Prefixes.Add($"http://localhost:{Port}/");
 listener.Start();
@@ -150,6 +212,43 @@ _ = Task.Run(async () =>
                         ctx.Response.ContentLength64 = body.Length;
                         await ctx.Response.OutputStream.WriteAsync(body);
                     }
+                }
+                // ---- 适配层用例（放在 failSegments 之前：这些用例不受「源站抽风」开关影响）----
+                else if (path.Equals("/dianshiju/20267897.html", StringComparison.OrdinalIgnoreCase))
+                {
+                    var body = Encoding.UTF8.GetBytes(NnyyDetailHtml);
+                    ctx.Response.ContentType = "text/html; charset=utf-8";
+                    ctx.Response.ContentLength64 = body.Length;
+                    await ctx.Response.OutputStream.WriteAsync(body);
+                }
+                else if (path.StartsWith("/_gp/", StringComparison.Ordinal))
+                {
+                    var body = Encoding.UTF8.GetBytes(nnyyPlaysJson);
+                    ctx.Response.ContentType = "application/json; charset=utf-8";
+                    ctx.Response.ContentLength64 = body.Length;
+                    await ctx.Response.OutputStream.WriteAsync(body);
+                }
+                else if (path.Equals("/generic.html", StringComparison.OrdinalIgnoreCase))
+                {
+                    var body = Encoding.UTF8.GetBytes(genericHtml);
+                    ctx.Response.ContentType = "text/html; charset=utf-8";
+                    ctx.Response.ContentLength64 = body.Length;
+                    await ctx.Response.OutputStream.WriteAsync(body);
+                }
+                else if (path.Equals("/empty.html", StringComparison.OrdinalIgnoreCase))
+                {
+                    var body = Encoding.UTF8.GetBytes(EmptyHtml);
+                    ctx.Response.ContentType = "text/html; charset=utf-8";
+                    ctx.Response.ContentLength64 = body.Length;
+                    await ctx.Response.OutputStream.WriteAsync(body);
+                }
+                else if (path.Equals("/not-a-playlist.html", StringComparison.OrdinalIgnoreCase))
+                {
+                    // 「失效源」：返回 HTML 而不是 m3u8，用来验证多源里会跳过它挑下一个
+                    var body = Encoding.UTF8.GetBytes("<html><body>404 not found</body></html>");
+                    ctx.Response.ContentType = "text/html; charset=utf-8";
+                    ctx.Response.ContentLength64 = body.Length;
+                    await ctx.Response.OutputStream.WriteAsync(body);
                 }
                 else if (failSegments && !path.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase))
                 {
@@ -1162,15 +1261,100 @@ var okSingle = false;
     okSingle = report.Success && producedExists && stagingCleaned && reportExists && verdictOk && formatOk;
 }
 
+// ---------------------------------------------------------------- 阶段 J：站点适配层
+//
+// 「适配更多网站」的能力本身也要有回归测试守着。用本地页面 fixture 覆盖四件事：
+//   1. 适配器**自动登记**且按优先级排序（新增站点不用改任何注册代码）；
+//   2. 努努影院这类自研站点：集号在 ep_slug、直链要调 /_gp/ 接口、
+//      同一集里失效的源要能跳过；
+//   3. 通用兜底：页面里只有一段转义写法的 JS，也要能把 m3u8 抠出来；
+//   4. 什么都没有的页面必须明确报错，而不是给个空列表（那样用户只会更困惑）。
+
+Console.WriteLine();
+Console.WriteLine("阶段 J：站点适配层（自动登记 / 努努影院 / 通用兜底）");
+
+var okRegistry = false;
+var okNnyy = false;
+var okGeneric = false;
+var okEmpty = false;
+
+{
+    using var registryCtx = new SiteContext();
+    var resolver = SiteResolver.CreateDefault();
+    var adapters = resolver.Adapters.ToList();
+
+    var nnyyIndex = adapters.FindIndex(a => a.Kind == SiteKind.Nnyy);
+    var macIndex = adapters.FindIndex(a => a.Kind == SiteKind.MacCms);
+    var genericIndex = adapters.FindIndex(a => a.Kind == SiteKind.Generic);
+
+    Console.WriteLine($"  自动登记: {string.Join(" / ", adapters.Select(a => $"{a.Name}(P{a.Priority})"))}");
+    okRegistry = nnyyIndex >= 0 && macIndex >= 0 && genericIndex >= 0
+                 && nnyyIndex < macIndex && macIndex < genericIndex;
+    Console.WriteLine($"  优先级顺序 努努 < 苹果CMS < 通用: {(okRegistry ? "✔" : "✘")}");
+}
+
+{
+    using var nnyyCtx = new SiteContext();
+    var adapter = new NnyyAdapter();
+    var pageUrl = new Uri($"http://localhost:{Port}/dianshiju/20267897.html");
+
+    var handlesNnyy = adapter.CanHandle(new Uri("https://nnyy.in/dianshiju/20267897.html"));
+    var handlesOther = adapter.CanHandle(new Uri("https://example.com/dianshiju/20267897.html"));
+
+    var parsed = await adapter.ParseAsync(NnyyDetailHtml, pageUrl, nnyyCtx);
+    Console.WriteLine($"  努努解析: {parsed.Title} · {parsed.SiteName} · {parsed.TotalEpisodes} 集" +
+                      $"（CanHandle: nnyy={handlesNnyy} 其它站={handlesOther}）");
+
+    var second = parsed.AllEpisodes.First(e => e.Number == 2);
+    Console.WriteLine($"  第2集: 标题={second.DisplayTitle}  Key={second.Key}");
+
+    // 接口里第一个源是失效的（返回 HTML 而不是清单），必须跳过它挑到第二个
+    var firstUrl = await adapter.ResolvePlaylistUrlAsync(parsed.AllEpisodes.First(e => e.Number == 1), nnyyCtx);
+    Console.WriteLine($"  第1集直链: {firstUrl}");
+
+    okNnyy = handlesNnyy && !handlesOther
+             && parsed.Title == "交锋" && parsed.TotalEpisodes == 3
+             && second.Key == "ep2" && second.DisplayTitle == "第02集"
+             && firstUrl.EndsWith("/index.m3u8", StringComparison.Ordinal);
+}
+
+{
+    using var genericCtx = new SiteContext();
+    var resolver = SiteResolver.CreateDefault();
+    var parsed = await resolver.ParseAsync($"http://localhost:{Port}/generic.html", genericCtx);
+    var episode = parsed.AllEpisodes.FirstOrDefault();
+
+    Console.WriteLine($"  通用兜底: {parsed.SiteName} · {parsed.Title} · {parsed.TotalEpisodes} 集 · 直链={episode?.PlaylistUrl}");
+    okGeneric = parsed.Kind == SiteKind.Generic && parsed.TotalEpisodes == 1
+                && (episode?.PlaylistUrl?.EndsWith("/index.m3u8", StringComparison.Ordinal) ?? false);
+}
+
+{
+    using var emptyCtx = new SiteContext();
+    var resolver = SiteResolver.CreateDefault();
+    try
+    {
+        var parsed = await resolver.ParseAsync($"http://localhost:{Port}/empty.html", emptyCtx);
+        Console.WriteLine($"  ✘ 空页面居然解析出了 {parsed.TotalEpisodes} 集，应当明确报错");
+    }
+    catch (NotSupportedException ex)
+    {
+        okEmpty = true;
+        Console.WriteLine($"  空页面明确报错 ✔：{ex.Message}");
+    }
+}
+
 Console.WriteLine();
 var ok = okB && okC && okPaused && okStopped && okResume && okSettled && okRetry
-         && okResumeSubset && okFallback && okDuration && encOk && okSingle;
+         && okResumeSubset && okFallback && okDuration && encOk && okSingle
+         && okRegistry && okNnyy && okGeneric && okEmpty;
 Console.WriteLine(ok
     ? "自检结果       : ✔ 通过"
     : $"自检结果       : ✘ 失败（阶段B {okB} / 阶段C {okC} / 暂停 {okPaused} / 暂停后静止 {okStopped}" +
       $" / 续传 {okResume} / 续传后静止 {okSettled} / 重试 {okRetry}" +
       $" / 续传只下选中集 {okResumeSubset} / 多源兜底 {okFallback} / 时长核对 {okDuration}" +
-      $" / 密文首字节 0x3C {encOk} / 单文件服务 {okSingle}）");
+      $" / 密文首字节 0x3C {encOk} / 单文件服务 {okSingle}" +
+      $" / 适配器登记 {okRegistry} / 努努影院 {okNnyy} / 通用兜底 {okGeneric} / 空页面报错 {okEmpty}）");
 
 listener.Stop();
 return ok ? 0 : 1;
