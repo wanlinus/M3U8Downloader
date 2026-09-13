@@ -204,7 +204,12 @@ public sealed class SegmentInspector
         {
             var p = new Uri(uri).AbsolutePath;
             var i = p.LastIndexOf('/');
-            return i > 0 ? p[..i] : p;
+
+            // 注意：分片直接放在域名根目录时（如 /seg0.ts），LastIndexOf('/') == 0。
+            // 这时必须归到根目录 "/"，否则每个分片都会被算成"各自的目录"，
+            // 目录聚类会把除第一片以外的所有分片误判成插播广告并整批跳过。
+            if (i < 0) return uri;
+            return i == 0 ? "/" : p[..i];
         }
         catch { return uri; }
     }

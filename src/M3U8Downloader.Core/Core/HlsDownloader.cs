@@ -178,7 +178,17 @@ public sealed class HlsDownloader : IDisposable
                 skipSet.Add(s.Index);
             }
             if (skipSet.Count > 0)
-                result.Messages.Add($"已自动跳过 {skipSet.Count} 个疑似插播广告/无效分片。");
+            {
+                var ratio = (double)skipSet.Count / segments.Count;
+                result.Messages.Add($"已自动跳过 {skipSet.Count} 个疑似插播广告/无效分片（占 {ratio:P0}）。");
+
+                // 跳过比例过高通常意味着识别有误（或整条流都不对），必须让用户看见
+                if (ratio > 0.3)
+                {
+                    result.Messages.Add(
+                        $"⚠ 跳过比例偏高（{skipSet.Count}/{segments.Count}），产物可能不完整，请核对原播放列表。");
+                }
+            }
         }
         else
         {
