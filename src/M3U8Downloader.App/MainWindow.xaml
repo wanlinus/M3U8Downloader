@@ -28,7 +28,13 @@
                 </Grid.ColumnDefinitions>
 
                 <StackPanel Grid.Column="0" Spacing="2">
-                    <TextBlock Text="M3U8 视频下载器" FontSize="20" FontWeight="SemiBold" />
+                    <!-- 文字在构造函数里从 AppInfo 取，避免产品名/版本号散落在 XAML 里 -->
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock x:Name="AppTitleText" FontSize="20" FontWeight="SemiBold" />
+                        <TextBlock x:Name="AppVersionText" FontSize="12" VerticalAlignment="Bottom"
+                                   Margin="0,0,0,4"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
                     <TextBlock FontSize="12"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                Text="多线程下载 · AES-128/192/256 解密 · 断点续传 · 自动跳过源站插播广告分片" />

@@ -32,7 +32,10 @@ public sealed partial class MainWindow : Window
     {
         InitializeComponent();
 
-        Title = "M3U8 视频下载器";
+        // 标题栏和界面顶部都带上版本号：反馈问题时用户一眼就能报出用的是哪一版
+        AppTitleText.Text = AppInfo.ProductName;
+        AppVersionText.Text = $"v{AppInfo.Version}";
+        Title = $"{AppInfo.ProductName} v{AppInfo.Version}";
 
         // 设置一个合适的初始窗口尺寸
         try { AppWindow.Resize(new SizeInt32(1180, 840)); } catch { }

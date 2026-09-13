@@ -1,0 +1,16 @@
+<Project>
+
+  <!--
+    版本号在这里统一维护，三个项目（Core / App / Cli）共用同一个值。
+
+    · 本地构建：用这里的值（会写进 exe 的文件版本，界面标题栏与「关于」都读它）；
+    · CI 打包：打 tag 时由 scripts/publish.ps1 -Version 覆盖成 tag 号（去掉 v 前缀）。
+
+    发版时记得让 tag 和这里保持一致，否则「下载到的包」和「源码构建的包」
+    会显示不同的版本号。
+  -->
+  <PropertyGroup>
+    <Version>1.1.0</Version>
+  </PropertyGroup>
+
+</Project>
