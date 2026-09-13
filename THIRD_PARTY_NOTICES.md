@@ -61,6 +61,7 @@ https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-lat
 | .NET / C# 运行时与类库 | MIT License | © Microsoft Corporation |
 | Windows App SDK（WinUI 3） | Microsoft 软件许可条款 | © Microsoft Corporation |
 | Windows SDK | Microsoft 软件许可条款 | © Microsoft Corporation |
+| [H.NotifyIcon](https://github.com/HavenDV/H.NotifyIcon) / H.NotifyIcon.WinUI | MIT License | 系统托盘图标、气泡通知与托盘右键菜单（© HavenDV） |
 
 发布版（`publish\app-win-x64`）通过自包含部署内嵌了 .NET 运行时与
 Windows App SDK 运行时，其分发受上述各自许可证约束。

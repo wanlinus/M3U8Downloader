@@ -1,3 +1,4 @@
+using H.NotifyIcon;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using M3U8Downloader.Core;
@@ -19,6 +20,12 @@ public sealed partial class MainWindow : Window
     /// <summary>下载任务队列（串行执行，加入后立刻返回）</summary>
     private readonly DownloadTaskManager _taskManager;
     private readonly TaskListViewModel _tasks;
+
+    /// <summary>
+    /// 点窗口右上角的关闭时是否只是隐藏到托盘（来自设置）。
+    /// 托盘图标起不来时 App 会把它置成 false —— 免得窗口藏起来又找不回来。
+    /// </summary>
+    public bool MinimizeToTrayOnClose { get; set; } = true;
 
     public MainWindow()
     {
@@ -102,6 +109,8 @@ public sealed partial class MainWindow : Window
 
         _single.OutputDirectory = outputDir;
         _single.Concurrency = settings.SegmentConcurrency;
+
+        MinimizeToTrayOnClose = settings.MinimizeToTrayOnClose;
 
         _batch.OutputDirectory = outputDir;
         _batch.EpisodeConcurrency = settings.EpisodeConcurrency;
@@ -400,6 +409,46 @@ public sealed partial class MainWindow : Window
         var path = await PickFolderAsync();
         if (path != null) _batch.OutputDirectory = path;
     }
+
+    // ==================== 托盘 ====================
+
+    /// <summary>
+    /// 隐藏到托盘：窗口、进程、下载任务全都留着，只是窗口看不见了。
+    /// 「点关闭只隐藏」的拦截在 App 里（AppWindow.Closing），这里只负责藏起来。
+    /// </summary>
+    public void HideToTray()
+    {
+        try
+        {
+            // 先把进度写盘：窗口看不见了，用户随时可能直接关机
+            _taskManager.SaveNow();
+
+            // H.NotifyIcon 的 WindowExtensions：显式关掉效率模式 ——
+            // 后台还在跑 AES 解密、TS 合并、ffmpeg 校验，降频会拖慢这些步骤
+            this.Hide(enableEfficiencyMode: false);
+        }
+        catch (Exception ex)
+        {
+            LogFromTray("隐藏到托盘失败：" + ex.Message);
+        }
+    }
+
+    /// <summary>从托盘把窗口叫回来并置前</summary>
+    public void ShowFromTray()
+    {
+        try
+        {
+            this.Show(disableEfficiencyMode: false);
+            Activate();
+        }
+        catch (Exception ex)
+        {
+            LogFromTray("恢复窗口失败：" + ex.Message);
+        }
+    }
+
+    /// <summary>把托盘相关消息写进窗口里的运行日志</summary>
+    public void LogFromTray(string message) => _single.AppendLog("[托盘] " + message);
 
     // ==================== 公共 ====================
 

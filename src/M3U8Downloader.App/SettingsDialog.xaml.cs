@@ -55,6 +55,7 @@ public sealed partial class SettingsDialog : ContentDialog
         SkipAdsCheck.IsChecked = _working.AutoSkipInvalidSegments;
         SeriesSubdirCheck.IsChecked = _working.SeriesSubdirectory;
         FullDecodeCheckBox.IsChecked = _working.FullDecodeCheck;
+        MinimizeToTrayCheck.IsChecked = _working.MinimizeToTrayOnClose;
     }
 
     private void CollectBack()
@@ -69,6 +70,7 @@ public sealed partial class SettingsDialog : ContentDialog
         _working.AutoSkipInvalidSegments = SkipAdsCheck.IsChecked == true;
         _working.SeriesSubdirectory = SeriesSubdirCheck.IsChecked == true;
         _working.FullDecodeCheck = FullDecodeCheckBox.IsChecked == true;
+        _working.MinimizeToTrayOnClose = MinimizeToTrayCheck.IsChecked == true;
         _working.Normalize();
     }
 

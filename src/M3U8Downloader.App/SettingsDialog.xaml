@@ -112,6 +112,8 @@
             <CheckBox x:Name="SeriesSubdirCheck" Content="按网站下载时自动建「剧名」子目录" FontSize="12" />
             <CheckBox x:Name="FullDecodeCheckBox" FontSize="12"
                       Content="下载完成后对每集做全量解码检查（能发现源站坏包，但每集要多花几十秒）" />
+            <CheckBox x:Name="MinimizeToTrayCheck" FontSize="12"
+                      Content="点关闭按钮时最小化到托盘（下载在后台继续；真正退出要点托盘图标的右键菜单）" />
         </StackPanel>
     </ScrollViewer>
 </ContentDialog>

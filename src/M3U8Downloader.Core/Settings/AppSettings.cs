@@ -40,6 +40,14 @@ public sealed class AppSettings
     /// </summary>
     public bool FullDecodeCheck { get; set; } = true;
 
+    /// <summary>
+    /// 点窗口关闭按钮时是否只「最小化到托盘」（默认 true）。
+    ///
+    /// 开着的时候下载在后台继续跑，真正退出要走托盘图标的右键菜单；
+    /// 关掉就退回传统行为：点关闭 = 结束程序。
+    /// </summary>
+    public bool MinimizeToTrayOnClose { get; set; } = true;
+
     /// <summary>自定义 User-Agent（留空用内置的浏览器 UA）</summary>
     public string? UserAgent { get; set; }
 

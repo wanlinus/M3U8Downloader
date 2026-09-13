@@ -55,10 +55,15 @@ public static class AppInfo
 
         许可证文本与源码：https://ffmpeg.org/legal.html
 
-        ── 运行平台 ──
+        ── 运行平台与框架 ──
         .NET / C#（MIT License，© Microsoft Corporation）
         Windows App SDK / WinUI 3（Microsoft 软件许可条款）
         Windows SDK（Microsoft 软件许可条款）
+
+        ── 界面依赖 ──
+        H.NotifyIcon / H.NotifyIcon.WinUI（MIT License，© HavenDV）
+        用于：系统托盘图标、气泡通知、托盘右键菜单。
+        https://github.com/HavenDV/H.NotifyIcon
 
         完整声明见仓库根目录的 THIRD_PARTY_NOTICES.md 与 NOTICE。
         """;

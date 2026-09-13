@@ -218,6 +218,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     // ---------------- 辅助 ----------------
 
+    /// <summary>给窗口/托盘这些外部代码写日志用（内部会封送回 UI 线程）</summary>
+    public void AppendLog(string message) => Log(message);
+
     private void Log(string message)
     {
         _dispatcher.TryEnqueue(() =>

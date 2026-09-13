@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    托盘资源。
+
+    写法照搬 H.NotifyIcon 官方 WinUI 示例（src/apps/H.NotifyIcon.Apps.WinUI.Windowless/TrayIconResources.xaml）：
+    命令用 XamlUICommand 声明，TaskbarIcon 再用 LeftClickCommand / ContextFlyout 引用它们。
+    这样"单击图标"和"右键菜单项"共用同一个命令，不会出现两处行为不一致。
+-->
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:tb="using:H.NotifyIcon">
+
+    <!-- 单击托盘图标 / 菜单第一项：把主窗口叫回来 -->
+    <XamlUICommand
+        x:Key="ShowWindowCommand"
+        Label="打开主界面"
+        Description="显示并激活主窗口"
+        >
+        <XamlUICommand.IconSource>
+            <SymbolIconSource Symbol="OpenPane" />
+        </XamlUICommand.IconSource>
+    </XamlUICommand>
+
+    <!-- 唯一能真正结束程序的入口（窗口隐藏时下载仍在后台跑） -->
+    <XamlUICommand
+        x:Key="ExitApplicationCommand"
+        Label="退出"
+        Description="结束程序，正在下载的任务会先落盘"
+        >
+        <XamlUICommand.IconSource>
+            <SymbolIconSource Symbol="ClosePane" />
+        </XamlUICommand.IconSource>
+    </XamlUICommand>
+
+    <tb:TaskbarIcon
+        x:Key="TrayIcon"
+        Visibility="Visible"
+        ToolTipText="M3U8 视频下载器"
+        IconSource="\Assets\app.ico"
+        LeftClickCommand="{StaticResource ShowWindowCommand}"
+        NoLeftClickDelay="True"
+        >
+        <tb:TaskbarIcon.ContextFlyout>
+            <MenuFlyout>
+                <MenuFlyoutItem Text="打开主界面" Command="{StaticResource ShowWindowCommand}" />
+                <MenuFlyoutSeparator />
+                <MenuFlyoutItem Text="退出" Command="{StaticResource ExitApplicationCommand}" />
+            </MenuFlyout>
+        </tb:TaskbarIcon.ContextFlyout>
+    </tb:TaskbarIcon>
+</ResourceDictionary>

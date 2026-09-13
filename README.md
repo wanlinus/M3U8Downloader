@@ -38,10 +38,11 @@
 | **FFmpeg 集成** | 设置里可手动指定、或**应用内一键下载**（默认 LGPL 构建）；未安装也不影响下载本身 |
 | **代理支持** | 仅用于「自动下载 FFmpeg」（国内直连 GitHub 通常不通），带连通性测试。**视频下载与站点解析始终直连** |
 | 设置与关于 | 设置落盘到 `%APPDATA%`；「关于」含版本、版权、许可证与第三方组件声明 |
+| **托盘常驻** | 点关闭只是缩到右下角托盘，**下载在后台继续**；真正的退出入口是托盘右键菜单里的「退出」（[H.NotifyIcon](https://github.com/HavenDV/H.NotifyIcon)） |
 | 图形界面 + 命令行 | WinUI 3 桌面界面（单文件 / 站点批量 / 下载任务 三个模式），另附 CLI 便于脚本调用 |
 
-> 界面为单实例：重复双击图标不会再起第二个窗口抢带宽。站点模式下并发总连接数 ≈
-> 同时下载集数 × 每集分片并发（默认 2×16=32）。
+> 界面为单实例：重复双击图标不会再起第二个窗口抢带宽 —— 已有实例缩在托盘里的话会被叫回前台。
+> 站点模式下并发总连接数 ≈ 同时下载集数 × 每集分片并发（默认 2×16=32）。
 
 ### 支持的站点
 
@@ -414,6 +415,39 @@ FFmpeg / FFprobe 在整条链路里承担四件事，**每一项的结论都会�
 
 ---
 
+## 托盘与后台运行
+
+**关掉窗口 ≠ 关掉程序**：下载任务要在后台跑完，所以窗口关闭只是「缩起来」。
+
+| 操作 | 行为 |
+| --- | --- |
+| 点窗口右上角「✕」（或 Alt+F4） | 窗口隐藏到右下角托盘，**下载继续跑**；第一次还会弹个气泡提示 |
+| 单击托盘图标 / 右键菜单「打开主界面」 | 窗口回来并置前（不移除任务，不打断下载） |
+| 右键菜单「退出」 | **唯一真正退出的入口**：先落盘任务进度 → 摘掉托盘图标 → 关窗结束进程 |
+| 开始菜单/桌面再点一次程序 | 不新开窗口；已缩在托盘的实例会被叫到前台 |
+
+托盘图标用的是 [H.NotifyIcon](https://github.com/HavenDV/H.NotifyIcon)（MIT）的 WinUI 版 `TaskbarIcon`：
+图标、气泡通知、右键菜单都由它提供。声明集中在 `src/M3U8Downloader.App/TrayIconResources.xaml`
+（`XamlUICommand` + `ContextFlyout`，写法与官方 WinUI 示例一致），装配在 `App.xaml.cs` 的
+`InitializeTrayIcon()` 里。
+
+几个刻意的选择：
+
+- **关闭拦截用 `AppWindow.Closing` + `args.Cancel = true`，而不是 `Window.Closed`**：
+  `Closed` 触发时窗口已经在关，而 `MainWindow` 的 `Closed` 处理器要做「落盘 + 释放任务管理器」，
+  一旦这次关闭被取消，正在跑的后台下载会被连带释放掉。
+- **不开效率模式**：`ForceCreate(enablesEfficiencyMode: false)`。库默认会启用 Windows 11 的
+  效率模式，但窗口藏起来之后 AES 解密、TS 合并、ffmpeg 校验还在跑，降频会实打实拖慢这几步。
+- **托盘起不来就退回「点关闭即退出」**：`ForceCreate` 抛异常时会把 `MinimizeToTrayOnClose`
+  置回 false —— 绝不能出现「窗口藏起来了，却没有图标能把它叫回来」。
+- 「设置 → 下载默认值」里可以关掉「点关闭按钮时最小化到托盘」（`MinimizeToTrayOnClose`），
+  关掉后恢复传统行为：点关闭就是退出。
+
+> 关机/注销由系统接管，不保证走上面的退出流程；此刻的进度依赖断点续传兜底 ——
+> 已下完的分片带清单指纹留在暂存目录里，下次接着下。
+
+---
+
 ## 产物校验（下载完到底查了什么）
 
 下载完成时，"成功"不是靠一句 `OK` 得出的，而是逐层查出来的。**没通过校验的一律不算成功**：
@@ -594,5 +628,7 @@ You may obtain a copy of the License at
 - **FFmpeg**（可选、按需获取，**未打包进安装包**）：适用其自身的 LGPL/GPL 条款，
   与本项目的许可证相互独立。完整声明见 **[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)**。
 - .NET / Windows App SDK / Windows SDK：适用各自许可证，见 [NOTICE](NOTICE)。
+- [H.NotifyIcon](https://github.com/HavenDV/H.NotifyIcon)（MIT License）：系统托盘图标、
+  气泡通知与托盘右键菜单。
 - 功能设计参考了 [Liubsyy/M3U8Quicker](https://github.com/Liubsyy/M3U8Quicker)（Apache-2.0）；
   本项目为独立的 C# / WinUI 3 实现，未复制其源代码。

@@ -7,6 +7,8 @@
     <RootNamespace>M3U8Downloader</RootNamespace>
     <AssemblyName>M3U8Downloader</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- 托盘图标是 Resources 里的 TaskbarIcon，图标文件必须随程序一起落盘 -->
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <Platforms>x86;x64;ARM64</Platforms>
     <RuntimeIdentifiers>win-x64;win-x86;win-arm64</RuntimeIdentifiers>
     <UseWinUI>true</UseWinUI>
@@ -25,8 +27,18 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- 托盘图标的 ico 必须在运行目录里（IconSource 走的是应用目录的相对路径）；
+         不显式写 CopyToOutputDirectory 的话 build 会带上、publish 会漏掉 -->
+    <Content Include="Assets\*.*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260317003" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4654" />
+    <!-- 系统托盘：WinUI 3 没有内置托盘 API，用 H.NotifyIcon 的 TaskbarIcon（托盘图标 + 气泡通知 + 效率模式） -->
+    <PackageReference Include="H.NotifyIcon.WinUI" Version="2.4.1" />
   </ItemGroup>
 
   <ItemGroup>
