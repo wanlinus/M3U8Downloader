@@ -59,9 +59,11 @@ public sealed partial class AboutDialog : ContentDialog
         }
     }
 
+    /// <summary>右上角的 X：等同点「关闭」</summary>
+    private void OnCloseDialog(object sender, RoutedEventArgs e) => Hide();
+
     private void OnCopyDiagnostics(ContentDialog sender, ContentDialogButtonClickEventArgs args)
-    {
-        // 保持对话框开着，方便用户看到"已复制"
+    {        // 保持对话框开着，方便用户看到"已复制"
         args.Cancel = true;
 
         try

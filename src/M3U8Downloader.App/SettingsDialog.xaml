@@ -3,10 +3,35 @@
     x:Class="M3U8Downloader.SettingsDialog"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    Title="设置"
     PrimaryButtonText="保存"
     CloseButtonText="取消"
     DefaultButton="Primary">
+
+    <!--
+        WinUI 的 ContentDialog 没有内置的右上角关闭按钮，默认只有底部按钮区，
+        但大家习惯往右上角找 X，所以在标题行右侧自己补一个（等同点「取消」）。
+    -->
+    <ContentDialog.Title>
+        <!-- MinWidth 与内容宽度对齐：ContentDialog 的标题区宽度是按内容自适应的，
+             不给它一个下限，X 会紧贴在标题文字后面而不是对话框右侧 -->
+        <Grid ColumnSpacing="12" MinWidth="500">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <TextBlock Grid.Column="0" Text="设置" FontSize="20" FontWeight="SemiBold"
+                       VerticalAlignment="Center" />
+
+            <Button Grid.Column="1" Click="OnCloseDialog" Width="32" Height="32" Padding="0"
+                    Background="Transparent" BorderThickness="0"
+                    VerticalAlignment="Center"
+                    AutomationProperties.Name="关闭"
+                    ToolTipService.ToolTip="关闭（等同「取消」，不会保存改动）">
+                <FontIcon Glyph="&#xE711;" FontSize="12" />
+            </Button>
+        </Grid>
+    </ContentDialog.Title>
 
     <!--
         设置项按主题分页。之前是一长条堆叠，找个选项要滚半天，

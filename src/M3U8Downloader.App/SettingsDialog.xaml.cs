@@ -83,6 +83,9 @@ public sealed partial class SettingsDialog : ContentDialog
         Saved = true;
     }
 
+    /// <summary>右上角的 X：等同点「取消」—— 不收集改动，直接关掉</summary>
+    private void OnCloseDialog(object sender, RoutedEventArgs e) => Hide();
+
     private void OnClosed(ContentDialog sender, ContentDialogClosedEventArgs args)
     {
         try { _downloadCts?.Cancel(); } catch { }
