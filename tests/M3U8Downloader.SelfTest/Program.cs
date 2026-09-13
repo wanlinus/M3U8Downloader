@@ -137,14 +137,15 @@ const string NnyyDetailHtml = """
 </body></html>
 """;
 
-// /_gp/ 接口的返回：一个失效源（指向 HTML 页面）+ 一个可用源（本地真清单）
+// /_gp/ 接口的返回：两个源，第一个可用，第二个已失效（返回 HTML 而不是清单）。
+// html_content 里的按钮文本决定源在界面上的显示名（BF / DE）。
 var nnyyPlaysJson = $$"""
 {
   "video_plays": [
-    { "play_data": "http://localhost:{{Port}}/not-a-playlist.html", "src_site": "dead" },
-    { "play_data": "http://localhost:{{Port}}/index.m3u8", "src_site": "bfzy" }
+    { "play_data": "http://localhost:{{Port}}/index.m3u8", "src_site": "bfzy" },
+    { "play_data": "http://localhost:{{Port}}/not-a-playlist.html", "src_site": "dead" }
   ],
-  "html_content": "<button onclick=\"play_changed(0)\">BF 第1集</button>"
+  "html_content": "<button onclick=\"play_changed(0)\">BF 第1集</button><button onclick=\"play_changed(1)\">DE 第1集</button>"
 }
 """;
 
@@ -1302,20 +1303,30 @@ var okEmpty = false;
     var handlesOther = adapter.CanHandle(new Uri("https://example.com/dianshiju/20267897.html"));
 
     var parsed = await adapter.ParseAsync(NnyyDetailHtml, pageUrl, nnyyCtx);
-    Console.WriteLine($"  努努解析: {parsed.Title} · {parsed.SiteName} · {parsed.TotalEpisodes} 集" +
+    Console.WriteLine($"  努努解析: {parsed.Title} · {parsed.SiteName} · " +
+                      $"{parsed.Sources.FirstOrDefault()?.Episodes.Count ?? 0} 集 / {parsed.Sources.Count} 个源" +
                       $"（CanHandle: nnyy={handlesNnyy} 其它站={handlesOther}）");
+    foreach (var source in parsed.Sources)
+        Console.WriteLine($"    {source.Name} → {source.Episodes.Count} 集");
 
+    var firstSource = parsed.Sources.FirstOrDefault();
     var second = parsed.AllEpisodes.First(e => e.Number == 2);
-    Console.WriteLine($"  第2集: 标题={second.DisplayTitle}  Key={second.Key}");
 
-    // 接口里第一个源是失效的（返回 HTML 而不是清单），必须跳过它挑到第二个
-    var firstUrl = await adapter.ResolvePlaylistUrlAsync(parsed.AllEpisodes.First(e => e.Number == 1), nnyyCtx);
-    Console.WriteLine($"  第1集直链: {firstUrl}");
+    // 识别阶段就该把每一集的直链都拿到（下载时不必再请求 /_gp/，也就不用再过代理）
+    var allHaveUrl = parsed.AllEpisodes.All(e => !string.IsNullOrWhiteSpace(e.PlaylistUrl));
 
     okNnyy = handlesNnyy && !handlesOther
-             && parsed.Title == "交锋" && parsed.TotalEpisodes == 3
+             && parsed.Title == "交锋"
+             && parsed.Sources.Count == 2
+             && parsed.Sources.All(s => s.Episodes.Count == 3)
+             // 多源站点每源各持一份集，总数是「集数 × 源数」（与苹果 CMS 的口径一致）
+             && parsed.TotalEpisodes == 6
+             && firstSource?.Name == "BF（bfzy）"
              && second.Key == "ep2" && second.DisplayTitle == "第02集"
-             && firstUrl.EndsWith("/index.m3u8", StringComparison.Ordinal);
+             && allHaveUrl
+             && parsed.AllEpisodes
+                 .Where(e => e.SourceId == firstSource!.Id)
+                 .All(e => e.PlaylistUrl!.EndsWith("/index.m3u8", StringComparison.Ordinal));
 }
 
 {
