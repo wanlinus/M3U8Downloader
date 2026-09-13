@@ -120,8 +120,11 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <TextBlock Grid.Column="0" Text="保存目录" VerticalAlignment="Center" Width="92" />
+                    <!-- 路径长了要能看全：换行显示（最多约三行），Enter 不换行仍保持单行输入手感 -->
                     <TextBox Grid.Column="1"
-                             Text="{Binding OutputDirectory, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                             Text="{Binding OutputDirectory, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             PlaceholderText="留空使用系统「下载」目录"
+                             TextWrapping="Wrap" AcceptsReturn="False" MaxHeight="76" />
                     <Button Grid.Column="2" Content="选择…" Click="OnPickSingleFolder" />
                 </Grid>
 
@@ -253,8 +256,11 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <TextBlock Grid.Column="0" Text="保存目录" VerticalAlignment="Center" Width="92" />
+                    <!-- 路径长了要能看全：换行显示（最多约三行），Enter 不换行仍保持单行输入手感 -->
                     <TextBox Grid.Column="1"
-                             Text="{Binding OutputDirectory, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                             Text="{Binding OutputDirectory, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             PlaceholderText="留空使用系统「下载」目录"
+                             TextWrapping="Wrap" AcceptsReturn="False" MaxHeight="76" />
                     <Button Grid.Column="2" Content="选择…" Click="OnPickBatchFolder" />
                 </Grid>
 
