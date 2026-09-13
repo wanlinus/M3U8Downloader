@@ -161,6 +161,9 @@ public sealed class SingleFileDownloadService
 
             using var hls = new HlsDownloader(headers, Math.Clamp(options.TimeoutSeconds, 5, 300));
 
+            // 引擎的消息（例如「直连不通已改用代理下载」）也要出现在界面上
+            hls.Log = Log;
+
             progress?.Report(new SingleFileProgress { Phase = "正在解析播放列表…" });
             Log($"开始解析：{options.Url}");
             Log($"附加请求头：{(headers.Count == 0 ? "无" : string.Join(", ", headers.Keys))}");

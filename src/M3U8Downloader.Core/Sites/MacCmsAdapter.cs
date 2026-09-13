@@ -49,6 +49,15 @@ public sealed class MacCmsAdapter : ISiteAdapter
     private static readonly Regex AnyPlayHref = new(
         @"(?:https?://[^/""'\s]+)?/(?<prefix>(?:[A-Za-z0-9_\-]+/)*)(?<id>\d+)-(?<sid>\d+)-(?<nid>\d+)\.html", Opts);
 
+    /// <summary>
+    /// 原生形态的播放页：<c>/index.php/vod/play/id/{id}/sid/{sid}/nid/{nid}.html</c>。
+    /// 欧乐影院（olevod.com）整站的剧集链接都是这个形状 —— 只认伪静态那条规则的话，
+    /// 它的详情页会被判成「不是苹果 CMS 站点」。
+    /// </summary>
+    private static readonly Regex AnyPlayHrefNative = new(
+        @"(?:https?://[^/""'\s]+)?/(?<prefix>(?:[A-Za-z0-9_\-]+/)*)index\.php/vod/play/id/(?<id>\d+)/sid/(?<sid>\d+)/nid/(?<nid>\d+)\.html",
+        Opts);
+
     /// <summary>播放页路径的前缀，用于在没抓到链接时合成同款地址</summary>
     private static readonly Regex PathPrefix = new(@"^/(?<prefix>[A-Za-z0-9_\-]+/)", Opts);
 
@@ -119,7 +128,10 @@ public sealed class MacCmsAdapter : ISiteAdapter
         foreach (Match a in Anchor.Matches(html))
         {
             var href = WebUtility.HtmlDecode(a.Groups["href"].Value.Trim());
+
+            // 两种形态都认（组名一致，后面的取值代码不用分叉）
             var m = AnyPlayHref.Match(href);
+            if (!m.Success) m = AnyPlayHrefNative.Match(href);
             if (!m.Success) continue;
             if (m.Groups["id"].Value != seriesId) continue;   // 滤掉侧边栏「猜你喜欢」里别的剧
 
@@ -148,12 +160,16 @@ public sealed class MacCmsAdapter : ISiteAdapter
                 $"页面里既没有 player_aaaa 也没有剧集链接，可能不是苹果CMS(MacCMS)站点：{pageUrl}");
         }
 
-        // 详情页里若没有剧集链接，退化为合成播放页地址（沿用本页的 URL 前缀）
+        // 详情页里若没有剧集链接，退化为合成播放页地址（按本页用的是哪种 URL 形态）
         if (found.Count == 0)
         {
-            log.Add($"页面内未找到剧集链接，按前缀 {pathPrefix} 合成播放页地址");
-            found[(currentSourceId, currentEpisode)] =
-                (new Uri(pageUrl, $"{pathPrefix}{seriesId}-{currentSourceId}-{currentEpisode}.html").ToString(), "");
+            var nativeStyle = DetailPathAlt.IsMatch(pageUrl.AbsolutePath);
+            var synthesized = nativeStyle
+                ? new Uri(pageUrl, $"/index.php/vod/play/id/{seriesId}/sid/{currentSourceId}/nid/{currentEpisode}.html").ToString()
+                : new Uri(pageUrl, $"{pathPrefix}{seriesId}-{currentSourceId}-{currentEpisode}.html").ToString();
+
+            log.Add($"页面内未找到剧集链接，按{(nativeStyle ? "原生" : "伪静态")}形态合成播放页地址：{synthesized}");
+            found[(currentSourceId, currentEpisode)] = (synthesized, "");
         }
 
         var series = new SiteSeries
@@ -560,6 +576,13 @@ public sealed class MacCmsAdapter : ISiteAdapter
         return t;
     }
 
+    /// <summary>
+    /// 剧名。优先 &lt;h1&gt;，其次 og:title，最后退回 &lt;title&gt; 的第一段。
+    ///
+    /// 最后这条回退是必需的：欧乐影院（olevod.com）的详情页**没有 h1**，
+    /// 剧名只出现在「交锋_更新至第18集_欧乐影院 - 站点标语」这样的 title 里，
+    /// 少了它剧名会退化成剧集 ID（界面上显示成一串数字）。
+    /// </summary>
     private static string? ExtractTitle(string html)
     {
         var m = Regex.Match(html, @"<h1[^>]*>(?<t>.*?)</h1>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
@@ -568,7 +591,33 @@ public sealed class MacCmsAdapter : ISiteAdapter
             var t = CleanText(m.Groups["t"].Value);
             if (!string.IsNullOrWhiteSpace(t)) return t;
         }
-        return null;
+
+        var og = ExtractMeta(html, "og:title");
+        if (!string.IsNullOrWhiteSpace(og)) return og!.Trim();
+
+        var titleTag = Regex.Match(html, @"<title[^>]*>(?<t>.*?)</title>",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        if (!titleTag.Success) return null;
+
+        var title = CleanText(titleTag.Groups["t"].Value);
+
+        // 「交锋_更新至第18集_欧乐影院 - …」：下划线分隔时第一段就是剧名
+        var parts = title.Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var first = parts.Length > 0 ? parts[0] : title;
+
+        // 没有下划线时（「交锋 - 欧乐影院」）再用「 - 」切一刀
+        if (parts.Length <= 1)
+        {
+            first = title
+                .Split(" - ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .FirstOrDefault() ?? title;
+        }
+
+        // 兜底：把粘在一起的更新进度去掉（「交锋更新至第18集」）
+        first = Regex.Replace(first, @"[（(]?\s*(?:更新至|更新到|已更新|全)\s*第?\s*\d+\s*[集话期]\s*[)）]?", "");
+        first = Regex.Replace(first, @"\s*第\s*\d+\s*[集话期]\s*$", "");
+
+        return string.IsNullOrWhiteSpace(first) ? null : first.Trim();
     }
 
     private static string? ExtractMeta(string html, string property)

@@ -1,7 +1,10 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Sockets;
 using System.Security.Cryptography;
+using M3U8Downloader.Core.Net;
 using M3U8Downloader.Core.Staging;
 
 namespace M3U8Downloader.Core;
@@ -23,35 +26,197 @@ namespace M3U8Downloader.Core;
 public sealed class HlsDownloader : IDisposable
 {
     private readonly HttpClient _http;
+
+    /// <summary>代理客户端；没配代理时为 null</summary>
+    private readonly HttpClient? _httpProxy;
+
+    private readonly string? _proxyUrl;
+
+    /// <summary>
+    /// 已确认「直连不通、必须走代理」的主机。
+    ///
+    /// 记这一笔是关键：不记的话每个分片都要先白等一次连接超时才回退，
+    /// 墙外站点（欧乐影院就是）一千个分片能白等几个小时。
+    /// </summary>
+    private readonly ConcurrentDictionary<string, bool> _proxyRequiredHosts = new(StringComparer.OrdinalIgnoreCase);
+
     private bool _disposed;
 
-    public HlsDownloader(Dictionary<string, string>? headers = null, int timeoutSeconds = 30)
-    {
-        var handler = new HttpClientHandler
-        {
-            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
-            MaxConnectionsPerServer = 64,
-        };
-        _http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(timeoutSeconds) };
-        _http.DefaultRequestHeaders.UserAgent.ParseAdd(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36");
-        _http.DefaultRequestHeaders.Accept.ParseAdd("*/*");
+    /// <summary>「已改用代理」这类消息写到哪里（可选）</summary>
+    public Action<string>? Log { get; set; }
 
-        if (headers != null)
+    public HlsDownloader(Dictionary<string, string>? headers = null, int timeoutSeconds = 30, string? proxyUrl = null)
+    {
+        var directHandler = CreateHandler();
+        _http = new HttpClient(directHandler) { Timeout = TimeSpan.FromSeconds(timeoutSeconds) };
+        ApplyHeaders(_http, headers);
+
+        // 代理地址：显式传入 → 设置里填的。**默认不启用**，
+        // 只有在某台主机直连不通时才会被用到（见 HttpGetAsync）
+        _proxyUrl = ProxyHelper.Normalize(proxyUrl ?? TryReadProxyFromSettings());
+        if (_proxyUrl is not null)
         {
-            foreach (var (k, v) in headers)
-            {
-                if (string.IsNullOrWhiteSpace(k) || string.IsNullOrWhiteSpace(v)) continue;
-                if (k.Equals("User-Agent", StringComparison.OrdinalIgnoreCase))
-                {
-                    _http.DefaultRequestHeaders.UserAgent.Clear();
-                    _http.DefaultRequestHeaders.UserAgent.ParseAdd(v);
-                    continue;
-                }
-                _http.DefaultRequestHeaders.Remove(k);
-                try { _http.DefaultRequestHeaders.TryAddWithoutValidation(k, v); } catch { }
-            }
+            var proxyHandler = CreateHandler();
+            proxyHandler.Proxy = new WebProxy(new Uri(_proxyUrl)) { BypassProxyOnLocal = true };
+            proxyHandler.UseProxy = true;
+
+            _httpProxy = new HttpClient(proxyHandler) { Timeout = TimeSpan.FromSeconds(timeoutSeconds) };
+            ApplyHeaders(_httpProxy, headers);
         }
+    }
+
+    private static SocketsHttpHandler CreateHandler() => new()
+    {
+        AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
+        MaxConnectionsPerServer = 64,
+        // 连不上就早点回退到代理，别让用户干等
+        ConnectTimeout = TimeSpan.FromSeconds(8),
+    };
+
+    private static string? TryReadProxyFromSettings()
+    {
+        try { return Settings.AppSettingsStore.Load().ProxyUrl; }
+        catch { return null; }
+    }
+
+    private static void ApplyHeaders(HttpClient client, Dictionary<string, string>? headers)
+    {
+        client.DefaultRequestHeaders.UserAgent.ParseAdd(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36");
+        client.DefaultRequestHeaders.Accept.ParseAdd("*/*");
+
+        if (headers is null) return;
+
+        foreach (var (k, v) in headers)
+        {
+            if (string.IsNullOrWhiteSpace(k) || string.IsNullOrWhiteSpace(v)) continue;
+            if (k.Equals("User-Agent", StringComparison.OrdinalIgnoreCase))
+            {
+                client.DefaultRequestHeaders.UserAgent.Clear();
+                client.DefaultRequestHeaders.UserAgent.ParseAdd(v);
+                continue;
+            }
+            client.DefaultRequestHeaders.Remove(k);
+            try { client.DefaultRequestHeaders.TryAddWithoutValidation(k, v); } catch { }
+        }
+    }
+
+    // ==================== 请求入口：直连 → 失败自动走代理 ====================
+
+    /// <summary>
+    /// 统一的 GET。直连优先；某台主机直连不通就记住它，之后同一主机直接走代理。
+    /// 与站点解析同一套策略：通畅时零代理开销，不通时自动兜底。
+    /// </summary>
+    private async Task<HttpResponseMessage> HttpGetAsync(string url, HttpCompletionOption mode, CancellationToken ct)
+    {
+        var host = TryGetHost(url);
+        var canFallback = host is not null && _httpProxy is not null;
+
+        if (canFallback && _proxyRequiredHosts.ContainsKey(host!))
+            return await _httpProxy!.GetAsync(url, mode, ct).ConfigureAwait(false);
+
+        try
+        {
+            var resp = await _http.GetAsync(url, mode, ct).ConfigureAwait(false);
+
+            // 连上了但被「按 IP 拒绝」：也换代理再试一次
+            if (canFallback && ShouldRetryViaProxy(resp.StatusCode))
+            {
+                resp.Dispose();
+                var proxied = await _httpProxy!.GetAsync(url, mode, ct).ConfigureAwait(false);
+                MarkProxyRequired(host!);
+                return proxied;
+            }
+
+            return resp;
+        }
+        catch (Exception ex) when (canFallback && IsConnectivityFailure(ex, ct))
+        {
+            // 直连不通、代理能通 → 记下这台主机；代理也不通就会抛出去（说明不是被墙）
+            var resp = await _httpProxy!.GetAsync(url, mode, ct).ConfigureAwait(false);
+            MarkProxyRequired(host!);
+            return resp;
+        }
+    }
+
+    /// <summary>
+    /// 同上，但请求要现造（分片带 Range 头，而 HttpRequestMessage 不能重复发送，
+    /// 所以传的是"怎么造这个请求"而不是请求本身）。
+    /// </summary>
+    private async Task<HttpResponseMessage> HttpSendAsync(
+        Func<HttpRequestMessage> createRequest, string url, HttpCompletionOption mode, CancellationToken ct)
+    {
+        var host = TryGetHost(url);
+        var canFallback = host is not null && _httpProxy is not null;
+
+        if (canFallback && _proxyRequiredHosts.ContainsKey(host!))
+        {
+            using var proxied = createRequest();
+            return await _httpProxy!.SendAsync(proxied, mode, ct).ConfigureAwait(false);
+        }
+
+        try
+        {
+            HttpResponseMessage resp;
+            using (var direct = createRequest())
+                resp = await _http.SendAsync(direct, mode, ct).ConfigureAwait(false);
+
+            if (canFallback && ShouldRetryViaProxy(resp.StatusCode))
+            {
+                resp.Dispose();
+                using var proxied = createRequest();
+                var retried = await _httpProxy!.SendAsync(proxied, mode, ct).ConfigureAwait(false);
+                MarkProxyRequired(host!);
+                return retried;
+            }
+
+            return resp;
+        }
+        catch (Exception ex) when (canFallback && IsConnectivityFailure(ex, ct))
+        {
+            using var proxied = createRequest();
+            var resp = await _httpProxy!.SendAsync(proxied, mode, ct).ConfigureAwait(false);
+            MarkProxyRequired(host!);
+            return resp;
+        }
+    }
+
+    /// <summary>
+    /// 这个状态码值不值得换代理再试。
+    ///
+    /// 除「连接根本不通」之外，还要管 403/451：墙外 CDN 常用「直接按 IP 拒绝」这一招 ——
+    /// 实测欧乐影院的 europe.olemovienews.com 就是这样：国内直连 403、代理 200，
+    /// 而且我们连 TLS 都握得上，所以只看「连接失败」会漏掉它。
+    /// 404/410 是资源真没了，换代理没意义。
+    /// </summary>
+    private static bool ShouldRetryViaProxy(HttpStatusCode status) =>
+        status is HttpStatusCode.Forbidden
+            or HttpStatusCode.UnavailableForLegalReasons
+            or HttpStatusCode.TooManyRequests;
+
+    private void MarkProxyRequired(string host)
+    {
+        if (_proxyRequiredHosts.TryAdd(host, true))
+            Log?.Invoke($"{host} 直连不通，已改用代理下载（{_proxyUrl}）。");
+    }
+
+    private static string? TryGetHost(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : null;
+
+    /// <summary>
+    /// 是不是「网络根本不通」（而不是站点返回了 4xx/5xx）。
+    /// 只有这一类才值得换代理重试 —— 站点自己报错时换代理纯属白费。
+    /// </summary>
+    private static bool IsConnectivityFailure(Exception ex, CancellationToken ct)
+    {
+        if (ct.IsCancellationRequested) return false;   // 用户取消，不是网络问题
+
+        for (var e = ex; e is not null; e = e.InnerException)
+        {
+            if (e is HttpRequestException or SocketException or TaskCanceledException) return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -61,7 +226,7 @@ public sealed class HlsDownloader : IDisposable
     /// </summary>
     public async Task<(string Text, string FinalUrl)> FetchPlaylistAsync(string url, CancellationToken ct = default)
     {
-        using var resp = await _http.GetAsync(url, HttpCompletionOption.ResponseContentRead, ct)
+        using var resp = await HttpGetAsync(url, HttpCompletionOption.ResponseContentRead, ct)
             .ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
 
@@ -179,7 +344,9 @@ public sealed class HlsDownloader : IDisposable
 
         if (options.AutoSkipInvalidSegments && inspectorReport.Suspects.Count > 0)
         {
-            await SegmentInspector.VerifyKeyAvailabilityAsync(playlist, _http, inspectorReport, ct);
+            await SegmentInspector.VerifyKeyAvailabilityAsync(playlist,
+                (keyUrl, token) => HttpGetAsync(keyUrl, HttpCompletionOption.ResponseHeadersRead, token),
+                inspectorReport, ct);
         }
 
         var skipSet = new HashSet<int>();
@@ -565,16 +732,17 @@ public sealed class HlsDownloader : IDisposable
 
     private async Task<(byte[]? Data, string? FailReason)> FetchBytesAsync(HlsSegment segment, CancellationToken ct)
     {
-        using var req = new HttpRequestMessage(HttpMethod.Get, segment.Uri);
-        if (segment.ByteRangeLength.HasValue && segment.ByteRangeOffset.HasValue)
+        using var resp = await HttpSendAsync(() =>
         {
-            req.Headers.Range = new RangeHeaderValue(
-                segment.ByteRangeOffset.Value,
-                segment.ByteRangeOffset.Value + segment.ByteRangeLength.Value - 1);
-        }
-
-        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct)
-            .ConfigureAwait(false);
+            var request = new HttpRequestMessage(HttpMethod.Get, segment.Uri);
+            if (segment.ByteRangeLength.HasValue && segment.ByteRangeOffset.HasValue)
+            {
+                request.Headers.Range = new RangeHeaderValue(
+                    segment.ByteRangeOffset.Value,
+                    segment.ByteRangeOffset.Value + segment.ByteRangeLength.Value - 1);
+            }
+            return request;
+        }, segment.Uri, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode)
             return (null, $"HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
 
@@ -633,7 +801,7 @@ public sealed class HlsDownloader : IDisposable
 
             try
             {
-                using var resp = await _http.GetAsync(uri, HttpCompletionOption.ResponseContentRead, ct)
+                using var resp = await HttpGetAsync(uri, HttpCompletionOption.ResponseContentRead, ct)
                     .ConfigureAwait(false);
                 if (!resp.IsSuccessStatusCode)
                 {

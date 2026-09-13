@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
 using M3U8Downloader.Core.Net;
@@ -37,6 +38,12 @@ public sealed class SiteContext : IDisposable
     public string? ProxyUrl { get; }
 
     public bool HasProxy => Proxied is not null;
+
+    /// <summary>本实例上「直连失败 → 改用代理」发生了多少次（写进解析日志用）</summary>
+    public int ProxyFallbackCount { get; private set; }
+
+    /// <summary>最后一次触发代理回退的主机名</summary>
+    public string? LastProxyFallbackHost { get; private set; }
 
     static SiteContext()
     {
@@ -89,11 +96,15 @@ public sealed class SiteContext : IDisposable
 
     private static HttpClient CreateClient(string? proxyUrl, string userAgent)
     {
-        var handler = new HttpClientHandler
+        // 用 SocketsHttpHandler 而不是 HttpClientHandler：需要它的 ConnectTimeout
+        var handler = new SocketsHttpHandler
         {
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
             AllowAutoRedirect = true,
             MaxAutomaticRedirections = 10,
+            // 连不上就早点认输：被墙的站点靠「直连失败 → 换代理」兜底，
+            // 若连接超时拖到 20 秒以上，用户只会以为程序卡死了
+            ConnectTimeout = TimeSpan.FromSeconds(8),
         };
 
         if (proxyUrl is not null)
@@ -118,9 +129,67 @@ public sealed class SiteContext : IDisposable
     public Task<string> GetHtmlAsync(string url, CancellationToken ct = default) =>
         GetHtmlAsync(url, Direct, ct);
 
-    /// <summary>GET 一个 HTML 页面，是否走代理由适配器自己声明</summary>
-    public Task<string> GetHtmlAsync(string url, ISiteAdapter adapter, CancellationToken ct = default) =>
-        GetHtmlAsync(url, For(adapter), ct);
+    /// <summary>
+    /// 按适配器的需求取页面，**直连不通时自动改走代理重试一次**。
+    ///
+    /// 这一层回退是必要的：绝大多数影视站在国内、直连又快又不耗代理，
+    /// 但确实有一部分（欧乐影院 olevod.com 实测就是这样）挂在外面，国内直连直接超时。
+    /// 让每个适配器自己声明 NeedsProxy 既容易漏，又会让国内站点白白绕一圈代理；
+    /// 靠"失败了再回退"就两全了 —— 通畅时零代理开销，不通时自动兜底。
+    /// </summary>
+    public async Task<string> GetHtmlAsync(string url, ISiteAdapter adapter, CancellationToken ct = default)
+    {
+        if (adapter.NeedsProxy && Proxied is not null)
+            return await GetHtmlAsync(url, Proxied, ct).ConfigureAwait(false);
+
+        try
+        {
+            return await GetHtmlAsync(url, Direct, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (Proxied is not null && IsConnectivityFailure(ex, ct))
+        {
+            var html = await GetHtmlAsync(url, Proxied, ct).ConfigureAwait(false);
+            NoteProxyFallback(url);
+            return html;
+        }
+        catch (HttpRequestException ex) when (Proxied is not null && ShouldRetryViaProxy(ex.StatusCode))
+        {
+            // 连上了但被「按 IP 拒绝」（403/451）：同样换代理再试一次
+            var html = await GetHtmlAsync(url, Proxied, ct).ConfigureAwait(false);
+            NoteProxyFallback(url);
+            return html;
+        }
+    }
+
+    private void NoteProxyFallback(string url)
+    {
+        ProxyFallbackCount++;
+        LastProxyFallbackHost = Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : url;
+    }
+
+    /// <summary>403/451/429 这类「按 IP 拒绝」值得换代理再试；404/410 是资源真没了，换也没用</summary>
+    private static bool ShouldRetryViaProxy(HttpStatusCode? status) =>
+        status is HttpStatusCode.Forbidden
+            or HttpStatusCode.UnavailableForLegalReasons
+            or HttpStatusCode.TooManyRequests;
+
+    /// <summary>
+    /// 是不是「网络根本不通」（而不是站点返回了 4xx/5xx）。
+    /// 只有这一类才值得换代理重试 —— 站点自己报错时换代理纯属白费。
+    /// </summary>
+    private static bool IsConnectivityFailure(Exception ex, CancellationToken ct)
+    {
+        // 用户按了取消：这是取消，不是网络问题
+        if (ct.IsCancellationRequested) return false;
+
+        for (var e = ex; e is not null; e = e.InnerException)
+        {
+            if (e is HttpRequestException or SocketException) return true;
+            if (e is TaskCanceledException) return true;   // HttpClient.Timeout 超时
+        }
+
+        return false;
+    }
 
     /// <summary>用指定客户端 GET 一个页面</summary>
     public async Task<string> GetHtmlAsync(string url, HttpClient client, CancellationToken ct = default)
@@ -325,6 +394,8 @@ public sealed class SiteResolver
 
         if (adapter.NeedsProxy && ctx.HasProxy)
             series.Log.Add($"{adapter.Name}：页面经代理访问（{ctx.ProxyUrl}），分片仍直连下载。");
+        else if (ctx.ProxyFallbackCount > 0)
+            series.Log.Add($"直连 {ctx.LastProxyFallbackHost} 不通，已自动改用代理（{ctx.ProxyUrl}）；分片下载仍然直连。");
 
         // 列表页通常只有当前集的 m3u8，这里顺手补一集，失败不影响列表展示
         var first = series.SelectedEpisodes.FirstOrDefault();

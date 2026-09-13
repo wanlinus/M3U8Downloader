@@ -362,6 +362,9 @@ public sealed class SeriesDownloader : IDisposable
         var gate = new SemaphoreSlim(Math.Max(1, options.EpisodeConcurrency));
         var sync = new object();
 
+        // 引擎那边的消息（比如「某主机直连不通，已改用代理下载」）也写进报告日志
+        _hls.Log = line => { lock (sync) report.Log.Add(line); };
+
         // 正在下载的集：集号 → (已下载字节, 最近一次有效速度, 该速度的时间戳)。
         // 用来把"已下载量 / 总速度"汇总到整部剧的进度上（多集并发时速度要相加）。
         // 速度为什么要单独记时间：引擎每 0.5 秒才算一次速度，其余上报都是 0，

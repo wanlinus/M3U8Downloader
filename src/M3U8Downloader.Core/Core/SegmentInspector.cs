@@ -120,10 +120,14 @@ public sealed class SegmentInspector
     /// <summary>
     /// 在静态分析基础上，实际探测被怀疑分片的密钥是否可取。
     /// 取不到密钥的加密分片必然失败，直接升级为 Undecryptable。
+    ///
+    /// 这里收的是**取页面的方法**而不是一个 HttpClient：下载器那边要按主机决定
+    /// 直连还是代理（墙外站点的密钥也在墙外），直接把客户端传进来就绕过了那层回退，
+    /// 网络不通会被误判成「密钥不可用 → 这一片是广告」。
     /// </summary>
     public static async Task VerifyKeyAvailabilityAsync(
         HlsMediaPlaylist playlist,
-        HttpClient http,
+        Func<string, CancellationToken, Task<HttpResponseMessage>> getAsync,
         Report report,
         CancellationToken ct = default)
     {
@@ -142,9 +146,10 @@ public sealed class SegmentInspector
             bool ok;
             try
             {
-                using var resp = await http.GetAsync(keyUri, HttpCompletionOption.ResponseHeadersRead, ct);
+                using var resp = await getAsync(keyUri, ct);
                 ok = resp.IsSuccessStatusCode;
             }
+            catch (OperationCanceledException) { throw; }
             catch { ok = false; }
 
             if (!ok)
