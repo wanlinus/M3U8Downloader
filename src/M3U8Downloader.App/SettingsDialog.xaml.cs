@@ -184,7 +184,7 @@ public sealed partial class SettingsDialog : ContentDialog
         var confirm = new ContentDialog
         {
             XamlRoot = XamlRoot,
-            Title = "清除已下载的 FFmpeg",
+            Title = "清理已下载的 FFmpeg",
             Content = "将删除：\n" + string.Join("\n", existing) +
                       "\n\n删除后如需转码/校验要重新下载。",
             PrimaryButtonText = "删除",
