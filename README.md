@@ -274,12 +274,37 @@ dotnet run --project tests\M3U8Downloader.SelfTest
 ### 发布（自包含，免安装）
 
 ```powershell
-.\scripts\publish.ps1
+.\scripts\publish.ps1              # 图形界面 + 命令行
+.\scripts\publish.ps1 -Version 1.2.3   # 顺便把版本号写进 exe（CI 用 tag 作版本）
 ```
 
 产物已内嵌 Windows App SDK 运行时与 .NET 运行时，**目标机器无需安装任何运行时**，
 直接双击 `publish\app-win-x64\M3U8Downloader.exe` 即可。整体约 210 MB。
 脚本末尾会自检 `hostpolicy.dll` / `coreclr.dll` / `Microsoft.WindowsAppRuntime.dll` 等是否齐全。
+
+### 自动打包（GitHub Actions → Releases）
+
+推一个 `v*` 的 tag 就会自动构建并发布到 Releases：
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+`.github/workflows/release.yml` 里做的事：
+
+1. 装 .NET SDK 10；
+2. **先跑一遍自检**（本地 HLS 服务器，不依赖外网）—— 过不了就不打包；
+3. 调 `scripts/publish.ps1 -Version <tag>`，与本地发布**同一条路径**，
+   所以 CI 打出来的包和本地跑出来的不会有差别；
+4. 压缩成两个 zip：`M3U8Downloader-<tag>-win-x64.zip`（界面）、`m3u8dl-<tag>-win-x64.zip`（命令行）；
+5. 传到 Releases；同时留一份 artifact（30 天），Release 出问题时还能从 Actions 页面下载。
+
+不想打 tag 也行：在 GitHub 的 **Actions → 打包发布 → Run workflow** 里手动触发，填个版本号即可。
+
+> 包内**不含 FFmpeg** —— 它是独立的第三方组件，许可与体积都不适合打进包。
+> 不做任何配置也能正常下载，只是产物保留 `.ts` 且跳过解码校验；
+> 需要转 MP4 时在「设置 → FFmpeg」里一键下载即可。
 
 ---
 

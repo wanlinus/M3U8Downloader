@@ -1,24 +1,33 @@
 # Publish self-contained builds (target machine needs NO .NET / Windows App SDK runtime)
-# Usage: .\publish.ps1 [-Runtime win-x64|win-x86|win-arm64] [-SkipApp] [-SkipCli]
+# Usage: .\publish.ps1 [-Runtime win-x64|win-x86|win-arm64] [-SkipApp] [-SkipCli] [-Version 1.2.3]
+#
+# -Version is optional: it stamps the assembly version (CI passes the tag, so the
+# built exe reports the released version instead of the project default).
 
 param(
     [ValidateSet('win-x64','win-x86','win-arm64')]
     [string]$Runtime = 'win-x64',
     [switch]$SkipApp,
-    [switch]$SkipCli
+    [switch]$SkipCli,
+    [string]$Version = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
+# 交给 dotnet 的版本参数（不指定就沿用项目里的默认值）
+$versionArgs = @()
+if ($Version) { $versionArgs = @("-p:Version=$Version") }
+
 Write-Host "== Publish M3U8 Downloader ($Runtime, self-contained) ==" -ForegroundColor Cyan
+if ($Version) { Write-Host "   version: $Version" -ForegroundColor Cyan }
 
 if (-not $SkipCli) {
     Write-Host ""
     Write-Host "[1/2] CLI" -ForegroundColor Yellow
     $cliOut = Join-Path $root "publish\cli-$Runtime"
-    dotnet publish "src\M3U8Downloader.Cli\M3U8Downloader.Cli.csproj" -c Release -r $Runtime -o $cliOut
+    dotnet publish "src\M3U8Downloader.Cli\M3U8Downloader.Cli.csproj" -c Release -r $Runtime -o $cliOut @versionArgs
     if ($LASTEXITCODE -ne 0) { exit 1 }
     Write-Host ("  -> " + (Join-Path $cliOut 'm3u8dl.exe')) -ForegroundColor Green
 }
@@ -44,7 +53,7 @@ if (-not $SkipApp) {
     }
 
     $platform = switch ($Runtime) { 'win-x64' { 'x64' } 'win-x86' { 'x86' } 'win-arm64' { 'ARM64' } }
-    dotnet publish "src\M3U8Downloader.App\M3U8Downloader.App.csproj" -c Release -r $Runtime -p:Platform=$platform -o $appOut
+    dotnet publish "src\M3U8Downloader.App\M3U8Downloader.App.csproj" -c Release -r $Runtime -p:Platform=$platform -o $appOut @versionArgs
     if ($LASTEXITCODE -ne 0) { exit 1 }
 
     # Verify the private runtime was actually bundled, otherwise the target

@@ -1,0 +1,106 @@
+name: 打包发布
+
+# 推一个 v* 的 tag 就自动跑；也可以在 Actions 页面手动触发（填个版本号）
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（形如 v1.0.0）'
+        required: true
+        default: 'v0.0.0-manual'
+
+# softprops/action-gh-release 需要写权限才能建 Release
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 .NET SDK 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 解析版本号
+        id: ver
+        shell: pwsh
+        run: |
+          $tag = if ('${{ github.ref_type }}' -eq 'tag') { '${{ github.ref_name }}' } else { '${{ inputs.version }}' }
+          if (-not $tag) { $tag = 'v0.0.0' }
+          $number = $tag -replace '^v', ''
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "number=$number" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "tag = $tag  ->  assembly version = $number"
+
+      # 自检跑的是本地 HttpListener 上的假 HLS 服务器，不依赖外网，所以 CI 里也能跑。
+      # 它守着下载引擎、任务队列、续传、站点适配器这些回归，先过这一关再打包。
+      - name: 自检（不依赖外网）
+        run: dotnet run --project tests/M3U8Downloader.SelfTest -c Release
+
+      # 复用本地同一个脚本：CI 与本地走同一条发布路径，避免打出来的包不一样。
+      # -Version 让 exe 里的版本号与 tag 一致。
+      - name: 发布自包含包
+        shell: pwsh
+        run: ./scripts/publish.ps1 -Runtime win-x64 -Version ${{ steps.ver.outputs.number }}
+
+      - name: 压缩成 zip
+        shell: pwsh
+        run: |
+          $tag = '${{ steps.ver.outputs.tag }}'
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+
+          # 用 /* 打包：解压出来直接就是 exe，不再套一层目录
+          Compress-Archive -Path 'publish/app-win-x64/*' -DestinationPath "dist/M3U8Downloader-$tag-win-x64.zip" -CompressionLevel Optimal
+          Compress-Archive -Path 'publish/cli-win-x64/*' -DestinationPath "dist/m3u8dl-$tag-win-x64.zip" -CompressionLevel Optimal
+
+          Get-ChildItem dist | ForEach-Object {
+            Write-Host ("  {0}  {1} MB" -f $_.Name, [math]::Round($_.Length / 1MB, 1))
+          }
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ steps.ver.outputs.tag }}
+          path: dist/*.zip
+          retention-days: 30
+
+      - name: 发布到 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: M3U8 视频下载器 ${{ steps.ver.outputs.tag }}
+          files: dist/*.zip
+          generate_release_notes: true
+          body: |
+            ## 免安装，解压即用
+
+            下载 `M3U8Downloader-*-win-x64.zip`，解压后双击 `M3U8Downloader.exe` 即可。
+            包内已自带 .NET 运行时与 Windows App SDK 运行时，**目标机器不需要预装任何东西**。
+
+            | 包 | 用途 |
+            |---|---|
+            | `M3U8Downloader-*-win-x64.zip` | 图形界面（主程序） |
+            | `m3u8dl-*-win-x64.zip` | 命令行版，供脚本调用 |
+
+            ## 系统要求
+
+            Windows 10 1809 及以上 / Windows 11，64 位。
+
+            ## 关于 FFmpeg
+
+            **包内不含 FFmpeg** —— 它是独立的第三方组件，许可与体积都不适合打进包。
+            不做任何配置也能正常下载，只是产物保留为 `.ts`（不转 `.mp4`）、并跳过解码校验。
+            需要转 MP4 时，在「设置 → FFmpeg」里点一次「自动下载 FFmpeg」即可（约 200 MB）。
+
+            ## 首次运行提示
+
+            程序没有代码签名，Windows SmartScreen 可能提示「已保护你的电脑」——
+            点「更多信息」→「仍要运行」即可。
