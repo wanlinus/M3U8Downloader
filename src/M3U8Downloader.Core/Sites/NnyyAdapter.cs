@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -270,25 +271,48 @@ public sealed class NnyyAdapter : ISiteAdapter
         return list;
     }
 
-    /// <summary>「BF 第1集」→「BF」</summary>
-    private static string ShortNameFrom(string text) =>
-        Regex.Replace(text, @"第\s*\d+\s*[集话期]", "").Trim();
+    /// <summary>
+    /// 「BF 第1集」→「BF」，「SD HD」→「SD」。
+    /// 站点把源名和集数/画质写在同一行按钮上，这里只取源名那一段。
+    /// </summary>
+    private static string ShortNameFrom(string text)
+    {
+        var stripped = Regex.Replace(text, @"第\s*\d+\s*[集话期]", "").Trim();
+        var first = stripped.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+        return string.IsNullOrWhiteSpace(first) ? stripped : first;
+    }
 
     // ---------------- 页面解析 ----------------
 
     private static List<(string Slug, int Number, string Title)> ParseEpisodes(string html)
     {
         var list = new List<(string, int, string)>();
-        var seen = new HashSet<int>();
+        var seenNumbers = new HashSet<int>();
+        var seenSlugs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var fallback = 0;
 
         foreach (Match m in PlayButton.Matches(html))
         {
             var slug = m.Groups["slug"].Value.Trim();
-            var number = ParseEpisodeNumber(slug);
-            if (number <= 0 || !seen.Add(number)) continue;
+            if (slug.Length == 0 || !seenSlugs.Add(slug)) continue;
 
             var anchor = AnchorText.Match(m.Groups["inner"].Value);
             var title = anchor.Success ? CleanText(anchor.Groups["text"].Value) : "";
+
+            var number = ParseEpisodeNumber(slug);
+            if (number <= 0)
+            {
+                // 电影页的 slug 是 "hd" / "other" 这种，**根本不含集号** ——
+                // 这时按出现顺序编号。少了这一步，整页一集都解析不出来
+                // （报「页面里没有找到剧集列表」，努努的电影页就是这样）。
+                do { number = ++fallback; } while (!seenNumbers.Add(number));
+            }
+            else if (!seenNumbers.Add(number))
+            {
+                // 同一个集号出现多次（页面里常有重复的选集区），保留第一次
+                continue;
+            }
+
             list.Add((slug, number, string.IsNullOrWhiteSpace(title) ? $"第{number}集" : title));
         }
 
@@ -355,8 +379,9 @@ public sealed class NnyyAdapter : ISiteAdapter
         catch { return null; }
     }
 
+    /// <summary>去标签 + 解码 HTML 实体（剧名里的 <c>&amp;#39;</c> 要还原成撇号）</summary>
     private static string CleanText(string html) =>
-        Regex.Replace(TagStrip.Replace(html, ""), @"\s+", " ").Trim();
+        WebUtility.HtmlDecode(Regex.Replace(TagStrip.Replace(html, ""), @"\s+", " ")).Trim();
 
     // ---------------- 内部类型 ----------------
 

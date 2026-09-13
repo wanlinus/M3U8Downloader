@@ -149,6 +149,46 @@ var nnyyPlaysJson = $$"""
 }
 """;
 
+// 电影页：slug 是 "hd" / "other"，**根本不含集号**。
+// 少了「按出现顺序编号」这一步，整页会报「没有找到剧集列表」。
+const string NnyyMovieHtml = """
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<title>《玛丽·雪莱的怪物》全集在线观看 - 电影 - 努努影院</title>
+</head>
+<body>
+<header class="product-header">
+  <h1 class="product-title" style="display: inline-block;">
+      玛丽·雪莱的怪物 Mary&#39;s Monster
+      <span style="font-size:15px;">(2030)</span>
+  </h1>
+  <img src="/nnimg/20304951.jpg" class="thumb detail-img" alt="玛丽·雪莱的怪物">
+</header>
+<div class="playlists" id="slider">
+  <ul id="eps-ul">
+    <li class="play-btn" onclick="on_play_btn(this)" ep_slug="hd"><a href="javascript:;" >HD中字</a></li>
+    <li class="play-btn" onclick="on_play_btn(this)" ep_slug="other"><a href="javascript:;" >其他</a></li>
+  </ul>
+</div>
+<script>
+  function on_ep(ep_slug) {
+    var url = '/_gp/{0}/{1}'.replace('{0}', '20304951').replace('{1}', ep_slug);
+  }
+  on_ep('hd');
+</script>
+</body></html>
+""";
+
+// 电影页的取源返回：按钮上写的是「SD HD」，源名应该只取到「SD」
+var nnyyMoviePlaysJson = $$"""
+{
+  "video_plays": [
+    { "play_data": "http://localhost:{{Port}}/index.m3u8", "src_site": "sdzy2" }
+  ],
+  "html_content": "<button onclick=\"play_changed(0)\">SD HD</button>"
+}
+""";
+
 // 通用兜底用例：页面里只有一段 JS，地址还是转义斜杠写法
 var genericHtml = $$"""
 <!DOCTYPE html>
@@ -224,8 +264,20 @@ _ = Task.Run(async () =>
                 }
                 else if (path.StartsWith("/_gp/", StringComparison.Ordinal))
                 {
-                    var body = Encoding.UTF8.GetBytes(nnyyPlaysJson);
+                    // 电影页用另一份取源结果（按钮上写的是「SD HD」这种）
+                    var payload = path.Contains("20304951", StringComparison.Ordinal)
+                        ? nnyyMoviePlaysJson
+                        : nnyyPlaysJson;
+
+                    var body = Encoding.UTF8.GetBytes(payload);
                     ctx.Response.ContentType = "application/json; charset=utf-8";
+                    ctx.Response.ContentLength64 = body.Length;
+                    await ctx.Response.OutputStream.WriteAsync(body);
+                }
+                else if (path.Equals("/dianying/20304951.html", StringComparison.OrdinalIgnoreCase))
+                {
+                    var body = Encoding.UTF8.GetBytes(NnyyMovieHtml);
+                    ctx.Response.ContentType = "text/html; charset=utf-8";
                     ctx.Response.ContentLength64 = body.Length;
                     await ctx.Response.OutputStream.WriteAsync(body);
                 }
@@ -1276,6 +1328,7 @@ Console.WriteLine("阶段 J：站点适配层（自动登记 / 努努影院 / �
 
 var okRegistry = false;
 var okNnyy = false;
+var okNnyyMovie = false;
 var okGeneric = false;
 var okEmpty = false;
 
@@ -1338,6 +1391,29 @@ var okEmpty = false;
     okNnyy = okNnyy && folder.EndsWith("交锋 - 努努影院", StringComparison.Ordinal);
 }
 
+// 电影页：slug 是 "hd"/"other"，**没有集号** —— 从前会把整页过滤空，
+// 报「页面里没有找到剧集列表」。这条守着「按出现顺序编号」的兜底。
+{
+    using var movieCtx = new SiteContext();
+    var parsed = await new NnyyAdapter().ParseAsync(NnyyMovieHtml,
+        new Uri($"http://localhost:{Port}/dianying/20304951.html"), movieCtx);
+
+    Console.WriteLine($"  努努电影页: {parsed.Title} · " +
+                      $"{parsed.Sources.FirstOrDefault()?.Episodes.Count ?? 0} 集 / {parsed.Sources.Count} 个源");
+    foreach (var source in parsed.Sources)
+        foreach (var ep in source.Episodes)
+            Console.WriteLine($"    {source.Name} → #{ep.Number} {ep.DisplayTitle}（key={ep.Key}）");
+
+    var first = parsed.AllEpisodes.FirstOrDefault();
+    okNnyyMovie = parsed.Sources.Count == 1
+                  && parsed.Sources[0].Episodes.Count == 2
+                  && parsed.Sources[0].Name == "SD（sdzy2）"      // 按钮上写的是「SD HD」，只取源名
+                  && parsed.Title == "玛丽·雪莱的怪物 Mary's Monster"   // HTML 实体要解码
+                  && first is { Number: 1, Key: "hd" }
+                  && first.DisplayTitle == "HD中字"
+                  && first.PlaylistUrl?.EndsWith("/index.m3u8", StringComparison.Ordinal) == true;
+}
+
 {
     using var genericCtx = new SiteContext();
     var resolver = SiteResolver.CreateDefault();
@@ -1367,14 +1443,14 @@ var okEmpty = false;
 Console.WriteLine();
 var ok = okB && okC && okPaused && okStopped && okResume && okSettled && okRetry
          && okResumeSubset && okFallback && okDuration && encOk && okSingle
-         && okRegistry && okNnyy && okGeneric && okEmpty;
+         && okRegistry && okNnyy && okNnyyMovie && okGeneric && okEmpty;
 Console.WriteLine(ok
     ? "自检结果       : ✔ 通过"
     : $"自检结果       : ✘ 失败（阶段B {okB} / 阶段C {okC} / 暂停 {okPaused} / 暂停后静止 {okStopped}" +
       $" / 续传 {okResume} / 续传后静止 {okSettled} / 重试 {okRetry}" +
       $" / 续传只下选中集 {okResumeSubset} / 多源兜底 {okFallback} / 时长核对 {okDuration}" +
       $" / 密文首字节 0x3C {encOk} / 单文件服务 {okSingle}" +
-      $" / 适配器登记 {okRegistry} / 努努影院 {okNnyy} / 通用兜底 {okGeneric} / 空页面报错 {okEmpty}）");
+      $" / 适配器登记 {okRegistry} / 努努影院 {okNnyy} / 努努电影页 {okNnyyMovie} / 通用兜底 {okGeneric} / 空页面报错 {okEmpty}）");
 
 listener.Stop();
 return ok ? 0 : 1;
