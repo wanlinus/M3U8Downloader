@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/M3U8Downloader.App/M3U8Downloader.App.csproj">
+      <Platform Project="x86" />
+    </Project>
+    <Project Path="src/M3U8Downloader.Cli/M3U8Downloader.Cli.csproj" />
+    <Project Path="src/M3U8Downloader.Core/M3U8Downloader.Core.csproj" />
+  </Folder>
+</Solution>

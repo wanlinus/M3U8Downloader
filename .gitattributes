@@ -1,0 +1,25 @@
+# 统一换行符，避免不同平台 clone 后 diff 爆炸
+* text=auto
+
+# Windows 批处理 / PowerShell 必须 CRLF，否则某些环境下会解析异常
+*.ps1   text eol=crlf
+*.cmd   text eol=crlf
+*.bat   text eol=crlf
+
+# C# / XAML / 项目文件用 CRLF（与 Visual Studio 默认一致）
+*.cs    text eol=crlf
+*.xaml  text eol=crlf
+*.csproj text eol=crlf
+*.slnx  text eol=crlf
+
+# 许可证与文档保留原样
+LICENSE               text
+NOTICE                text
+*.md                  text
+
+# 二进制
+*.png   binary
+*.ico   binary
+*.exe   binary
+*.dll   binary
+*.zip   binary

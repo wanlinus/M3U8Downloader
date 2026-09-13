@@ -1,0 +1,35 @@
+# 构建产物
+[Bb]in/
+[Oo]bj/
+publish/
+*.user
+*.suo
+
+# 应用内下载的 FFmpeg（体积大，且属第三方构建，不入库）
+ffmpeg/
+**/ffmpeg/ffmpeg.exe
+**/ffmpeg/ffprobe.exe
+
+# 下载产物与临时文件
+*.ts
+*.mp4
+*.part
+*.tmp
+
+# IDE
+.vs/
+.vscode/*
+!.vscode/launch.json
+!.vscode/tauri-dev.mjs
+.idea/
+
+# 系统
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# 诊断 / 临时目录
+_diag/
+_probe/
+_verify/
+*.log

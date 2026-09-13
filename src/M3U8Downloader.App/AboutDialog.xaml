@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ContentDialog
+    x:Class="M3U8Downloader.AboutDialog"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="关于"
+    PrimaryButtonText="复制诊断信息"
+    CloseButtonText="关闭"
+    DefaultButton="Close">
+
+    <ScrollViewer MaxHeight="440" VerticalScrollBarVisibility="Auto" Padding="0,0,8,0">
+        <StackPanel Spacing="12" Width="440">
+
+            <!-- 标题 -->
+            <StackPanel Spacing="2">
+                <TextBlock x:Name="AppNameText" FontSize="18" FontWeight="SemiBold" />
+                <TextBlock x:Name="VersionText" FontSize="12"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            </StackPanel>
+
+            <!-- 版权 -->
+            <StackPanel Spacing="2">
+                <TextBlock x:Name="CopyrightText" FontSize="12" TextWrapping="Wrap" />
+                <HyperlinkButton x:Name="ProjectUrlLink" FontSize="12" Padding="0,2,0,0"
+                                 Visibility="Collapsed" />
+            </StackPanel>
+
+            <Border Height="1" Background="{ThemeResource CardStrokeColorDefaultBrush}" />
+
+            <!-- 许可证 -->
+            <StackPanel Spacing="2">
+                <TextBlock Text="许可证" FontWeight="SemiBold" FontSize="13" />
+                <TextBlock x:Name="LicenseText" FontSize="12" TextWrapping="Wrap"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            </StackPanel>
+
+            <Border Height="1" Background="{ThemeResource CardStrokeColorDefaultBrush}" />
+
+            <!-- 运行环境 -->
+            <StackPanel Spacing="2">
+                <TextBlock Text="运行环境" FontWeight="SemiBold" FontSize="13" />
+                <TextBlock x:Name="RuntimeText" FontSize="12" TextWrapping="Wrap"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <TextBlock x:Name="PathsText" FontSize="11" TextWrapping="Wrap"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            </StackPanel>
+
+            <Border Height="1" Background="{ThemeResource CardStrokeColorDefaultBrush}" />
+
+            <!-- 第三方组件 -->
+            <StackPanel Spacing="2">
+                <TextBlock Text="第三方组件" FontWeight="SemiBold" FontSize="13" />
+                <TextBlock x:Name="ThirdPartyText" FontSize="12" TextWrapping="Wrap"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            </StackPanel>
+
+            <TextBlock x:Name="CopyHintText" FontSize="12" Visibility="Collapsed"
+                       Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                       Text="✓ 诊断信息已复制到剪贴板" />
+        </StackPanel>
+    </ScrollViewer>
+</ContentDialog>

@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>m3u8dl</AssemblyName>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <!-- 指定 RID 发布时自包含，做到免安装 -->
+    <SelfContained Condition="'$(RuntimeIdentifier)' != ''">true</SelfContained>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\M3U8Downloader.Core\M3U8Downloader.Core.csproj" />
+  </ItemGroup>
+
+</Project>

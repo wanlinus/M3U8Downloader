@@ -1,0 +1,30 @@
+M3U8 视频下载器 (M3U8Downloader)
+Copyright 2026 wanlinus
+
+This product is licensed under the Apache License, Version 2.0.
+See the LICENSE file for the full license text.
+
+----------------------------------------------------------------------
+Third-party components
+----------------------------------------------------------------------
+
+This product can invoke or download FFmpeg (ffmpeg / ffprobe), which is
+provided by its own copyright holders under its own license terms
+(LGPL 2.1+ or GPL 2+/3+, depending on the build).
+
+FFmpeg is NOT bundled with this product. It is either:
+  (a) located on the user's system, or
+  (b) downloaded by the user's explicit action from a third-party build
+      provider (by default: https://github.com/BtbN/FFmpeg-Builds).
+
+FFmpeg's license is independent of this product's license. See
+THIRD_PARTY_NOTICES.md for details, including the default build
+variant and how to switch it.
+
+----------------------------------------------------------------------
+This product is built on the following platforms and frameworks,
+which are distributed under their own licenses:
+
+  .NET / C#                      MIT License (Microsoft Corporation)
+  Windows App SDK (WinUI 3)      Microsoft Software License Terms
+  Windows SDK                    Microsoft Software License Terms
