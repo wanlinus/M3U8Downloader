@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
+using System.Text.RegularExpressions;
 using M3U8Downloader.Core;
 using M3U8Downloader.Core.Downloads;
 using M3U8Downloader.Core.Sites;
@@ -208,10 +209,89 @@ const string EmptyHtml = """
 <body><p>这里什么都没有。</p></body></html>
 """;
 
+// 影迷界影院（wakuredo.com）详情页：真实页面的精简版。
+// 这个站点有两处打破了「苹果 CMS 只有一种 URL 形态」的假设：
+//   1. 播放页是**斜杠**分隔 —— /play/2337178967/{sid}/{nid}.html，
+//      而不是常见的 /vodplay/{id}-{sid}-{nid}.html；
+//   2. 详情页 ID（62329）与播放页 ID（2337178967）**是两套编号**，
+//      按详情页 ID 过滤会把本剧的选集链接全部滤掉。
+// 页面末尾那条「另一部剧」的链接用来验证多数投票能把侧边栏噪声挡在外面。
+const string WakuredoDetailHtml = """
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<title>王凯《交锋》全集免费 - 影迷界影院</title>
+<meta property="og:title" content="王凯《交锋》全集免费">
+<meta property="og:site_name" content="影迷界影院">
+</head>
+<body>
+<div class="panel"><p>交锋电视剧全集播放、交锋在线观看完整版电视剧免费</p></div>
+<a class="btn" href="/play/2337178967/3/1.html">▶ 立即播放</a>
+<div class="panel"><h2 style="font-size:16px;margin-bottom:10px">播放列表</h2>
+  <div class="line-name">线路6</div>
+  <div class="eps mac-eps-panel">
+    <a class="" href="/play/2337178967/7/1.html" title="第01集">第01集</a>
+    <a class="" href="/play/2337178967/7/2.html" title="第02集">第02集</a>
+    <a class="" href="/play/2337178967/7/3.html" title="第03集">第03集</a>
+  </div>
+  <div class="line-name on">线路10</div>
+  <div class="eps mac-eps-panel mac-on">
+    <a class="" href="/play/2337178967/3/1.html" title="第01集">第01集</a>
+    <a class="" href="/play/2337178967/3/2.html" title="第02集">第02集</a>
+    <a class="" href="/play/2337178967/3/3.html" title="第03集">第03集</a>
+  </div>
+  <div class="line-name">线路9</div>
+  <div class="eps mac-eps-panel">
+    <a class="" href="/play/2337178967/8/1.html" title="第01集">第01集</a>
+    <a class="" href="/play/2337178967/8/2.html" title="第02集">第02集</a>
+    <a class="" href="/play/2337178967/8/3.html" title="第03集">第03集</a>
+  </div>
+</div>
+<div class="side"><h3>猜你喜欢</h3>
+  <a href="/play/8888888888/1/1.html">另一部剧 第01集</a>
+</div>
+</body></html>
+""";
+
+// 播放页的 player_aaaa 取自真实页面（只把直链换成自检用的本地地址）。
+// 不同 sid 给不同的 from，用来验证「当前源名取自本页、其余源靠探测」这条逻辑。
+// 真实播放页同样带完整选集区，且用 line-name on 标出正在播的那条线路。
+string WakuredoPlayHtml(int sid, int nid)
+{
+    var from = sid switch { 3 => "lzm3u8", 7 => "bfzym3u8", 8 => "wjm3u8", _ => $"unknown{sid}" };
+
+    var panels = new StringBuilder();
+    foreach (var (line, s) in new[] { ("线路10", 3), ("线路6", 7), ("线路9", 8) })
+    {
+        var on = s == sid ? " on" : "";
+        panels.Append($"<div class=\"line-name{on}\">{line}</div>");
+        panels.Append($"<div class=\"eps mac-eps-panel{on}\">");
+        for (var i = 1; i <= 3; i++)
+        {
+            var cur = s == sid && i == nid ? " on" : "";
+            panels.Append($"<a class=\"{cur}\" href=\"/play/2337178967/{s}/{i}.html\" title=\"交锋 第{i:00}集\">第{i:00}集</a>");
+        }
+        panels.Append("</div>");
+    }
+
+    return $$"""
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>交锋_第{{nid}}集 - 影迷界影院</title></head>
+<body>
+<div class="panel"><h2 style="font-size:16px;margin-bottom:10px">播放列表</h2>{{panels}}</div>
+<script type="text/javascript">
+var player_aaaa={"flag":"play","encrypt":0,"trysee":0,"points":0,"link":"\/play\/2337178967\/{{sid}}\/{{nid}}.html","link_next":"","link_pre":"","url":"http:\/\/localhost:{{Port}}\/index.m3u8","url_next":"","from":"{{from}}","server":"no","note":"","id":"2337178967","sid":{{sid}},"nid":{{nid}}}
+</script>
+</body></html>
+""";
+}
+
+// 影迷界影院的播放页：斜杠分隔的 /play/{剧ID}/{sid}/{nid}.html
+var wakuredoPlayPath = new Regex(
+    @"^/play/\d+/(?<sid>\d+)/(?<nid>\d+)\.html$", RegexOptions.IgnoreCase);
+
 var listener = new HttpListener();
 listener.Prefixes.Add($"http://localhost:{Port}/");
-listener.Start();
-Console.WriteLine($"本地测试服务器: http://localhost:{Port}/  " +
+listener.Start();Console.WriteLine($"本地测试服务器: http://localhost:{Port}/  " +
                   $"{SegmentCount} 个分片，每片约 {segments[0].Length / 1024.0:0} KB");
 
 _ = Task.Run(async () =>
@@ -291,6 +371,22 @@ _ = Task.Run(async () =>
                 else if (path.Equals("/empty.html", StringComparison.OrdinalIgnoreCase))
                 {
                     var body = Encoding.UTF8.GetBytes(EmptyHtml);
+                    ctx.Response.ContentType = "text/html; charset=utf-8";
+                    ctx.Response.ContentLength64 = body.Length;
+                    await ctx.Response.OutputStream.WriteAsync(body);
+                }
+                // ---- 影迷界影院用例：斜杠形态的详情页 / 播放页 ----
+                else if (path.Equals("/t/62329.html", StringComparison.OrdinalIgnoreCase))
+                {
+                    var body = Encoding.UTF8.GetBytes(WakuredoDetailHtml);
+                    ctx.Response.ContentType = "text/html; charset=utf-8";
+                    ctx.Response.ContentLength64 = body.Length;
+                    await ctx.Response.OutputStream.WriteAsync(body);
+                }
+                else if (wakuredoPlayPath.Match(path) is { Success: true } wm)
+                {
+                    var body = Encoding.UTF8.GetBytes(WakuredoPlayHtml(
+                        int.Parse(wm.Groups["sid"].Value), int.Parse(wm.Groups["nid"].Value)));
                     ctx.Response.ContentType = "text/html; charset=utf-8";
                     ctx.Response.ContentLength64 = body.Length;
                     await ctx.Response.OutputStream.WriteAsync(body);
@@ -1331,6 +1427,7 @@ var okNnyy = false;
 var okNnyyMovie = false;
 var okGeneric = false;
 var okEmpty = false;
+var okWakuredo = false;
 
 {
     using var registryCtx = new SiteContext();
@@ -1440,17 +1537,113 @@ var okEmpty = false;
     }
 }
 
+// 影迷界影院（wakuredo.com）：播放页是**斜杠**形态，而且详情页 ID（62329）与
+// 播放页 ID（2337178967）是两套编号。从前这两条会一起把 MacCmsAdapter 逼进
+// 「页面里既没有 player_aaaa 也没有剧集链接」的报错分支，用户看到的就是「解析不出来」。
+{
+    using var wxCtx = new SiteContext();
+    var resolver = SiteResolver.CreateDefault();
+    var adapter = resolver.Resolve(new Uri($"http://localhost:{Port}/t/62329.html"));
+
+    var canDetail = adapter?.CanHandle(new Uri("https://www.wakuredo.com/t/62329.html")) == true;
+    var canPlay = adapter?.CanHandle(new Uri("https://www.wakuredo.com/play/2337178967/7/1.html")) == true;
+    Console.WriteLine($"  影迷界影院 CanHandle：详情页={canDetail} 斜杠播放页={canPlay}（{adapter?.Name}）");
+
+    var parsed = await resolver.ParseAsync($"http://localhost:{Port}/t/62329.html", wxCtx);
+    Console.WriteLine($"  详情页解析: {parsed.Title} · {parsed.SiteName} · " +
+                      $"{parsed.Sources.Count} 个源 / {parsed.TotalEpisodes} 集 · 当前源 sid={parsed.PreferredSourceId}");
+    foreach (var source in parsed.Sources)
+        Console.WriteLine($"    {source.Name} → {source.Episodes.Count} 集，勾选 {source.Episodes.Count(e => e.IsSelected)}");
+
+    var current = parsed.Sources.FirstOrDefault(s => s.Id == parsed.PreferredSourceId);
+    var selected = parsed.SelectedEpisodes.ToList();
+
+    okWakuredo = canDetail && canPlay
+                 && adapter!.Kind == SiteKind.MacCms
+                 && parsed.Title == "王凯《交锋》全集免费"
+                 && parsed.SiteName == "影迷界影院"
+                 // 3 个源各 3 集；侧边栏那部「另一部剧」（id 8888888888）必须被多数投票滤掉
+                 && parsed.Sources.Count == 3
+                 && parsed.Sources.All(s => s.Episodes.Count == 3)
+                 && parsed.TotalEpisodes == 9
+                 // 默认选中模板标记为 on 的那条线路（sid=3），且只有它被勾选
+                 && parsed.PreferredSourceId == 3
+                 && current is not null
+                 && selected.Count == 3 && selected.All(e => e.SourceId == 3)
+                 && parsed.AllEpisodes.Where(e => e.SourceId != 3).All(e => !e.IsSelected)
+                 // 同一集的「▶ 立即播放」在选集区之前，标题要取后面那条「第01集」
+                 && current.Episodes.First(e => e.Number == 1).DisplayTitle == "第01集"
+                 // 源名要靠探测各源播放页的 player_aaaa 拿到（playerconfig.js 取不到时的兜底）
+                 && parsed.Sources.Select(s => s.Name).SequenceEqual(["lzm3u8", "bfzym3u8", "wjm3u8"])
+                 // 选中集的第一集直链由 resolver 在识别阶段就补上
+                 && selected[0].PlaylistUrl?.EndsWith("/index.m3u8", StringComparison.Ordinal) == true;
+
+    // 用户直接把播放页地址粘进来也要能解析（同一个站点的另一种入口）
+    var fromPlay = await resolver.ParseAsync($"http://localhost:{Port}/play/2337178967/7/2.html", wxCtx);
+    Console.WriteLine($"  播放页解析: {fromPlay.Title} · {fromPlay.Sources.Count} 个源 / {fromPlay.TotalEpisodes} 集" +
+                      $" · 当前源 sid={fromPlay.PreferredSourceId}");
+    okWakuredo = okWakuredo
+                 && fromPlay.Sources.Count == 3
+                 && fromPlay.PreferredSourceId == 7
+                 && fromPlay.SelectedEpisodes.All(e => e.SourceId == 7)
+                 && fromPlay.SelectedEpisodes.Count() == 3;
+}
+
+// ---------------------------------------------------------------- 阶段 K：直连不得走系统代理
+//
+// SocketsHttpHandler.UseProxy 默认是 **true**，Proxy 为 null 时它会退到
+// HttpClient.DefaultProxy —— Windows 上那就是系统的 WinINET 代理设置。
+// 用户机器上开着 Clash 之类的工具时，「直连」客户端会**全程走代理**：
+// 白耗代理流量（用户明确在意），还会被站点按代理 IP 拒绝。
+// 实测影迷界影院：真直连 200 / 走系统代理 403 —— wakuredo 解析失败正是这个原因。
+//
+// 做法：把进程默认代理指到一个连不上的黑洞，站点解析与分片下载都必须照常工作。
+
+Console.WriteLine();
+Console.WriteLine("阶段 K：直连不得走系统代理（UseProxy 必须显式关闭）");
+
+var okNoSystemProxy = false;
+{
+    var originalProxy = HttpClient.DefaultProxy;
+    HttpClient.DefaultProxy = new WebProxy("http://127.0.0.1:1");   // 黑洞：连上就说明走了代理
+
+    try
+    {
+        using var directCtx = new SiteContext();
+        var html = await directCtx.Direct.GetStringAsync($"http://localhost:{Port}/generic.html");
+        var siteOk = html.Contains("测试影片", StringComparison.Ordinal);
+
+        using var directHls = new HlsDownloader();
+        var (media, _) = await directHls.ResolveMediaPlaylistAsync($"http://localhost:{Port}/index.m3u8");
+        var hlsOk = media.Segments.Count == SegmentCount;
+
+        okNoSystemProxy = siteOk && hlsOk;
+        Console.WriteLine($"  黑洞代理下的站点解析: {(siteOk ? "✔ 直连正常" : "✘ 走了代理")}");
+        Console.WriteLine($"  黑洞代理下的分片清单: {(hlsOk ? $"✔ 直连正常（{media.Segments.Count} 片）" : "✘ 走了代理")}");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"  ✘ 直连走了系统代理：{ex.GetType().Name}: {ex.Message}");
+    }
+    finally
+    {
+        HttpClient.DefaultProxy = originalProxy;
+    }
+}
+
 Console.WriteLine();
 var ok = okB && okC && okPaused && okStopped && okResume && okSettled && okRetry
          && okResumeSubset && okFallback && okDuration && encOk && okSingle
-         && okRegistry && okNnyy && okNnyyMovie && okGeneric && okEmpty;
+         && okRegistry && okNnyy && okNnyyMovie && okGeneric && okEmpty && okWakuredo
+         && okNoSystemProxy;
 Console.WriteLine(ok
     ? "自检结果       : ✔ 通过"
     : $"自检结果       : ✘ 失败（阶段B {okB} / 阶段C {okC} / 暂停 {okPaused} / 暂停后静止 {okStopped}" +
       $" / 续传 {okResume} / 续传后静止 {okSettled} / 重试 {okRetry}" +
       $" / 续传只下选中集 {okResumeSubset} / 多源兜底 {okFallback} / 时长核对 {okDuration}" +
       $" / 密文首字节 0x3C {encOk} / 单文件服务 {okSingle}" +
-      $" / 适配器登记 {okRegistry} / 努努影院 {okNnyy} / 努努电影页 {okNnyyMovie} / 通用兜底 {okGeneric} / 空页面报错 {okEmpty}）");
+      $" / 适配器登记 {okRegistry} / 努努影院 {okNnyy} / 努努电影页 {okNnyyMovie} / 通用兜底 {okGeneric}" +
+      $" / 空页面报错 {okEmpty} / 影迷界影院 {okWakuredo} / 直连不走代理 {okNoSystemProxy}）");
 
 listener.Stop();
 return ok ? 0 : 1;

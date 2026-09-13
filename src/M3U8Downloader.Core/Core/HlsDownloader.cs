@@ -71,6 +71,13 @@ public sealed class HlsDownloader : IDisposable
         MaxConnectionsPerServer = 64,
         // 连不上就早点回退到代理，别让用户干等
         ConnectTimeout = TimeSpan.FromSeconds(8),
+
+        // ★ 必须显式关掉：UseProxy 默认是 true，Proxy 为 null 时它会退到
+        //   HttpClient.DefaultProxy —— Windows 上就是系统的 WinINET 代理设置。
+        //   少了这一行，「直连」的分片下载会**全程走代理**：白白吃掉用户的代理流量，
+        //   而这正是本项目「国内站零代理开销」这一设计的全部意义所在。
+        //   需要代理的那份 handler 在构造函数里单独打开它。
+        UseProxy = false,
     };
 
     private static string? TryReadProxyFromSettings()

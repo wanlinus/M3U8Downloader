@@ -27,6 +27,12 @@ public sealed class SiteContext : IDisposable
     private readonly bool _ownsDirect;
     private readonly bool _ownsProxy;
 
+    /// <summary>
+    /// 连接超时放宽到 30 秒的直连客户端，只在「直连超时 → 代理也不行」这条链路上兜底。
+    /// 没有配代理时不会创建（没有回退链，直连超时该直接报错）。
+    /// </summary>
+    private readonly HttpClient? _directPatient;
+
     /// <summary>直连客户端</summary>
     public HttpClient Direct { get; }
 
@@ -89,6 +95,9 @@ public sealed class SiteContext : IDisposable
                 Proxied = CreateClient(normalized, UserAgent);
                 ProxyUrl = normalized;
                 _ownsProxy = true;
+
+                // 配了代理才需要它：直连超时 → 换代理 → 代理也被拒时，才有「再宽容地直连一次」的余地
+                _directPatient = CreateClient(null, UserAgent, TimeSpan.FromSeconds(30));
             }
             catch
             {
@@ -105,7 +114,7 @@ public sealed class SiteContext : IDisposable
         catch { return null; }
     }
 
-    private static HttpClient CreateClient(string? proxyUrl, string userAgent)
+    private static HttpClient CreateClient(string? proxyUrl, string userAgent, TimeSpan? connectTimeout = null)
     {
         // 用 SocketsHttpHandler 而不是 HttpClientHandler：需要它的 ConnectTimeout
         var handler = new SocketsHttpHandler
@@ -116,14 +125,20 @@ public sealed class SiteContext : IDisposable
             // 连不上就早点认输：被墙的站点靠「直连失败 → 换代理」兜底。
             // 5 秒是权衡后的值 —— 正常站点建立 TCP 连远远用不到 5 秒，
             // 而 8 秒的旧值会让每次首探都多等 3 秒（同一台主机只探一次，见 _proxyRequiredHosts）
-            ConnectTimeout = TimeSpan.FromSeconds(5),
+            ConnectTimeout = connectTimeout ?? TimeSpan.FromSeconds(5),
+
+            // ★ 这一行不能少：SocketsHttpHandler.UseProxy 默认是 **true**，
+            //   而 Proxy 为 null 时它会退到 HttpClient.DefaultProxy ——
+            //   Windows 上那就是系统的 WinINET 代理设置。
+            //   用户机器上开着 Clash 之类的工具时，「直连」客户端会**悄悄走代理**：
+            //   既白耗流量（用户明确在意），又会被按代理 IP 拒绝。
+            //   实测影迷界影院：真直连 200 / 走系统代理 403，而解析失败的根因正是后者。
+            //   只有显式给了代理地址的那份 handler 才该打开代理。
+            UseProxy = proxyUrl is not null,
         };
 
         if (proxyUrl is not null)
-        {
             handler.Proxy = new WebProxy(new Uri(proxyUrl)) { BypassProxyOnLocal = true };
-            handler.UseProxy = true;
-        }
 
         var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
         client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", userAgent);
@@ -164,9 +179,20 @@ public sealed class SiteContext : IDisposable
         }
         catch (Exception ex) when (canFallback && IsConnectivityFailure(ex, ct))
         {
-            var html = await GetHtmlAsync(url, Proxied!, ct).ConfigureAwait(false);
-            NoteProxyFallback(url, host!);
-            return html;
+            try
+            {
+                var html = await GetHtmlAsync(url, Proxied!, ct).ConfigureAwait(false);
+                NoteProxyFallback(url, host!);
+                return html;
+            }
+            catch (Exception) when (!ct.IsCancellationRequested && _directPatient is not null)
+            {
+                // 代理也拿不到。但要分清：「直连 5 秒内没连上」并不等于站点不可达 ——
+                // 实测影迷界影院直连耗时在 0.9s~30s 之间剧烈波动，而它的代理 IP 被站点 403。
+                // 把「慢」当成「不通」，就会把本来能成功的一次请求判死（还会顺带污染
+                // _proxyRequiredHosts 的判断），所以给直连一次宽容的重试。
+                return await GetHtmlAsync(url, _directPatient, ct).ConfigureAwait(false);
+            }
         }
         catch (HttpRequestException ex) when (canFallback && ShouldRetryViaProxy(ex.StatusCode))
         {
@@ -288,6 +314,7 @@ public sealed class SiteContext : IDisposable
     {
         if (_ownsDirect) Direct.Dispose();
         if (_ownsProxy) Proxied?.Dispose();
+        _directPatient?.Dispose();
     }
 }
 

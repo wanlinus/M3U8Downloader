@@ -227,6 +227,10 @@ public static class FfmpegInstaller
                 ProxyEnabled = !string.IsNullOrWhiteSpace(proxyUrl),
                 ProxyUrl = proxyUrl,
             });
+
+            // 同 SiteContext / HlsDownloader：不显式关掉的话，没配代理时
+            // HttpClientHandler 会退回系统（WinINET）代理设置，静默把流量引到代理上
+            handler.UseProxy = proxy is not null;
             if (proxy is not null) handler.Proxy = proxy;
 
             using var client = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };

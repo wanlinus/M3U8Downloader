@@ -58,6 +58,22 @@ public sealed class MacCmsAdapter : ISiteAdapter
         @"(?:https?://[^/""'\s]+)?/(?<prefix>(?:[A-Za-z0-9_\-]+/)*)index\.php/vod/play/id/(?<id>\d+)/sid/(?<sid>\d+)/nid/(?<nid>\d+)\.html",
         Opts);
 
+    /// <summary>
+    /// 第三种形态：把 <c>{id}-{sid}-{nid}</c> 里的短横线换成斜杠。
+    /// 影迷界影院（wakuredo.com）整站都是这个形状 ——
+    /// 详情页 <c>/t/62329.html</c>、播放页 <c>/play/2337178967/7/1.html</c>。
+    ///
+    /// 这条比短横线那条**更容易误匹配**（<c>/news/2026/09/13.html</c> 长得一模一样），
+    /// 所以它从不单独作为判据：挡误匹配的是 <see cref="PickPlayId"/> 的多数投票。
+    /// </summary>
+    private static readonly Regex AnyPlayHrefSlash = new(
+        @"(?:https?://[^/""'\s]+)?/(?<prefix>(?:[A-Za-z0-9_\-]+/)*)(?<id>\d+)/(?<sid>\d+)/(?<nid>\d+)\.html",
+        Opts);
+
+    /// <summary>斜杠形态的播放页路径（用户直接把播放页地址丢进来时靠它认出来）</summary>
+    private static readonly Regex PlayPathSlash = new(
+        @"^/(?<prefix>(?:[A-Za-z0-9_\-]+/)*)(?<id>\d+)/(?<sid>\d+)/(?<nid>\d+)\.html$", Opts);
+
     /// <summary>播放页路径的前缀，用于在没抓到链接时合成同款地址</summary>
     private static readonly Regex PathPrefix = new(@"^/(?<prefix>[A-Za-z0-9_\-]+/)", Opts);
 
@@ -79,7 +95,7 @@ public sealed class MacCmsAdapter : ISiteAdapter
     public bool CanHandle(Uri url)
     {
         var p = url.AbsolutePath;
-        return PlayPath.IsMatch(p) || PlayPathAlt.IsMatch(p)
+        return PlayPath.IsMatch(p) || PlayPathAlt.IsMatch(p) || PlayPathSlash.IsMatch(p)
             || DetailPath.IsMatch(p) || DetailPathAlt.IsMatch(p);
     }
 
@@ -97,9 +113,15 @@ public sealed class MacCmsAdapter : ISiteAdapter
         var currentSourceId = 1;
         var currentEpisode = 1;
         var pathPrefix = "/vodplay/";
+        var slashStyle = false;
 
         var playMatch = PlayPath.Match(pageUrl.AbsolutePath);
         if (!playMatch.Success) playMatch = PlayPathAlt.Match(pageUrl.AbsolutePath);
+        if (!playMatch.Success)
+        {
+            playMatch = PlayPathSlash.Match(pageUrl.AbsolutePath);
+            slashStyle = playMatch.Success;
+        }
 
         if (playMatch.Success)
         {
@@ -124,24 +146,60 @@ public sealed class MacCmsAdapter : ISiteAdapter
         }
 
         // ---- 2. 收集全剧集链接（模板无关）----
-        var found = new Dictionary<(int Sid, int Nid), (string PageUrl, string Text)>();
+        // 先把页内所有形如播放页的链接都收下来，**暂不按剧 ID 过滤**。
+        // 原因：少数站点（影迷界影院 wakuredo.com）的详情页 ID 与播放页 ID 是两套编号 ——
+        // 详情页是 /t/62329.html，播放页却是 /play/2337178967/{sid}/{nid}.html，
+        // 一上来就按详情页 ID 过滤会把本剧的选集链接全部滤掉，最后误报「没有剧集链接」。
+        // 改成：先收集 → 投票选出本剧的播放 ID（PickPlayId）→ 再按它过滤。
+        var candidates = new List<PlayLink>();
         foreach (Match a in Anchor.Matches(html))
         {
             var href = WebUtility.HtmlDecode(a.Groups["href"].Value.Trim());
 
-            // 两种形态都认（组名一致，后面的取值代码不用分叉）
+            // 三种形态都认（组名一致，后面的取值代码不用分叉）
             var m = AnyPlayHref.Match(href);
-            if (!m.Success) m = AnyPlayHrefNative.Match(href);
+            var slash = false;
+            if (!m.Success)
+            {
+                m = AnyPlayHrefNative.Match(href);
+                if (!m.Success)
+                {
+                    m = AnyPlayHrefSlash.Match(href);
+                    slash = m.Success;
+                }
+            }
+
             if (!m.Success) continue;
-            if (m.Groups["id"].Value != seriesId) continue;   // 滤掉侧边栏「猜你喜欢」里别的剧
 
             var sid = int.Parse(m.Groups["sid"].Value);
             var nid = int.Parse(m.Groups["nid"].Value);
             if (sid <= 0 || nid <= 0 || nid > MaxEpisodeNumber) continue;
 
-            var abs = ToAbsolute(pageUrl, href);
-            var text = CleanText(a.Groups["text"].Value);
-            found[(sid, nid)] = (abs, text);
+            candidates.Add(new PlayLink(
+                m.Groups["id"].Value, sid, nid,
+                ToAbsolute(pageUrl, href), CleanText(a.Groups["text"].Value), a.Index, slash));
+        }
+
+        var playId = PickPlayId(candidates, seriesId);
+        var found = new Dictionary<(int Sid, int Nid), (string PageUrl, string Text)>();
+        foreach (var c in candidates)
+        {
+            if (c.PlayId != playId) continue;   // 滤掉侧边栏「猜你喜欢」里别的剧
+
+            // 同一集出现多次时保留靠后的：详情页顶部的「▶ 立即播放」在选集区之前，
+            // 后面那条「第01集」才是更好的标题
+            found[(c.Sid, c.Nid)] = (c.PageUrl, c.Text);
+        }
+
+        if (playId is not null) slashStyle = candidates.Any(c => c.Slash && c.PlayId == playId);
+
+        // 详情页里没有 player_aaaa，当前源无从得知；而默认值 1 遇上「源从 3 起编号」的站
+        // （wakuredo 是 3/7/8/11）会让所有集都处于未勾选状态，用户看到的是「一集都没有」。
+        // 这里按「模板标记为选中的那条线路 → 编号最小的源」兜底。
+        if (player is null && found.Count > 0 && !found.Keys.Any(k => k.Sid == currentSourceId))
+        {
+            currentSourceId = FindSelectedSourceId(html, candidates) ?? found.Keys.Min(k => k.Sid);
+            log.Add($"详情页未给出当前播放源，默认选中 sid={currentSourceId}");
         }
 
         // 防误判：CanHandle 为了兼容各种伪静态前缀放得比较宽，
@@ -166,9 +224,12 @@ public sealed class MacCmsAdapter : ISiteAdapter
             var nativeStyle = DetailPathAlt.IsMatch(pageUrl.AbsolutePath);
             var synthesized = nativeStyle
                 ? new Uri(pageUrl, $"/index.php/vod/play/id/{seriesId}/sid/{currentSourceId}/nid/{currentEpisode}.html").ToString()
-                : new Uri(pageUrl, $"{pathPrefix}{seriesId}-{currentSourceId}-{currentEpisode}.html").ToString();
+                : slashStyle
+                    ? new Uri(pageUrl, $"{pathPrefix}{seriesId}/{currentSourceId}/{currentEpisode}.html").ToString()
+                    : new Uri(pageUrl, $"{pathPrefix}{seriesId}-{currentSourceId}-{currentEpisode}.html").ToString();
 
-            log.Add($"页面内未找到剧集链接，按{(nativeStyle ? "原生" : "伪静态")}形态合成播放页地址：{synthesized}");
+            var styleName = nativeStyle ? "原生" : slashStyle ? "斜杠" : "伪静态";
+            log.Add($"页面内未找到剧集链接，按{styleName}形态合成播放页地址：{synthesized}");
             found[(currentSourceId, currentEpisode)] = (synthesized, "");
         }
 
@@ -255,6 +316,64 @@ public sealed class MacCmsAdapter : ISiteAdapter
     }
 
     // ---------------- 内部工具 ----------------
+
+    /// <summary>
+    /// 页内一条「播放页链接」候选。
+    /// 单独建这个类型，是因为判定要**跨链接统计**（见 <see cref="PickPlayId"/>），
+    /// 还要记住它在 HTML 里的位置（判「当前线路」用，见 <see cref="FindSelectedSourceId"/>）。
+    /// </summary>
+    private sealed record PlayLink(string PlayId, int Sid, int Nid, string PageUrl, string Text, int Pos, bool Slash);
+
+    /// <summary>
+    /// 判定「本页这部剧的播放 ID」。
+    ///
+    /// 多数苹果 CMS 站的详情页 ID 与播放页 ID 相同，第一个条件就命中；
+    /// 但影迷界影院（wakuredo.com）是两套编号 —— 详情页 <c>/t/62329.html</c>、
+    /// 播放页 <c>/play/2337178967/…</c>，永远命中不了，于是退到多数投票：
+    /// 本剧的选集链接动辄十几条，而侧边栏推荐、日期型误匹配最多一两条，足以分开。
+    ///
+    /// 「最少 2 次」是刻意保守：宁可判定失败（上层会合成播放页地址或明确报错），
+    /// 也不要凭一条孤零零的 <c>/a/b/c.html</c> 解析出一堆垃圾集号。
+    /// </summary>
+    private static string? PickPlayId(IReadOnlyList<PlayLink> candidates, string seriesId)
+    {
+        if (candidates.Count == 0) return null;
+        if (candidates.Any(c => string.Equals(c.PlayId, seriesId, StringComparison.Ordinal))) return seriesId;
+
+        var best = candidates
+            .GroupBy(c => c.PlayId, StringComparer.Ordinal)
+            .Select(g => (Id: g.Key, Count: g.Count()))
+            .OrderByDescending(g => g.Count)
+            .ThenBy(g => g.Id, StringComparer.Ordinal)
+            .First();
+
+        return best.Count >= 2 ? best.Id : null;
+    }
+
+    /// <summary>
+    /// 详情页里「当前线路」的 sid。
+    /// 苹果 CMS 模板会给选中的线路名加一个 on 类
+    /// （<c>&lt;div class="line-name on"&gt;线路10&lt;/div&gt;</c>），
+    /// 紧随其后的选集区就是这条线路的链接，取其中第一条的 sid 即可。
+    /// 找不到返回 null，由调用方退回「编号最小的源」。
+    /// </summary>
+    private static int? FindSelectedSourceId(string html, IReadOnlyList<PlayLink> candidates)
+    {
+        foreach (Match cls in Regex.Matches(html, @"class\s*=\s*[""'](?<cls>[^""']*)[""']", RegexOptions.IgnoreCase))
+        {
+            var tokens = cls.Groups["cls"].Value.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (!tokens.Contains("line-name", StringComparer.OrdinalIgnoreCase)) continue;
+            if (!tokens.Contains("on", StringComparer.OrdinalIgnoreCase)) continue;
+
+            return candidates
+                .Where(c => c.Pos > cls.Index)
+                .OrderBy(c => c.Pos)
+                .Select(c => (int?)c.Sid)
+                .FirstOrDefault();
+        }
+
+        return null;
+    }
 
     /// <summary>播放页里的播放器配置</summary>
     private sealed record PlayerConfig(
