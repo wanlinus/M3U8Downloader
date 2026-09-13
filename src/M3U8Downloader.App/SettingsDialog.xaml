@@ -60,12 +60,12 @@
             <Border Height="1" Background="{ThemeResource CardStrokeColorDefaultBrush}" />
 
             <!-- ==================== 代理 ==================== -->
-            <TextBlock Text="代理" FontWeight="SemiBold" FontSize="14" />
+            <TextBlock Text="代理（仅用于下载 FFmpeg）" FontWeight="SemiBold" FontSize="14" />
             <TextBlock FontSize="12" TextWrapping="Wrap"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       Text="站点解析与 FFmpeg 下载都会走这里。国内直连 GitHub 通常不通，下载 FFmpeg 时基本都需要代理。" />
+                       Text="视频下载与站点解析始终直连，不走代理：源站基本都在国内，绕代理反而更慢，还可能因出口 IP 变化触发防盗链。只有「自动下载 FFmpeg」要访问 GitHub，那里才需要代理。" />
 
-            <CheckBox x:Name="ProxyEnabledCheck" Content="启用代理" />
+            <CheckBox x:Name="ProxyEnabledCheck" Content="下载 FFmpeg 时使用代理（默认关闭）" FontSize="12" />
             <Grid ColumnSpacing="8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />

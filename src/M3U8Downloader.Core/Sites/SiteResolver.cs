@@ -1,12 +1,13 @@
 using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
-using M3U8Downloader.Core.Net;
-using M3U8Downloader.Core.Settings;
 
 namespace M3U8Downloader.Core.Sites;
 
-/// <summary>抓取站点页面所需的上下文（HttpClient + 默认请求头 + 解码工具）</summary>
+/// <summary>
+/// 抓取站点页面所需的上下文（HttpClient + 默认请求头 + 解码工具）。
+/// 与下载引擎一致：**不使用代理**，站点页面直连（源站基本都在国内）。
+/// </summary>
 public sealed class SiteContext : IDisposable
 {
     public const string DefaultUserAgent =
@@ -24,17 +25,9 @@ public sealed class SiteContext : IDisposable
         try { Encoding.RegisterProvider(CodePagesEncodingProvider.Instance); } catch { /* 已注册或不可用 */ }
     }
 
-    /// <param name="http">外部传入的 HttpClient；传 null 则内部按 <paramref name="settings"/> 自建</param>
-    /// <param name="userAgent">自定义 UA；留空用内置浏览器 UA</param>
-    /// <param name="settings">应用设置（用于取代理配置）；留空则读取已保存的设置</param>
-    public SiteContext(HttpClient? http = null, string? userAgent = null, AppSettings? settings = null)
+    public SiteContext(HttpClient? http = null, string? userAgent = null)
     {
         _ownsHttp = http is null;
-
-        if (http is null && settings is null)
-        {
-            try { settings = AppSettingsStore.Load(); } catch { /* 设置不可用就用默认 */ }
-        }
         UserAgent = string.IsNullOrWhiteSpace(userAgent) ? DefaultUserAgent : userAgent!;
 
         if (http is null)
@@ -45,10 +38,6 @@ public sealed class SiteContext : IDisposable
                 AllowAutoRedirect = true,
                 MaxAutomaticRedirections = 10,
             };
-
-            // 代理：部分站点在海外，或用户所处的网络需要代理才能访问
-            var proxy = ProxyHelper.Create(settings);
-            if (proxy is not null) handler.Proxy = proxy;
 
             Http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
         }

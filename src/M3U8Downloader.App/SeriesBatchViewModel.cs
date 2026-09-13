@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using Microsoft.UI.Dispatching;
 using M3U8Downloader.Core;
+using M3U8Downloader.Core.Settings;
 using M3U8Downloader.Core.Sites;
 
 namespace M3U8Downloader;

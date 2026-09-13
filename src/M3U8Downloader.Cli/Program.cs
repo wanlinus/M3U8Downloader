@@ -180,7 +180,7 @@ internal static class Program
             {
                 return await RunSeriesModeAsync(seriesUrl, episodesSpec, listOnly || dryRun, allSources,
                     preferHeight, epConcurrency, concurrency, retries, skipAds,
-                    outputDir, logFile, log, Write);
+                    outputDir, logFile, proxyArg, log, Write);
             }
 
             var urlText = url!;
@@ -202,6 +202,9 @@ internal static class Program
             Write(new string('-', 72));
 
             var sw = Stopwatch.StartNew();
+
+            // 视频下载**不走代理**（源站基本在国内，绕代理更慢且可能触发防盗链）。
+            // 代理只用于「获取 FFmpeg」，见 --ffmpeg-download。
             using var downloader = new HlsDownloader(headers);
 
             // 仅列出清晰度
@@ -316,8 +319,9 @@ internal static class Program
     private static async Task<int> RunSeriesModeAsync(
         string seriesUrl, string? episodesSpec, bool listOnly, bool allSources,
         int preferHeight, int epConcurrency, int segmentConcurrency, int retries, bool skipAds,
-        string outputDir, string? logFile, StringBuilder log, Action<string> Write)
+        string outputDir, string? logFile, string? proxyArg, StringBuilder log, Action<string> Write)
     {
+        // 站点解析与分片下载都不走代理（--proxy 只影响 FFmpeg 下载）
         using var seriesDownloader = new SeriesDownloader();
 
         Write("M3U8 下载器 · 站点/剧集批量模式");
@@ -443,7 +447,7 @@ internal static class Program
         write("      --ffmpeg-download   应用内下载并安装 FFmpeg（约 200MB）");
         write("      --ffmpeg-url <url>  指定 FFmpeg 下载源（默认 BtbN 官方构建，可换镜像）");
         write("      --ffmpeg-path <exe> 手动指定 ffmpeg.exe 路径");
-        write("      --proxy <url>       使用代理，如 http://127.0.0.1:7897");
+        write("      --proxy <url>       代理地址（**仅用于下载 FFmpeg**，视频下载始终直连）");
         write("      --proxy-test        测试代理连通性（与界面「测试」按钮同一实现）");
         write("  -h, --help              显示帮助");
         write("");

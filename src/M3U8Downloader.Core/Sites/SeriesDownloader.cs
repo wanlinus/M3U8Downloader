@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using M3U8Downloader.Core.Settings;
 
 namespace M3U8Downloader.Core.Sites;
 
@@ -141,6 +142,11 @@ public sealed class SeriesDownloader : IDisposable
     private readonly HlsDownloader _hls;
     private readonly bool _ownsContext;
 
+    /// <summary>
+    /// 站点批量下载协调器。
+    /// 站点解析与分片下载**都不走代理**（源站基本在国内），
+    /// 代理只用于「获取 FFmpeg」。
+    /// </summary>
     public SeriesDownloader(SiteResolver? resolver = null, SiteContext? siteContext = null)
     {
         _resolver = resolver ?? SiteResolver.CreateDefault();
@@ -288,15 +294,27 @@ public sealed class SeriesDownloader : IDisposable
                 if (result.Success)
                 {
                     item.Status = EpisodeDownloadStatus.Completed;
-                    lock (sync) { state.SucceededEpisodes++; report.Log.Add($"[{item.DisplayTitle}] 完成 {playlistUrl}"); }
-                    if (parseLogs.Count > 0) lock (sync) report.Log.AddRange(
-                        parseLogs.Select(l => $"[{item.DisplayTitle}] {l}"));
+                    lock (sync)
+                    {
+                        state.SucceededEpisodes++;
+                        report.Log.Add($"[{item.DisplayTitle}] 完成 {playlistUrl}");
+                        foreach (var m in result.Messages) report.Log.Add($"[{item.DisplayTitle}] {m}");
+                    }
                 }
                 else
                 {
                     item.Status = EpisodeDownloadStatus.Failed;
-                    item.Error = result.Error ?? "未知错误";
-                    lock (sync) { state.FailedEpisodes++; report.Log.Add($"[{item.DisplayTitle}] 失败：{item.Error}"); }
+                    // 引擎偶尔会在没给出 Error 的情况下判失败（例如只有"跳过"没有"失败"时），
+                    // 这时把分片统计打出来 —— 只显示"未知错误"对排查毫无帮助。
+                    item.Error = result.Error
+                        ?? $"分片统计 成功 {result.CompletedSegments} / 跳过 {result.SkippedSegments} / " +
+                           $"失败 {result.FailedSegments} / 共 {result.TotalSegments}，输出 {result.OutputBytes} 字节";
+                    lock (sync)
+                    {
+                        state.FailedEpisodes++;
+                        report.Log.Add($"[{item.DisplayTitle}] 失败：{item.Error}");
+                        foreach (var m in result.Messages) report.Log.Add($"[{item.DisplayTitle}] {m}");
+                    }
                 }
             }
             catch (OperationCanceledException)

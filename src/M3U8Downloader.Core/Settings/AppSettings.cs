@@ -35,8 +35,11 @@ public sealed class AppSettings
     public string? UserAgent { get; set; }
 
     /// <summary>
-    /// 是否启用代理。站点解析与「自动下载 FFmpeg」都会走它 ——
-    /// 国内直连 GitHub 往往不通，没有这个开关「自动下载」等于不可用。
+    /// 是否在**下载 FFmpeg 时**使用代理（默认 false）。
+    ///
+    /// 只作用于「获取 FFmpeg」这一件事 —— 国内直连 GitHub 往往不通。
+    /// **视频下载与站点解析始终直连**，不受此开关影响：
+    /// 源站基本都在国内，绕代理更慢，出口 IP 变化还可能触发防盗链。
     /// </summary>
     public bool ProxyEnabled { get; set; }
 
