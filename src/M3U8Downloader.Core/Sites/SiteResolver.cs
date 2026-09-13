@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -44,6 +45,16 @@ public sealed class SiteContext : IDisposable
 
     /// <summary>最后一次触发代理回退的主机名</summary>
     public string? LastProxyFallbackHost { get; private set; }
+
+    /// <summary>
+    /// 已确认「直连不通、必须走代理」的主机 —— 与下载引擎同一套做法。
+    ///
+    /// 这一条对速度影响极大：识别一个站点往往要抓好几次页面
+    /// （详情页 → 播放页 → playerconfig.js → 逐集解析），
+    /// 不记的话**每一次**都要先白等一遍连接超时。
+    /// 实测欧乐影院：详情页识别 36 秒、播放页 27 秒，绝大部分时间都耗在重复的超时上。
+    /// </summary>
+    private readonly ConcurrentDictionary<string, bool> _proxyRequiredHosts = new(StringComparer.OrdinalIgnoreCase);
 
     static SiteContext()
     {
@@ -102,9 +113,10 @@ public sealed class SiteContext : IDisposable
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
             AllowAutoRedirect = true,
             MaxAutomaticRedirections = 10,
-            // 连不上就早点认输：被墙的站点靠「直连失败 → 换代理」兜底，
-            // 若连接超时拖到 20 秒以上，用户只会以为程序卡死了
-            ConnectTimeout = TimeSpan.FromSeconds(8),
+            // 连不上就早点认输：被墙的站点靠「直连失败 → 换代理」兜底。
+            // 5 秒是权衡后的值 —— 正常站点建立 TCP 连远远用不到 5 秒，
+            // 而 8 秒的旧值会让每次首探都多等 3 秒（同一台主机只探一次，见 _proxyRequiredHosts）
+            ConnectTimeout = TimeSpan.FromSeconds(5),
         };
 
         if (proxyUrl is not null)
@@ -139,32 +151,37 @@ public sealed class SiteContext : IDisposable
     /// </summary>
     public async Task<string> GetHtmlAsync(string url, ISiteAdapter adapter, CancellationToken ct = default)
     {
-        if (adapter.NeedsProxy && Proxied is not null)
-            return await GetHtmlAsync(url, Proxied, ct).ConfigureAwait(false);
+        var host = Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : null;
+        var canFallback = host is not null && Proxied is not null;
+
+        // 适配器明确要求代理，或这台主机已经证明直连不通 → 直接用代理，不再白等一次超时
+        if (canFallback && (adapter.NeedsProxy || _proxyRequiredHosts.ContainsKey(host!)))
+            return await GetHtmlAsync(url, Proxied!, ct).ConfigureAwait(false);
 
         try
         {
             return await GetHtmlAsync(url, Direct, ct).ConfigureAwait(false);
         }
-        catch (Exception ex) when (Proxied is not null && IsConnectivityFailure(ex, ct))
+        catch (Exception ex) when (canFallback && IsConnectivityFailure(ex, ct))
         {
-            var html = await GetHtmlAsync(url, Proxied, ct).ConfigureAwait(false);
-            NoteProxyFallback(url);
+            var html = await GetHtmlAsync(url, Proxied!, ct).ConfigureAwait(false);
+            NoteProxyFallback(url, host!);
             return html;
         }
-        catch (HttpRequestException ex) when (Proxied is not null && ShouldRetryViaProxy(ex.StatusCode))
+        catch (HttpRequestException ex) when (canFallback && ShouldRetryViaProxy(ex.StatusCode))
         {
             // 连上了但被「按 IP 拒绝」（403/451）：同样换代理再试一次
-            var html = await GetHtmlAsync(url, Proxied, ct).ConfigureAwait(false);
-            NoteProxyFallback(url);
+            var html = await GetHtmlAsync(url, Proxied!, ct).ConfigureAwait(false);
+            NoteProxyFallback(url, host!);
             return html;
         }
     }
 
-    private void NoteProxyFallback(string url)
+    private void NoteProxyFallback(string url, string host)
     {
         ProxyFallbackCount++;
-        LastProxyFallbackHost = Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : url;
+        LastProxyFallbackHost = host;
+        _proxyRequiredHosts.TryAdd(host, true);
     }
 
     /// <summary>403/451/429 这类「按 IP 拒绝」值得换代理再试；404/410 是资源真没了，换也没用</summary>
