@@ -17,7 +17,7 @@ public sealed partial class MainWindow : Window
     private readonly SeriesBatchViewModel _batch;
 
     /// <summary>下载任务队列（串行执行，加入后立刻返回）</summary>
-    private readonly DownloadTaskManager _taskManager = new();
+    private readonly DownloadTaskManager _taskManager;
     private readonly TaskListViewModel _tasks;
 
     public MainWindow()
@@ -28,6 +28,9 @@ public sealed partial class MainWindow : Window
 
         // 设置一个合适的初始窗口尺寸
         try { AppWindow.Resize(new SizeInt32(1180, 840)); } catch { }
+
+        // 任务状态是从后台线程改的，必须封送回 UI 线程，否则界面不会刷新（表现为「卡在下载中」）
+        _taskManager = new DownloadTaskManager(null, a => DispatcherQueue.TryEnqueue(() => a()));
 
         _single = new MainViewModel(DispatcherQueue);
         _batch = new SeriesBatchViewModel(DispatcherQueue);

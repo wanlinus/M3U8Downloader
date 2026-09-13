@@ -371,6 +371,12 @@
                     <TextBlock Text="下载任务" FontWeight="SemiBold" FontSize="15" VerticalAlignment="Center" />
                     <TextBlock Text="{Binding SummaryText}" FontSize="12" VerticalAlignment="Center"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <!-- 实时速度：↓ 下载 / ↑ 上传（本程序不上传数据，恒为 0） -->
+                    <TextBlock Text="{Binding SpeedText}" FontSize="13" FontWeight="SemiBold"
+                               VerticalAlignment="Center" Margin="6,0,0,0"
+                               Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                    <TextBlock Text="{Binding UploadSpeedText}" FontSize="13" VerticalAlignment="Center"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
                     <Button Content="清理已完成" Click="OnClearFinishedTasks" FontSize="12" Padding="10,4" />
@@ -431,6 +437,58 @@
                                         <TextBlock Text="{Binding Message}" FontSize="11" TextTrimming="CharacterEllipsis"
                                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                     </StackPanel>
+
+                                    <!-- 分集明细：整体进度看上面的进度条，每一集的进度看这里 -->
+                                    <Expander HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
+                                              IsExpanded="True" Padding="0,2,0,0">
+                                        <Expander.Header>
+                                            <TextBlock Text="{Binding EpisodeHeaderText}" FontSize="12"
+                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                        </Expander.Header>
+                                        <ScrollViewer MaxHeight="260" VerticalScrollBarVisibility="Auto"
+                                                      HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
+                                            <ItemsControl ItemsSource="{Binding Episodes}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <StackPanel Padding="0,3" Spacing="2">
+                                                            <Grid ColumnSpacing="10">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="190" />
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="50" />
+                                                                    <ColumnDefinition Width="60" />
+                                                                    <ColumnDefinition Width="64" />
+                                                                </Grid.ColumnDefinitions>
+
+                                                                <TextBlock Grid.Column="0" Text="{Binding Title}" FontSize="12"
+                                                                           VerticalAlignment="Center"
+                                                                           TextTrimming="CharacterEllipsis"
+                                                                           ToolTipService.ToolTip="{Binding Title}" />
+                                                                <ProgressBar Grid.Column="1" Value="{Binding Percent}"
+                                                                             Maximum="100" Height="4"
+                                                                             VerticalAlignment="Center" />
+                                                                <TextBlock Grid.Column="2" Text="{Binding PercentText}"
+                                                                           FontSize="11" HorizontalAlignment="Right"
+                                                                           VerticalAlignment="Center"
+                                                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                                <TextBlock Grid.Column="3" Text="{Binding StatusText}"
+                                                                           FontSize="11" VerticalAlignment="Center"
+                                                                           Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                                                <TextBlock Grid.Column="4" Text="{Binding SizeText}"
+                                                                           FontSize="11" HorizontalAlignment="Right"
+                                                                           VerticalAlignment="Center"
+                                                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                            </Grid>
+                                                            <TextBlock Text="{Binding Error}" FontSize="11"
+                                                                       TextWrapping="Wrap"
+                                                                       Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                                                                       Visibility="{Binding HasError, Converter={StaticResource BoolToVis}}" />
+                                                        </StackPanel>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </ScrollViewer>
+                                    </Expander>
                                 </StackPanel>
 
                                 <!-- 右：操作按钮 -->

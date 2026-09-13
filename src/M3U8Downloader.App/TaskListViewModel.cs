@@ -44,6 +44,9 @@ public sealed class TaskListViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(SummaryText));
         OnPropertyChanged(nameof(HasTasks));
         OnPropertyChanged(nameof(HasNoTasks));
+        OnPropertyChanged(nameof(SpeedText));
+        OnPropertyChanged(nameof(UploadSpeedText));
+        OnPropertyChanged(nameof(IsBusy));
     }
 
     public bool HasTasks => Tasks.Count > 0;
@@ -70,6 +73,18 @@ public sealed class TaskListViewModel : INotifyPropertyChanged
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
+
+    /// <summary>形如「↓ 12.34 MB/s」</summary>
+    public string SpeedText => $"↓ {SeriesTask.FormatSpeed(Manager.TotalDownloadSpeed)}";
+
+    /// <summary>
+    /// 上传速度。本程序只下载、不上传任何数据，因此恒为 0；
+    /// 保留这一项是为了让状态栏信息结构与常见下载工具一致。
+    /// </summary>
+    public string UploadSpeedText => $"↑ {SeriesTask.FormatSpeed(Manager.TotalUploadSpeed)}";
+
+    /// <summary>是否有任务在跑</summary>
+    public bool IsBusy => Manager.RunningCount > 0;
 
     private void OnPropertyChanged([CallerMemberName] string? name = null) =>
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));

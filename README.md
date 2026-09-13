@@ -88,19 +88,25 @@ M3U8Downloader/
 │   │   ├── Net/ProxyHelper.cs        # 代理构造、地址规范化、连通性测试
 │   │   ├── Ffmpeg/                   # FFmpeg 探测与自动下载安装
 │   │   └── Sites/                    # 站点识别与批量下载
-│   │       ├── SiteModels.cs         # 剧集/播放源模型
-│   │       ├── SiteResolver.cs       # 适配器接口 + 站点识别入口 + 编码嗅探
-│   │       ├── MacCmsAdapter.cs      # 苹果 CMS 适配器
-│   │       └── SeriesDownloader.cs   # 批量下载协调器 + 选集 + 清晰度挑选
+│   │   ├── Sites/                    # 站点识别与批量下载
+│   │   │   ├── SiteModels.cs         # 剧集/播放源模型
+│   │   │   ├── SiteResolver.cs       # 适配器接口 + 站点识别入口 + 编码嗅探
+│   │   │   ├── MacCmsAdapter.cs      # 苹果 CMS 适配器
+│   │   │   └── SeriesDownloader.cs   # 批量下载协调器 + 选集 + 清晰度挑选
+│   │   └── Tasks/
+│   │       └── DownloadTaskManager.cs  # 下载任务队列（串行执行 + UI 线程封送）
 │   ├── M3U8Downloader.App/           # WinUI 3 图形界面
-│   │   ├── MainWindow.xaml(.cs)      # 双模式界面 + 设置/关于入口
+│   │   ├── MainWindow.xaml(.cs)      # 三模式界面 + 设置/关于入口
 │   │   ├── MainViewModel.cs          # 单文件下载
 │   │   ├── SeriesBatchViewModel.cs   # 站点批量下载
+│   │   ├── TaskListViewModel.cs      # 下载任务面板（汇总 / 实时速度）
 │   │   ├── EpisodeItemViewModel.cs   # 剧集项（可绑定勾选状态）
 │   │   ├── SettingsDialog.xaml(.cs)  # 设置（FFmpeg / 代理 / 下载默认值）
 │   │   └── AboutDialog.xaml(.cs)     # 关于（版本 / 版权 / 许可证 / 第三方声明）
 │   └── M3U8Downloader.Cli/           # 命令行版
 │       └── Program.cs
+├── tests/
+│   └── M3U8Downloader.SelfTest/      # 无界面自检（本地 HLS 服务器跑全链路）
 ├── scripts/
 │   ├── build.ps1                     # 一键构建
 │   ├── publish.ps1                   # 一键发布（自包含 + 运行时完整性自检）
@@ -132,6 +138,16 @@ dotnet run --project src\M3U8Downloader.App -c Debug -p:Platform=x64 -r win-x64
 
 界面右上角可切换两个模式：**单文件下载** 与 **站点批量下载**。
 也可加 `--mode=batch` 直接以批量模式启动。
+
+### 自检（无界面，不依赖外网）
+
+```powershell
+dotnet run --project tests\M3U8Downloader.SelfTest
+```
+
+会本地起一个极简 HLS 服务器（20 个分片 × 3 集）跑完整链路，校验：
+入队即可见分集清单、每集进度从 0 走到 100、整部剧总进度/总速度/已下载字节持续刷新、
+任务最终进入结束态并落盘产物与报告。退出码 0 表示全部通过。
 
 ### 发布（自包含，免安装）
 
@@ -275,6 +291,10 @@ m3u8dl --proxy-test --proxy 127.0.0.1:7897
    再叠加多任务并发会把连接数打爆，也让进度难以理解；
 4. 每个任务可单独「取消 / 重试失败集 / 下载报告 / 打开目录 / 移除」。
 
+面板上会实时显示：任务合计速度（`↓`）与上传速度（`↑`，本程序不上传任何数据，恒为 0）、
+以及 `共 N 个任务 · 下载中 x · 排队 y …` 的汇总。每个任务项里还有一份**分集清单**
+（默认展开）：每集的进度条、百分比、状态与大小逐集更新，整体进度条则是所有集进度的平均值。
+
 ### 下载报告
 
 整部剧结束后，会在视频目录里生成 `剧名-下载报告.md`，包含：
@@ -337,6 +357,8 @@ m3u8dl --proxy-test --proxy 127.0.0.1:7897
 `SegmentInspector` 用四重判据，命中任一即标记为可疑（可用 `--no-skip-ads` 关闭）：
 
 1. **异目录聚类**：正常分片必然集中于同一目录。把分片按 URL 目录分组，占比低于 50% 的少数派目录即判为插播。
+   注意分片直接放在域名根目录时（`https://host/seg0.ts`）必须归到根目录 `/`，
+   否则每个分片都会被算成"各自的目录"，除第一片外全被判为异目录而整批跳过。
 2. **重复分片**：同一分片地址在列表中重复出现 ≥3 次（通常在开头/中部/结尾各一次），是广告循环插入的特征。
 3. **加密上下文突变**：整条流是 AES-128，个别分片却声明 `METHOD=NONE`。
 4. **密钥可用性探测**：可疑分片引用的 `key.key` 实际请求一次，取不到即升级为「必然失败」。
@@ -378,6 +400,10 @@ m3u8dl --proxy-test --proxy 127.0.0.1:7897
 11. **WinUI 下读命令行**：`Environment.GetCommandLineArgs()` 在 WinUI 的启动路径里不保证可靠（实测会返回空，导致启动参数失效），应改用 Win32 `GetCommandLineW`。
 
 12. **PowerShell 脚本编码**：Windows PowerShell 5.1 读取**无 BOM 的 UTF-8** 脚本时会按系统 ANSI 代码页（中文系统为 GBK）解码。含中文的脚本若不加 BOM，中文字符的尾字节会把后面的引号吞掉 → 语法错误。含中文的 `.ps1` 请存为 **UTF-8 with BOM**，或只用 ASCII。
+
+13. **根目录分片被整批当广告跳过**：目录聚类用「路径里最后一个 `/` 之前的部分」当目录键，而 `/seg0.ts` 的 `LastIndexOf('/')` 是 0，直接切片会得到 `/seg0.ts` 本身 —— 每个分片都成了独立目录，于是除第一片外全被标记为「异目录插播广告」并跳过。结果是一集只下了 1 片却报"成功"，产物小得离谱。目录键必须把这种情况归到 `/`。同时增加了保护：跳过比例超过 30% 时明确告警。
+
+14. **绑定属性必须在 UI 线程改**：`SeriesTask` 的属性直接绑到 `ListView`，而下载回调来自后台线程。WinUI 里从后台线程改绑定属性**不报错但界面不刷新**，现象就是任务永远停在「下载中」，进度条一动不动。`DownloadTaskManager` 因此统一通过 `uiInvoker`（`DispatcherQueue.TryEnqueue`）封送所有状态写入；后台 worker 也不再去遍历绑定用的 `ObservableCollection`，改用内部待执行队列。
 
 ---
 

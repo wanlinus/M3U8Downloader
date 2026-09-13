@@ -104,6 +104,43 @@ public sealed class SeriesDownloadReport
         $"共 {TotalBytes / 1024.0 / 1024.0:0.0} MB";
 }
 
+/// <summary>单集进度快照（供界面展开查看每一集的进度）</summary>
+public sealed class EpisodeProgressSnapshot
+{
+    public required int Number { get; init; }
+    public required string Title { get; init; }
+
+    private EpisodeDownloadStatus _status = EpisodeDownloadStatus.Pending;
+    public EpisodeDownloadStatus Status
+    {
+        get => _status;
+        set { _status = value; }
+    }
+
+    private double _percent;
+    public double Percent
+    {
+        get => _percent;
+        set { _percent = value; }
+    }
+
+    /// <summary>最终产物大小（完成后才有）</summary>
+    public long OutputBytes { get; set; }
+
+    public string Error { get; set; } = "";
+
+    public string StatusText => Status switch
+    {
+        EpisodeDownloadStatus.Pending => "等待中",
+        EpisodeDownloadStatus.Resolving => "解析中",
+        EpisodeDownloadStatus.Downloading => "下载中",
+        EpisodeDownloadStatus.Completed => "已完成",
+        EpisodeDownloadStatus.Failed => "失败",
+        EpisodeDownloadStatus.Canceled => "已取消",
+        _ => Status.ToString(),
+    };
+}
+
 /// <summary>批量下载的聚合进度（供 UI 绑定一条总进度条）</summary>
 public sealed class SeriesDownloadProgress
 {
@@ -112,6 +149,9 @@ public sealed class SeriesDownloadProgress
     public int FinishedEpisodes { get; set; }
     public int SucceededEpisodes { get; set; }
     public int FailedEpisodes { get; set; }
+
+    /// <summary>每一集的进度快照</summary>
+    public List<EpisodeProgressSnapshot> Episodes { get; } = new();
 
     /// <summary>当前正在下载的集</summary>
     public string? CurrentEpisodeTitle { get; set; }
@@ -122,13 +162,22 @@ public sealed class SeriesDownloadProgress
     public double SpeedBytesPerSecond { get; set; }
 
     /// <summary>
-    /// 整部剧的总体进度（0-100）。
-    /// 注意必须截断到 100：当最后一集已完成、同时它的单集进度也是 100% 时，
-    /// 直接算会得到 (1 + 1) / 1 = 200%。
+    /// 整部剧的总体进度（0-100）：所有分集进度的平均值。
+    /// 用平均值而不是"已完成集数 + 当前集百分比"，是因为多集并发时后者只反映其中一集，
+    /// 进度会明显偏慢；平均值对每一集的推进都有响应，看起来是连续增长的。
     /// </summary>
-    public double OverallPercent => TotalEpisodes == 0
-        ? 0
-        : Math.Min(100.0, (FinishedEpisodes + CurrentEpisodePercent / 100.0) * 100.0 / TotalEpisodes);
+    public double OverallPercent
+    {
+        get
+        {
+            if (TotalEpisodes == 0) return 0;
+            if (Episodes.Count == 0) return 0;
+
+            double sum = 0;
+            foreach (var e in Episodes) sum += e.Percent;
+            return Math.Clamp(sum / TotalEpisodes, 0, 100);
+        }
+    }
 
     public string SpeedText => SpeedBytesPerSecond switch
     {
@@ -252,6 +301,16 @@ public sealed class SeriesDownloader : IDisposable
         var gate = new SemaphoreSlim(Math.Max(1, options.EpisodeConcurrency));
         var sync = new object();
 
+        // 正在下载的集：集号 → (已下载字节, 最近一次有效速度, 该速度的时间戳)。
+        // 用来把"已下载量 / 总速度"汇总到整部剧的进度上（多集并发时速度要相加）。
+        // 速度为什么要单独记时间：引擎每 0.5 秒才算一次速度，其余上报都是 0，
+        // 直接覆盖会让界面上的速度不停闪成 0；超过 2 秒没新样本才当作 0。
+        var inFlight = new Dictionary<int, (long Bytes, double Speed, long SpeedTicks)>();
+
+        // 先把所有要下载的集建成"待下载"快照，界面一进来就能看到分集清单
+        foreach (var ep in episodes.OrderBy(e => e.Number))
+            state.Episodes.Add(new EpisodeProgressSnapshot { Number = ep.Number, Title = ep.DisplayTitle });
+
         // 清晰度只需挑一次，全集复用同一个 variant
         string? preferredVariant = null;
         if (options.PreferHeight is not null)
@@ -361,8 +420,21 @@ public sealed class SeriesDownloader : IDisposable
                     item.FailedSegments = p.FailedSegments;
                     item.SkippedSegments = p.SkippedSegments;
                     item.SpeedBytesPerSecond = p.SpeedBytesPerSecond;
-                    Publish(currentEpisode: episode, currentPercent: p.Percent,
-                        currentSpeed: p.SpeedBytesPerSecond);
+
+                    // 记下这一集的实时字节/速度，供整部剧的汇总进度使用
+                    lock (sync)
+                    {
+                        var prev = inFlight.TryGetValue(episode.Number, out var old) ? old : default;
+                        var hasSpeed = p.SpeedBytesPerSecond > 0;
+                        inFlight[episode.Number] = (
+                            p.DownloadedBytes,
+                            hasSpeed ? p.SpeedBytesPerSecond : prev.Speed,
+                            hasSpeed ? Environment.TickCount64 : prev.SpeedTicks);
+                    }
+
+                    SetEpisodeSnapshot(episode, EpisodeDownloadStatus.Downloading,
+                        Math.Clamp(p.Percent, 0, 100), p.DownloadedBytes, null);
+                    Publish(currentEpisode: episode, currentPercent: p.Percent);
                 });
 
                 var result = await _hls.DownloadAsync(media, downloadOptions, inner, ct).ConfigureAwait(false);
@@ -401,6 +473,7 @@ public sealed class SeriesDownloader : IDisposable
                     }
 
                     item.Status = EpisodeDownloadStatus.Completed;
+                    SetEpisodeSnapshot(episode, EpisodeDownloadStatus.Completed, 100, final.Bytes, null);
                     lock (sync)
                     {
                         state.SucceededEpisodes++;
@@ -416,6 +489,7 @@ public sealed class SeriesDownloader : IDisposable
                     item.Error = result.Error
                         ?? $"分片统计 成功 {result.CompletedSegments} / 跳过 {result.SkippedSegments} / " +
                            $"失败 {result.FailedSegments} / 共 {result.TotalSegments}，输出 {result.OutputBytes} 字节";
+                    SetEpisodeSnapshot(episode, EpisodeDownloadStatus.Failed, item.Percent, 0, item.Error);
                     lock (sync)
                     {
                         state.FailedEpisodes++;
@@ -428,26 +502,48 @@ public sealed class SeriesDownloader : IDisposable
             catch (OperationCanceledException)
             {
                 item.Status = EpisodeDownloadStatus.Canceled;
+                SetEpisodeSnapshot(episode, EpisodeDownloadStatus.Canceled, item.Percent, 0, "已取消");
             }
             catch (Exception ex)
             {
                 item.Status = EpisodeDownloadStatus.Failed;
                 item.Error = ex.Message;
+                SetEpisodeSnapshot(episode, EpisodeDownloadStatus.Failed, item.Percent, 0, ex.Message);
                 lock (sync) { state.FailedEpisodes++; report.Log.Add($"[{item.DisplayTitle}] 异常：{ex.Message}"); }
             }
             finally
             {
-                if (item.Status is EpisodeDownloadStatus.Completed
-                    or EpisodeDownloadStatus.Failed or EpisodeDownloadStatus.Canceled)
+                lock (sync)
                 {
-                    lock (sync) state.FinishedEpisodes++;
+                    inFlight.Remove(episode.Number);
+
+                    if (item.Status is EpisodeDownloadStatus.Completed
+                        or EpisodeDownloadStatus.Failed or EpisodeDownloadStatus.Canceled)
+                    {
+                        state.FinishedEpisodes++;
+                    }
                 }
                 Publish();
                 gate.Release();
             }
         }
 
-        void Publish(SiteEpisode? currentEpisode = null, double currentPercent = -1, double currentSpeed = -1)
+        void SetEpisodeSnapshot(SiteEpisode ep, EpisodeDownloadStatus status,
+            double percent, long bytes, string? error)
+        {
+            lock (sync)
+            {
+                var snapshot = state.Episodes.FirstOrDefault(s => s.Number == ep.Number);
+                if (snapshot is null) return;
+
+                snapshot.Status = status;
+                snapshot.Percent = percent;
+                if (bytes > 0) snapshot.OutputBytes = bytes;
+                if (!string.IsNullOrWhiteSpace(error)) snapshot.Error = error!;
+            }
+        }
+
+        void Publish(SiteEpisode? currentEpisode = null, double currentPercent = -1)
         {
             if (progress is null) return;
             lock (sync)
@@ -456,9 +552,31 @@ public sealed class SeriesDownloader : IDisposable
                 {
                     state.CurrentEpisodeTitle = currentEpisode.DisplayTitle;
                     state.CurrentEpisodePercent = currentPercent;
+
+                    // 同步这一集的快照，供界面展开查看每集进度
+                    var snapshot = state.Episodes.FirstOrDefault(s => s.Number == currentEpisode.Number);
+                    if (snapshot is not null)
+                    {
+                        snapshot.Percent = currentPercent;
+                        if (snapshot.Status is EpisodeDownloadStatus.Pending or EpisodeDownloadStatus.Downloading)
+                            snapshot.Status = EpisodeDownloadStatus.Downloading;
+                    }
                 }
-                if (currentSpeed >= 0) state.SpeedBytesPerSecond = currentSpeed;
-                state.TotalBytes = report.Episodes.Sum(e => e.OutputBytes);
+
+                // 汇总：已完成集的产物字节 + 进行中集的实时字节；速度是所有进行中集之和
+                long liveBytes = 0;
+                double liveSpeed = 0;
+                var now = Environment.TickCount64;
+                foreach (var v in inFlight.Values)
+                {
+                    liveBytes += v.Bytes;
+                    if (v.Speed > 0 && now - v.SpeedTicks <= 2000) liveSpeed += v.Speed;
+                }
+
+                var finishedBytes = report.Episodes.Sum(e => e.OutputBytes);
+                state.DownloadedBytes = finishedBytes + liveBytes;
+                state.TotalBytes = finishedBytes;
+                state.SpeedBytesPerSecond = inFlight.Count > 0 ? liveSpeed : 0;
                 progress.Report(state);
             }
         }

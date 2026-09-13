@@ -6,4 +6,7 @@
     <Project Path="src/M3U8Downloader.Cli/M3U8Downloader.Cli.csproj" />
     <Project Path="src/M3U8Downloader.Core/M3U8Downloader.Core.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/M3U8Downloader.SelfTest/M3U8Downloader.SelfTest.csproj" />
+  </Folder>
 </Solution>
