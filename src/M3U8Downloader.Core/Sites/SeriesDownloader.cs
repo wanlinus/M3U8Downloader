@@ -1,8 +1,7 @@
 using System.Text;
 using System.Text.RegularExpressions;
-using M3U8Downloader.Core.Ffmpeg;
+using M3U8Downloader.Core.Downloads;
 using M3U8Downloader.Core.Settings;
-using M3U8Downloader.Core.Staging;
 
 namespace M3U8Downloader.Core.Sites;
 
@@ -473,8 +472,6 @@ public sealed class SeriesDownloader : IDisposable
                     return;
                 }
 
-                var one = System.Diagnostics.Stopwatch.StartNew();
-
                 // ---- 1. 解析该集 m3u8 直链 ----
                 item.Status = EpisodeDownloadStatus.Resolving;
                 Publish();
@@ -496,26 +493,8 @@ public sealed class SeriesDownloader : IDisposable
 
                 // 暂存目录：放在**下载目录**里（便于发现与清理），名字带随机串，
                 // 避免同一集并发/重试时几个暂存目录撞在一起。
-                var stagingDir = CreateStagingDirectory(seriesDir, episode.Number);
+                var stagingDir = EpisodePipeline.CreateStagingDirectory(seriesDir, episode.Number);
                 item.StagingDirectory = stagingDir;
-
-                // 先合并成暂存目录里的中间文件；最终产物转成 MP4 后再删暂存目录
-                var intermediate = Path.Combine(stagingDir,
-                    media.IsFmp4 ? "merged.mp4" : "merged.ts");
-
-                var downloadOptions = new DownloadOptions
-                {
-                    Concurrency = Math.Clamp(options.SegmentConcurrency, 1, 64),
-                    MaxRetries = Math.Clamp(options.MaxRetries, 0, 10),
-                    RetryBaseDelayMs = options.RetryBaseDelayMs,
-                    TimeoutSeconds = options.TimeoutSeconds,
-                    AutoSkipInvalidSegments = options.AutoSkipInvalidSegments,
-                    Headers = headers,
-                    TempDirectory = stagingDir,
-                    OutputPath = intermediate,
-                    // 暂存目录的生死由本方法统一管理（要先转 MP4 再删）
-                    DeleteTempOnSuccess = false,
-                };
 
                 var inner = new Progress<DownloadProgress>(p =>
                 {
@@ -542,84 +521,83 @@ public sealed class SeriesDownloader : IDisposable
                     Publish(currentEpisode: episode, currentPercent: p.Percent);
                 });
 
-                var result = await _hls.DownloadAsync(media, downloadOptions, inner, ct).ConfigureAwait(false);
-                one.Stop();
+                // 一集的完整流程（下载 → 转 MP4 → 产物体检 → 清理暂存）在 Core 的
+                // EpisodePipeline 里，与「单文件模式」共用同一份实现；
+                // 这里只负责集间并发、进度聚合与报告簿记。
+                var outcome = await new EpisodePipeline(_hls, headers, new EpisodePipelineOptions
+                {
+                    SegmentConcurrency = options.SegmentConcurrency,
+                    MaxRetries = options.MaxRetries,
+                    RetryBaseDelayMs = options.RetryBaseDelayMs,
+                    TimeoutSeconds = options.TimeoutSeconds,
+                    AutoSkipInvalidSegments = options.AutoSkipInvalidSegments,
+                    FfmpegPath = options.FfmpegPath,
+                    FullDecodeCheck = options.FullDecodeCheck,
+                }, line =>
+                {
+                    // 多集并发，日志列表要串行写入
+                    lock (sync) report.Log.Add(line);
+                })
+                .RunAsync(new EpisodeJob
+                {
+                    Title = episode.DisplayTitle,
+                    PlaylistUrl = playlistUrl,
+                    PreferredVariantUri = preferredVariant,
+                    OutputDirectory = seriesDir,
+                    FileName = fileName,
+                    StagingDirectory = stagingDir,
+                }, inner, stage =>
+                {
+                    // 阶段变化同步到界面（解析中 → 下载中）；转封装阶段不再改状态
+                    if (stage == EpisodeStage.Resolving) item.Status = EpisodeDownloadStatus.Resolving;
+                    else if (stage == EpisodeStage.Downloading) item.Status = EpisodeDownloadStatus.Downloading;
+                    else return;
 
-                // 合并/校验结论也留档，写进报告
-                item.MergeVerdict = result.Messages
-                    .FirstOrDefault(m => m.StartsWith("合并核对", StringComparison.Ordinal));
+                    Publish();
+                }, ct).ConfigureAwait(false);
 
-                // 下载耗时要在转封装之前定格：转 MP4 与产物校验都算在后面，
-                // 否则报告里的"耗时"会把这两步也算进去（大文件能差出几十秒）
-                item.Elapsed = one.Elapsed;
-                item.DurationSeconds = media.TotalDuration;
-                item.TotalSegments = result.TotalSegments > 0 ? result.TotalSegments : item.TotalSegments;
-                item.CompletedSegments = result.CompletedSegments;
-                item.FailedSegments = result.FailedSegments;
-                item.SkippedSegments = result.SkippedSegments;
-                item.SkippedAdSegments = result.SkippedSegments;
+                // 下载耗时由流水线在「下载结束那一刻」定格（转 MP4 与产物校验都算在后面，
+                // 否则报告里的"耗时"会把这两步也算进去，大文件能差出几十秒）
+                item.Elapsed = outcome.Elapsed;
+                item.DurationSeconds = outcome.DurationSeconds;
+                item.TotalSegments = outcome.TotalSegments;
+                item.CompletedSegments = outcome.CompletedSegments;
+                item.FailedSegments = outcome.FailedSegments;
+                item.SkippedSegments = outcome.SkippedSegments;
+                item.SkippedAdSegments = outcome.SkippedSegments;
+                item.MergeVerdict = outcome.MergeVerdict;
+                item.StagingDirectory = outcome.StagingDirectory;
                 item.Percent = 100;
 
-                if (result.Success)
+                if (outcome.Success)
                 {
-                    // ---- 4. 转成常用格式（MP4）----
-                    // 清单声明的时长要减掉被跳过的广告片，否则"时长核对"会误判成缺片
-                    var skipped = result.SkippedSegmentIndices.ToHashSet();
-                    var expectedSeconds = media.Segments
-                        .Where(s => !skipped.Contains(s.Index))
-                        .Sum(s => s.Duration);
-
-                    var final = await FinalizeOutputAsync(
-                        seriesDir, fileName, intermediate, media.IsFmp4, options,
-                        report.Log, item.DisplayTitle, ct, expectedSeconds).ConfigureAwait(false);
-
-                    item.OutputPath = final.Path;
-                    item.OutputBytes = final.Bytes;
-                    item.Format = final.Format;
-                    item.DurationVerdict = final.DurationVerdict;
-
-                    // ---- 4b. 产物体检：容器信息 + 全量解码检查 ----
-                    await InspectProductAsync(options, final.Path, item, report.Log, ct).ConfigureAwait(false);
-
-                    // ---- 5. 全部成功 → 删除暂存目录（含中间文件）----
-                    if (StagingStore.TryRemoveStagingDirectory(stagingDir))
-                    {
-                        item.StagingDirectory = null;
-                        lock (sync) report.Log.Add($"[{item.DisplayTitle}] 已清理暂存目录。");
-                    }
-                    else
-                    {
-                        lock (sync) report.Log.Add(
-                            $"[{item.DisplayTitle}] 暂存目录未能删除（可能被占用）：{stagingDir}");
-                    }
+                    item.OutputPath = outcome.OutputPath;
+                    item.OutputBytes = outcome.OutputBytes;
+                    item.Format = outcome.Format;
+                    item.DurationVerdict = outcome.DurationVerdict;
+                    item.Container = outcome.Container;
+                    item.DecodeCheck = outcome.DecodeCheck;
 
                     item.Status = EpisodeDownloadStatus.Completed;
-                    SetEpisodeSnapshot(episode, EpisodeDownloadStatus.Completed, 100, final.Bytes, null, final.Path,
-                        segments: (item.CompletedSegments, item.TotalSegments));
-                    lock (sync)
-                    {
-                        state.SucceededEpisodes++;
-                        report.Log.Add($"[{item.DisplayTitle}] 完成 → {final.Path}");
-                        foreach (var m in result.Messages) report.Log.Add($"[{item.DisplayTitle}] {m}");
-                    }
+                    SetEpisodeSnapshot(episode, EpisodeDownloadStatus.Completed, 100, outcome.OutputBytes, null,
+                        outcome.OutputPath, segments: (item.CompletedSegments, item.TotalSegments));
+                    lock (sync) state.SucceededEpisodes++;
                 }
                 else
                 {
-                    item.Status = EpisodeDownloadStatus.Failed;
-                    // 引擎偶尔会在没给出 Error 的情况下判失败，这时把分片统计打出来 ——
-                    // 只显示"未知错误"对排查毫无帮助。
-                    item.Error = result.Error
-                        ?? $"分片统计 成功 {result.CompletedSegments} / 跳过 {result.SkippedSegments} / " +
-                           $"失败 {result.FailedSegments} / 共 {result.TotalSegments}，输出 {result.OutputBytes} 字节";
-                    SetEpisodeSnapshot(episode, EpisodeDownloadStatus.Failed, item.Percent, 0, item.Error,
-                        segments: (item.CompletedSegments, item.TotalSegments));
-                    lock (sync)
+                    // 取消也是"返回值"：流水线不抛异常，所以两条出路都在这里收口
+                    item.Status = outcome.Status == EpisodeOutcomeStatus.Canceled
+                        ? EpisodeDownloadStatus.Canceled
+                        : EpisodeDownloadStatus.Failed;
+
+                    if (item.Status == EpisodeDownloadStatus.Failed)
                     {
-                        state.FailedEpisodes++;
-                        report.Log.Add($"[{item.DisplayTitle}] 失败：{item.Error}" +
-                                       $"（暂存目录已保留：{stagingDir}）");
-                        foreach (var m in result.Messages) report.Log.Add($"[{item.DisplayTitle}] {m}");
+                        item.Error = outcome.Error ?? "下载未完成。";
+                        lock (sync) state.FailedEpisodes++;
                     }
+
+                    SetEpisodeSnapshot(episode, item.Status, item.Percent, 0, item.Error,
+                        segments: (item.CompletedSegments, item.TotalSegments));
                 }
             }
             catch (OperationCanceledException)
@@ -726,206 +704,6 @@ public sealed class SeriesDownloader : IDisposable
                 progress.Report(state);
             }
         }
-    }
-
-    /// <summary>
-    /// 取本集的暂存目录，名字形如 <c>.m3u8tmp-007-a1b2c3d4</c>。
-    ///
-    /// - 放在下载目录里（而不是系统临时目录）：便于用户发现与清理，出问题时也容易找到；
-    /// - **已存在就直接复用**：里面可能存着上次下到一半的分片，这就是断点续传的关键。
-    ///   分片能不能用由引擎按「清单指纹」判断（播放列表变了就整批清掉重下），所以复用是安全的；
-    /// - 只有确实没有历史目录时才新建一个带随机串的，避免与并发下载互相踩。
-    /// </summary>
-    public static string CreateStagingDirectory(string seriesDirectory, int episodeNumber)
-    {
-        try
-        {
-            if (Directory.Exists(seriesDirectory))
-            {
-                var candidates = Directory.GetDirectories(seriesDirectory, $".m3u8tmp-{episodeNumber:000}-*");
-                if (candidates.Length > 0)
-                {
-                    // 同集有多个残留时取最近用过的那个
-                    return candidates
-                        .OrderByDescending(Directory.GetLastWriteTimeUtc)
-                        .First();
-                }
-            }
-        }
-        catch
-        {
-            // 目录枚举失败就按新建处理
-        }
-
-        var suffix = Guid.NewGuid().ToString("N")[..8];
-        var dir = Path.Combine(seriesDirectory, $".m3u8tmp-{episodeNumber:000}-{suffix}");
-        Directory.CreateDirectory(dir);
-        return dir;
-    }
-
-    /// <summary>
-    /// 把合并好的中间文件转成常用格式（MP4）。ffmpeg 不可用时退回保留 TS。
-    ///
-    /// <paramref name="expectedSeconds"/> 是清单声明的时长（跳过广告片后重算）。
-    /// 转完后会用 ffprobe/ffmpeg 读产物**真实时长**比对 ——
-    /// "ffmpeg 退出码 0 + 文件非空"只能说明封装成功，**说明不了没缺片**：
-    /// 少一段照样能转出 MP4。时长对不上就写进日志，由调用方决定是否算完整。
-    /// </summary>
-    private static async Task<(string Path, long Bytes, string Format, string? DurationVerdict)> FinalizeOutputAsync(
-        string seriesDir, string fileName, string intermediate, bool alreadyFmp4,
-        SeriesDownloadOptions options, List<string> log, string episodeTitle, CancellationToken ct,
-        double expectedSeconds = 0)
-    {
-        var ffmpegPath = options.FfmpegPath;
-        var finalPath = Path.Combine(seriesDir, fileName + ".mp4");
-
-        if (!string.IsNullOrWhiteSpace(ffmpegPath) && File.Exists(ffmpegPath))
-        {
-            var remux = await FfmpegRunner.RemuxToMp4Async(ffmpegPath!, intermediate, finalPath, ct)
-                .ConfigureAwait(false);
-
-            if (remux.Success && File.Exists(finalPath) && new FileInfo(finalPath).Length > 0)
-            {
-                log.Add($"[{episodeTitle}] 已转封装为 MP4（流复制，无画质损失）。");
-                var verdict = await CheckDurationAsync(ffmpegPath, finalPath, expectedSeconds, log, episodeTitle, ct)
-                    .ConfigureAwait(false);
-                return (finalPath, new FileInfo(finalPath).Length, "mp4", verdict);
-            }
-
-            log.Add($"[{episodeTitle}] 转 MP4 失败，改为保留原始格式：{remux.Error}");
-            try { if (File.Exists(finalPath)) File.Delete(finalPath); } catch { }
-        }
-        else
-        {
-            log.Add($"[{episodeTitle}] 未配置 FFmpeg，跳过转 MP4；如需 MP4 请在设置里指定或下载 FFmpeg。");
-        }
-
-        // 退路：把中间文件搬到输出目录并保留原格式
-        var fallbackExt = alreadyFmp4 ? ".mp4" : ".ts";
-        var fallbackPath = Path.Combine(seriesDir, fileName + fallbackExt);
-        try
-        {
-            if (File.Exists(fallbackPath)) File.Delete(fallbackPath);
-            File.Move(intermediate, fallbackPath);
-        }
-        catch (Exception ex)
-        {
-            log.Add($"[{episodeTitle}] 移动产物失败：{ex.Message}");
-            return (intermediate, new FileInfo(intermediate).Length, alreadyFmp4 ? "mp4" : "ts", null);
-        }
-
-        // 没有 ffmpeg 时也要核对：内置探测不依赖外部工具
-        var fallbackVerdict = await CheckDurationAsync(ffmpegPath, fallbackPath, expectedSeconds, log, episodeTitle, ct)
-            .ConfigureAwait(false);
-
-        return (fallbackPath, new FileInfo(fallbackPath).Length, alreadyFmp4 ? "mp4" : "ts", fallbackVerdict);
-    }
-
-    /// <summary>
-    /// 产物体检：容器信息（ffprobe）+ 全量解码检查（ffmpeg -f null -）。
-    ///
-    /// 这两项是"报告里该有的东西"：
-    /// - 容器信息回答"下出来的是什么"（格式/时长/码率/编码/分辨率/帧率/声道）；
-    /// - 解码检查回答"内容是不是好的"—— 包对齐、字节数、时长全对，
-    ///   源站返回的坏包依然会留在产物里，只有整条解一遍才知道。
-    /// </summary>
-    private static async Task InspectProductAsync(
-        SeriesDownloadOptions options, string path, EpisodeDownloadReport item,
-        List<string> log, CancellationToken ct)
-    {
-        var ffmpegPath = options.FfmpegPath;
-        if (string.IsNullOrWhiteSpace(ffmpegPath) || !File.Exists(ffmpegPath)) return;
-
-        try
-        {
-            item.Container = await FfmpegRunner.TryProbeContainerAsync(ffmpegPath!, path, ct).ConfigureAwait(false);
-            if (item.Container is { Streams.Count: > 0 })
-            {
-                log.Add($"[{item.DisplayTitle}] 容器信息：{item.Container.FormatName}，" +
-                        $"时长 {TimeSpan.FromSeconds(item.Container.DurationSeconds):hh\\:mm\\:ss}" +
-                        (item.Container.BitRate > 0 ? $"，码率 {item.Container.BitRate / 1000} kbps" : "") +
-                        $"；流：{string.Join(" + ", item.Container.Streams.Select(s => s.Describe()))}");
-            }
-        }
-        catch
-        {
-            // 探测失败不影响产物
-        }
-
-        try
-        {
-            if (!options.FullDecodeCheck)
-            {
-                log.Add($"[{item.DisplayTitle}] 已跳过全量解码检查（设置里关掉了；容器与时长核对不受影响）。");
-                return;
-            }
-
-            item.DecodeCheck = await FfmpegRunner.RunDecodeCheckAsync(ffmpegPath!, path, ct).ConfigureAwait(false);
-            if (item.DecodeCheck is not null)
-            {
-                log.Add(item.DecodeCheck.Passed
-                    ? $"[{item.DisplayTitle}] 全量解码检查通过（{item.DecodeCheck.Elapsed.TotalSeconds:0.0}s）。"
-                    : $"[{item.DisplayTitle}] ⚠ 全量解码检查发现异常（退出码 {item.DecodeCheck.ExitCode}）：" +
-                      $"{string.Join("；", item.DecodeCheck.Issues)}。这通常是源站数据问题，不是拼接错位。");
-            }
-        }
-        catch
-        {
-            // 同上
-        }
-    }
-
-    /// <summary>
-    /// 读产物真实时长并与清单声明值比对，差距过大时写一条醒目日志。
-    ///
-    /// 先用**内置探测**（TS 累加 PCR / MP4 读 mvhd）—— 不依赖外部工具，任何机器都能做；
-    /// 内置读不出来再退回 ffmpeg/ffprobe。两边都读不出来就明确报告"读不出"，
-    /// 而不是默默当通过（那等于没校验）。
-    /// </summary>
-    private static async Task<string?> CheckDurationAsync(
-        string? ffmpegPath, string path, double expectedSeconds, List<string> log,
-        string episodeTitle, CancellationToken ct)
-    {
-        if (expectedSeconds <= 0) return null;
-
-        var source = "内置探测";
-        double? actual = MediaDurationProbe.TryProbeSeconds(path);
-
-        if (actual is null && !string.IsNullOrWhiteSpace(ffmpegPath) && File.Exists(ffmpegPath))
-        {
-            source = "ffmpeg";
-            try
-            {
-                actual = await FfmpegRunner.TryGetDurationSecondsAsync(ffmpegPath!, path, ct).ConfigureAwait(false);
-            }
-            catch
-            {
-                actual = null;
-            }
-        }
-
-        if (actual is null)
-        {
-            var note = $"读不出产物时长（清单声明 {expectedSeconds:0.0}s）";
-            log.Add($"[{episodeTitle}] ⚠ 时长核对未完成：{note}；" +
-                    $"产物已保留，建议用播放器确认是否能完整播放。");
-            return $"未完成（{note}）";
-        }
-
-        // 容差：TS 里 PTS/DTS 与容器时长本来就有零点几秒的出入，广告片跳过也会造成偏差，
-        // 所以只在差距明显（>5% 且 >3 秒）时才判定为"缺片"。
-        var diff = Math.Abs(actual.Value - expectedSeconds);
-        var tolerance = Math.Max(3.0, expectedSeconds * 0.05);
-
-        if (diff > tolerance)
-        {
-            log.Add($"[{episodeTitle}] ⚠ 时长核对不通过（{source}）：清单声明 {expectedSeconds:0.0}s，" +
-                    $"产物实际 {actual.Value:0.0}s，相差 {diff:0.0}s（可能缺片，建议核对原播放列表）。");
-            return $"不通过：产物 {actual.Value:0.0}s vs 清单 {expectedSeconds:0.0}s（差 {diff:0.0}s）";
-        }
-
-        log.Add($"[{episodeTitle}] 时长核对通过（{source}）：产物 {actual.Value:0.0}s，清单声明 {expectedSeconds:0.0}s。");
-        return $"通过：{actual.Value:0.0}s / 声明 {expectedSeconds:0.0}s（{source}）";
     }
 
     /// <summary>

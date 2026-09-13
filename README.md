@@ -24,7 +24,7 @@
 |---|---|
 | **站点批量下载** | 粘贴视频网站播放页/详情页地址 → 自动识别站点 → 列出剧集 → 勾选后批量下载整部剧 |
 | **下载任务队列** | 点「加入下载队列」立即入队并清空页面，可继续贴下一个地址；任务在「下载任务」里串行执行，实时显示进度 |
-| **下载报告** | 整部剧结束后在视频目录生成 Markdown 报告（汇总 / 分集明细 / 失败原因 / 运行日志） |
+| **下载报告** | 下载结束后在视频目录生成 Markdown 报告（汇总 / 分集明细 / 产物校验 / 失败原因 / 运行日志）；单文件模式也会生成一份 |
 | **广告/无效分片自动识别** | 基于「异目录聚类 + 重复分片 + 加密上下文突变 + 密钥可用性探测」四重判定，下载前剔除 |
 | 多线程下载 | `Parallel.ForEachAsync` 并发调度，并发数可调（1–64） |
 | 失败重试 | 单分片可重试，指数退避；任务级「重试失败集」 |
@@ -88,7 +88,10 @@ M3U8Downloader/
 │   │   ├── Settings/                 # 设置模型与落盘（%APPDATA%）
 │   │   ├── Net/ProxyHelper.cs        # 代理构造、地址规范化、连通性测试
 │   │   ├── Ffmpeg/                   # FFmpeg 探测与自动下载安装
-│   │   └── Sites/                    # 站点识别与批量下载
+│   │   ├── Staging/                  # 暂存目录 + 清单指纹（断点续传的判据）
+│   │   ├── Downloads/                # 下载流水线（单文件与站点模式共用同一份）
+│   │   │   ├── EpisodePipeline.cs    # 一集：解析 → 下载 → 转 MP4 → 产物体检 → 清理暂存
+│   │   │   └── SingleFileDownloadService.cs  # 单文件模式入口（含下载报告）
 │   │   ├── Sites/                    # 站点识别与批量下载
 │   │   │   ├── SiteModels.cs         # 剧集/播放源模型
 │   │   │   ├── SiteResolver.cs       # 适配器接口 + 站点识别入口 + 编码嗅探
@@ -96,10 +99,11 @@ M3U8Downloader/
 │   │   │   └── SeriesDownloader.cs   # 批量下载协调器 + 选集 + 清晰度挑选
 │   │   └── Tasks/
 │   │       ├── DownloadTaskManager.cs  # 下载任务队列（串行执行 + UI 线程封送 + 续传）
+│   │       ├── TaskDiagnostics.cs      # 诊断日志（排查"停不下来"这类问题）
 │   │       └── TaskStore.cs            # 任务列表落盘（重开程序恢复进度）
 │   ├── M3U8Downloader.App/           # WinUI 3 图形界面
 │   │   ├── MainWindow.xaml(.cs)      # 三模式界面 + 设置/关于入口
-│   │   ├── MainViewModel.cs          # 单文件下载
+│   │   ├── MainViewModel.cs          # 单文件面板（只搬参数与日志，流程在 Core）
 │   │   ├── SeriesBatchViewModel.cs   # 站点批量下载
 │   │   ├── TaskListViewModel.cs      # 下载任务面板（汇总 / 实时速度）
 │   │   ├── EpisodeItemViewModel.cs   # 剧集项（可绑定勾选状态）
@@ -115,6 +119,39 @@ M3U8Downloader/
 │   └── test-ads.ps1                  # 用真实地址验证广告识别
 └── publish/                          # 发布产物（含 app-win-x64\ffmpeg\）
 ```
+
+### 分层与依赖方向
+
+```
+M3U8Downloader.Core        ← 零外部依赖（纯 BCL）：引擎、编排、持久化都在这里
+      ▲        ▲        ▲
+      │        │        │
+    App       Cli    SelfTest
+```
+
+- **只允许单向依赖**：App / Cli / SelfTest 都只引用 Core，Core 从不反向引用它们
+  （`Core.csproj` 里没有任何 `PackageReference`，也没有任何 `ProjectReference`）；
+- Core 内部按职责分层：引擎（`HlsDownloader`）→ 单集流水线（`Downloads/EpisodePipeline`）→
+  站点协调（`Sites/SeriesDownloader`）→ 任务队列（`Tasks/DownloadTaskManager`）；
+- 界面只做两件事：把参数递进去、把日志与进度搬上来 —— **下载流程不写在 ViewModel 里**。
+
+### 一条流水线，两种模式
+
+「单文件下载」和「站点批量下载」曾经是两套并行实现：单文件那份写在
+`MainViewModel.StartAsync()` 里，自己 new 引擎、自己跑解析与下载；于是站点模式有的
+转 MP4、时长核对、产物体检、暂存目录指纹，它一样都没有。
+
+现在两者都归结到 `Downloads/EpisodePipeline.RunAsync()`：
+
+| 类型 | 负责 |
+|---|---|
+| `EpisodePipeline` | 一集的完整流程：解析清单 → 下载到暂存目录 → 转封装 MP4 → 容器探测 + 全量解码检查 → 清理暂存 |
+| `SingleFileDownloadService` | 单文件模式入口：一个地址 → 一个产物 + 一份 `xxx-下载报告.md` |
+| `SeriesDownloader` | 站点模式协调器：集间并发、进度聚合、分集报告与续传 |
+
+流水线本身**不含任何站点概念**（没有剧集、没有集号），输入就是「一个播放列表地址 +
+一个暂存目录 + 一个输出文件名」—— 所以图形界面、命令行、站点模式、单文件模式四处
+走的是同一段代码，校验强度不会再出现落差（自检的阶段 I 守着这条）。
 
 ---
 

@@ -109,6 +109,7 @@ public sealed partial class MainWindow : Window
 
         _single.OutputDirectory = outputDir;
         _single.Concurrency = settings.SegmentConcurrency;
+        _single.FullDecodeCheck = settings.FullDecodeCheck;
 
         MinimizeToTrayOnClose = settings.MinimizeToTrayOnClose;
 
@@ -119,15 +120,18 @@ public sealed partial class MainWindow : Window
         _batch.SeriesSubdirectory = settings.SeriesSubdirectory;
         _batch.FullDecodeCheck = settings.FullDecodeCheck;
 
-        // 有 ffmpeg 才能把产物转成 MP4；没有就保留 TS（报告里会说明）
+        // 有 ffmpeg 才能把产物转成 MP4；没有就保留 TS（报告里会说明）。
+        // 单文件模式与站点批量模式走同一条流水线，所以两边都要拿到这个路径。
         try
         {
             var status = await FfmpegLocator.DetectAsync(settings);
             _batch.FfmpegPath = status.FfmpegPath;
+            _single.FfmpegPath = status.FfmpegPath;
         }
         catch
         {
             _batch.FfmpegPath = settings.FfmpegPath;
+            _single.FfmpegPath = settings.FfmpegPath;
         }
     }
 

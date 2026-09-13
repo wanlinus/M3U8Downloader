@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
 using M3U8Downloader.Core;
+using M3U8Downloader.Core.Downloads;
 using M3U8Downloader.Core.Sites;
 using M3U8Downloader.Core.Tasks;
 
@@ -1114,15 +1115,62 @@ var encOk = false;
                       $"{(encResult.OutputBytes == expectedBytes ? "一致 ✔" : "不一致 ✘")}");
 }
 
+// ---------------------------------------------------------------- 阶段 I：单文件服务
+//
+// 「单文件模式」（界面第一个面板、命令行默认模式）现在也走 Core 的下载服务，
+// 与站点批量模式共用同一条流水线。这个阶段守住三件事：
+//   1. 它能独立跑通（不依赖任何界面代码）；
+//   2. 校验强度与站点模式一致 —— 转封装、时长核对、报告都要有；
+//   3. 成功后暂存目录必须被清掉（不留垃圾）。
+
+Console.WriteLine();
+Console.WriteLine("阶段 I：单文件下载服务（SingleFileDownloadService）");
+
+var singleDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-single-" + Guid.NewGuid().ToString("N")[..6]);
+Directory.CreateDirectory(singleDir);
+
+var okSingle = false;
+{
+    var service = new SingleFileDownloadService();
+    var report = await service.DownloadAsync(new SingleFileDownloadOptions
+    {
+        Url = $"http://localhost:{Port}/index.m3u8",
+        OutputDirectory = singleDir,
+        FileName = "single",
+        SegmentConcurrency = 4,
+        MaxRetries = 1,
+        FfmpegPath = ffmpegPath,
+        FullDecodeCheck = false,   // 自检里不跑全量解码（那是几十秒的整条解码）
+        WriteReport = true,
+    });
+
+    Console.WriteLine($"  结果: Success={report.Success}，" +
+                      $"分片 {report.Outcome?.CompletedSegments}/{report.Outcome?.TotalSegments}，" +
+                      $"产物 {report.OutputPath}（{report.Format}，{report.OutputBytes / 1024.0 / 1024.0:0.00} MB）");
+
+    var producedExists = report.OutputPath is not null && File.Exists(report.OutputPath);
+    var stagingCleaned = !Directory.EnumerateDirectories(singleDir, ".m3u8tmp-single-*").Any();
+    var reportExists = report.ReportPath is not null && File.Exists(report.ReportPath);
+    var verdictOk = !string.IsNullOrWhiteSpace(report.Outcome?.DurationVerdict);
+    var formatOk = report.Format is "mp4" or "ts";
+
+    Console.WriteLine($"  产物存在={producedExists} 暂存目录已清理={stagingCleaned} 报告已写出={reportExists}");
+    Console.WriteLine($"  时长核对={report.Outcome?.DurationVerdict}");
+    foreach (var line in report.Log.Where(l => l.Contains("容器信息") || l.Contains("全量解码")).Take(3))
+        Console.WriteLine("    " + line);
+
+    okSingle = report.Success && producedExists && stagingCleaned && reportExists && verdictOk && formatOk;
+}
+
 Console.WriteLine();
 var ok = okB && okC && okPaused && okStopped && okResume && okSettled && okRetry
-         && okResumeSubset && okFallback && okDuration && encOk;
+         && okResumeSubset && okFallback && okDuration && encOk && okSingle;
 Console.WriteLine(ok
     ? "自检结果       : ✔ 通过"
     : $"自检结果       : ✘ 失败（阶段B {okB} / 阶段C {okC} / 暂停 {okPaused} / 暂停后静止 {okStopped}" +
       $" / 续传 {okResume} / 续传后静止 {okSettled} / 重试 {okRetry}" +
       $" / 续传只下选中集 {okResumeSubset} / 多源兜底 {okFallback} / 时长核对 {okDuration}" +
-      $" / 密文首字节 0x3C {encOk}）");
+      $" / 密文首字节 0x3C {encOk} / 单文件服务 {okSingle}）");
 
 listener.Stop();
 return ok ? 0 : 1;

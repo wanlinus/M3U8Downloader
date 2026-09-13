@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using M3U8Downloader.Core;
+using M3U8Downloader.Core.Downloads;
 using M3U8Downloader.Core.Ffmpeg;
 using M3U8Downloader.Core.Net;
 using M3U8Downloader.Core.Settings;
@@ -186,33 +187,53 @@ internal static class Program
             }
 
             var urlText = url!;
-            fileName ??= SanitizeFileName(
-                Path.GetFileNameWithoutExtension(new Uri(urlText).AbsolutePath.TrimEnd('/')));
-            if (string.IsNullOrWhiteSpace(fileName)) fileName = "video";
+            fileName = SingleFileDownloadService.SanitizeFileName(
+                SingleFileDownloadService.ResolveFileName(fileName, urlText));
 
-            var outputPath = Path.Combine(outputDir, fileName + ".ts");
-            var tempDir = Path.Combine(Path.GetTempPath(), "M3U8Downloader",
-                SanitizeFileName(fileName) + "_" + Math.Abs(urlText.GetHashCode()));
+            // 单文件模式与图形界面走同一个服务：暂存目录 + 清单指纹续传 + 转 MP4 + 产物体检。
+            // 视频下载**不走代理**（源站基本在国内，绕代理更慢且可能触发防盗链），
+            // 代理只用于「获取 FFmpeg」，见 --ffmpeg-download。
+            var singleSettings = AppSettingsStore.Load();
+            var ffmpegPath = await ResolveFfmpegPathAsync(ffmpegPathArg);
+            var service = new SingleFileDownloadService(headers);
 
             Write("M3U8 下载器 · 命令行模式");
             Write($"  地址     : {url}");
-            if (!dryRun) Write($"  输出     : {outputPath}");
-            Write($"  临时目录 : {tempDir}");
+            if (!dryRun)
+            {
+                Write($"  输出     : {Path.Combine(outputDir, fileName + (string.IsNullOrWhiteSpace(ffmpegPath) ? ".ts" : ".mp4"))}");
+            }
             Write($"  并发/重试: {concurrency} / {retries}");
             Write($"  跳过广告 : {(skipAds ? "是" : "否")}");
             Write($"  请求头   : {(headers.Count == 0 ? "无" : string.Join(", ", headers.Select(kv => kv.Key)))}");
             Write(new string('-', 72));
 
-            var sw = Stopwatch.StartNew();
+            void WriteInspection(SegmentInspector.Report inspection)
+            {
+                if (inspection.Suspects.Count > 0)
+                {
+                    Write($"  ⚠ 检测到 {inspection.Suspects.Count} 个疑似插播广告/无效分片：");
+                    foreach (var r in inspection.Reasons) Write("     · " + r);
+                    foreach (var s in inspection.Suspects.Take(8))
+                        Write($"     [{s.Index}] {s.FileName} ({s.Duration:0.##}s) {s.ValidityNote}");
+                    if (inspection.Suspects.Count > 8)
+                        Write($"     …另有 {inspection.Suspects.Count - 8} 个同类分片");
 
-            // 视频下载**不走代理**（源站基本在国内，绕代理更慢且可能触发防盗链）。
-            // 代理只用于「获取 FFmpeg」，见 --ffmpeg-download。
-            using var downloader = new HlsDownloader(headers);
+                    Write(skipAds
+                        ? "  → 已启用自动跳过，这些分片不会导致任务失败。"
+                        : "  → 未启用自动跳过，任务可能因这些分片失败。");
+                }
+                else
+                {
+                    Write("  未发现异目录/重复分片，播放列表干净。");
+                }
+            }
 
             // 仅列出清晰度
             if (listVariants != null)
             {
-                var text = await downloader.FetchPlaylistTextAsync(urlText);
+                using var probe = new HlsDownloader(headers);
+                var text = await probe.FetchPlaylistTextAsync(urlText);
                 var parsed = M3U8Parser.Parse(text, urlText);
                 if (parsed.IsMaster)
                 {
@@ -229,50 +250,24 @@ internal static class Program
                 return 0;
             }
 
-            var (media, parseLogs) = await downloader.ResolveMediaPlaylistAsync(urlText);
-            foreach (var l in parseLogs) Write("  " + l);
-            Write($"  分片数={media.Segments.Count}  总时长={TimeSpan.FromSeconds(media.TotalDuration):hh\\:mm\\:ss}  " +
-                  $"直播={(media.IsLive ? "是" : "否")}  fMP4={(media.IsFmp4 ? "是" : "否")}");
-
-            // ---------- 广告/无效分片分析 ----------
-            var report = SegmentInspector.Inspect(media);
-            Write(new string('-', 72));
-            if (report.Suspects.Count > 0)
-            {
-                Write($"  ⚠ 检测到 {report.Suspects.Count} 个疑似插播广告/无效分片：");
-                foreach (var r in report.Reasons) Write("     · " + r);
-                foreach (var s in report.Suspects.Take(8))
-                    Write($"     [{s.Index}] {s.FileName} ({s.Duration:0.##}s) {s.ValidityNote}");
-                if (report.Suspects.Count > 8) Write($"     …另有 {report.Suspects.Count - 8} 个同类分片");
-                Write(skipAds
-                    ? "  → 已启用自动跳过，这些分片不会导致任务失败。"
-                    : "  → 未启用自动跳过，任务可能因这些分片失败。");
-            }
-            else
-            {
-                Write("  未发现异目录/重复分片，播放列表干净。");
-            }
-            Write(new string('-', 72));
-
+            // 只分析不下载
             if (dryRun)
             {
+                var analysis = await service.AnalyzeAsync(urlText);
+                foreach (var l in analysis.Log) Write("  " + l);
+                Write($"  分片数={analysis.Media.Segments.Count}  " +
+                      $"总时长={TimeSpan.FromSeconds(analysis.Media.TotalDuration):hh\\:mm\\:ss}  " +
+                      $"直播={(analysis.Media.IsLive ? "是" : "否")}  fMP4={(analysis.Media.IsFmp4 ? "是" : "否")}");
+                Write(new string('-', 72));
+                WriteInspection(analysis.Inspection);
+                Write(new string('-', 72));
                 Write("  --dry-run：仅分析，不下载。");
                 if (logFile != null) await File.WriteAllTextAsync(logFile, log.ToString(), Encoding.UTF8);
                 return 0;
             }
 
-            var options = new DownloadOptions
-            {
-                Concurrency = Math.Clamp(concurrency, 1, 64),
-                MaxRetries = Math.Clamp(retries, 0, 10),
-                Headers = headers,
-                AutoSkipInvalidSegments = skipAds,
-                TempDirectory = tempDir,
-                OutputPath = outputPath,
-            };
-
             var lastReport = DateTime.UtcNow;
-            var progress = new Progress<DownloadProgress>(p =>
+            var progress = new Progress<SingleFileProgress>(p =>
             {
                 if ((DateTime.UtcNow - lastReport).TotalSeconds < 1) return;
                 lastReport = DateTime.UtcNow;
@@ -282,21 +277,35 @@ internal static class Program
                               (p.Eta.HasValue ? $"剩余 {p.Eta.Value:hh\\:mm\\:ss}" : "") + "        ");
             });
 
-            var result = await downloader.DownloadAsync(media, options, progress);
+            var report = await service.DownloadAsync(new SingleFileDownloadOptions
+            {
+                Url = urlText,
+                Headers = headers,
+                OutputDirectory = outputDir,
+                FileName = fileName,
+                SegmentConcurrency = concurrency,
+                MaxRetries = retries,
+                AutoSkipInvalidSegments = skipAds,
+                FfmpegPath = ffmpegPath,
+                FullDecodeCheck = singleSettings.FullDecodeCheck,
+            }, progress, line => Write("  " + line));
+
             Console.WriteLine();
 
             Write(new string('-', 72));
-            foreach (var m in result.Messages) Write("  · " + m);
-            Write($"  分片统计: 成功 {result.CompletedSegments} / 跳过 {result.SkippedSegments} / 失败 {result.FailedSegments} / 共 {result.TotalSegments}");
-            Write($"  耗时    : {result.Elapsed:hh\\:mm\\:ss}");
-            if (result.OutputBytes > 0)
-                Write($"  产物    : {result.OutputPath}  ({result.OutputBytes / 1024.0 / 1024.0:0.0} MB)");
-            Write(result.Success ? "  结果    : 成功" : $"  结果    : 失败  {result.Error}");
+            Write($"  分片统计: 成功 {report.Outcome?.CompletedSegments ?? 0} / " +
+                  $"跳过 {report.Outcome?.SkippedSegments ?? 0} / " +
+                  $"失败 {report.Outcome?.FailedSegments ?? 0} / 共 {report.Outcome?.TotalSegments ?? 0}");
+            Write($"  耗时    : {report.Elapsed:hh\\:mm\\:ss}");
+            if (report.OutputBytes > 0)
+                Write($"  产物    : {report.OutputPath}  ({report.OutputBytes / 1024.0 / 1024.0:0.0} MB)");
+            if (report.ReportPath != null) Write($"  报告    : {report.ReportPath}");
+            Write(report.Success ? "  结果    : 成功" : $"  结果    : 失败  {report.Error ?? "未完成"}");
 
             if (logFile != null)
                 await File.WriteAllTextAsync(logFile, log.ToString(), Encoding.UTF8);
 
-            return result.Success ? 0 : 1;
+            return report.Success ? 0 : 1;
         }
         // 预期内的失败（不支持的站点、页面结构变了等）只打一句话，
         // 别把调用栈甩给用户；真正的意外才打完整异常。
@@ -477,11 +486,5 @@ internal static class Program
         write("  m3u8dl https://example.com/index.m3u8 --dry-run");
         write("  m3u8dl --series https://www.qmao.net/vodplay/30450-1-1.html --list");
         write("  m3u8dl --series https://www.qmao.net/vodplay/30450-1-1.html --episodes 1-8 -o D:\\剧集");
-    }
-
-    private static string SanitizeFileName(string name)
-    {
-        foreach (var c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
-        return name.Trim();
     }
 }

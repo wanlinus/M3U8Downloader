@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using Microsoft.UI.Dispatching;
 using M3U8Downloader.Core;
+using M3U8Downloader.Core.Downloads;
 
 namespace M3U8Downloader;
 
@@ -46,6 +47,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private bool _autoSkipAds = true;
     public bool AutoSkipAds { get => _autoSkipAds; set => Set(ref _autoSkipAds, value); }
+
+    /// <summary>ffmpeg 路径（由窗口从设置里注入）；为空则保留 TS，不转 MP4</summary>
+    public string? FfmpegPath { get; set; }
+
+    /// <summary>是否对产物做全量解码检查（由窗口从设置里注入）</summary>
+    public bool FullDecodeCheck { get; set; } = true;
 
     // ---------------- 状态 ----------------
 
@@ -110,92 +117,57 @@ public sealed class MainViewModel : INotifyPropertyChanged
         DetailText = "";
         _cts = new CancellationTokenSource();
 
-        var headers = new Dictionary<string, string>();
+        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (!string.IsNullOrWhiteSpace(Referer)) headers["Referer"] = Referer.Trim();
         if (!string.IsNullOrWhiteSpace(Origin)) headers["Origin"] = Origin.Trim();
         if (!string.IsNullOrWhiteSpace(UserAgent)) headers["User-Agent"] = UserAgent.Trim();
 
-        var safeName = SanitizeFileName(string.IsNullOrWhiteSpace(FileName) ? "video" : FileName);
-        var outDir = string.IsNullOrWhiteSpace(OutputDirectory) ? "." : OutputDirectory;
-        var outputPath = Path.Combine(outDir, safeName + ".ts");
-        var tempDir = Path.Combine(Path.GetTempPath(), "M3U8Downloader", SanitizeFileName(safeName) + "_" + Math.Abs(Url.GetHashCode()));
-
         try
         {
-            using var downloader = new HlsDownloader(headers);
-            var options = new DownloadOptions
-            {
-                Concurrency = Math.Clamp(Concurrency, 1, 64),
-                MaxRetries = Math.Clamp(MaxRetries, 0, 10),
-                Headers = headers,
-                AutoSkipInvalidSegments = AutoSkipAds,
-                TempDirectory = tempDir,
-                OutputPath = outputPath,
-            };
+            // 下载流程整体在 Core 的 SingleFileDownloadService 里（与站点批量模式共用同一条
+            // 流水线：暂存目录 + 清单指纹续传 + 转 MP4 + 产物体检）。
+            // 界面在这里只做两件事：把参数递进去、把日志与进度搬上来。
+            var service = new SingleFileDownloadService(headers);
 
-            Log($"开始解析：{Url}");
-            Log($"附加请求头：{(headers.Count == 0 ? "无" : string.Join(", ", headers.Keys))}");
-
-            StatusText = "正在解析播放列表…";
-            var (media, logs) = await downloader.ResolveMediaPlaylistAsync(Url, null, _cts.Token);
-            foreach (var l in logs) Log(l);
-            Log($"分片 {media.Segments.Count} 个，总时长 {TimeSpan.FromSeconds(media.TotalDuration):hh\\:mm\\:ss}，" +
-                $"加密方式 {DescribeEncryption(media)}");
-
-            // 下载前先把广告/无效分片分析结果展示出来
-            var report = SegmentInspector.Inspect(media);
-            if (report.Suspects.Count > 0)
-            {
-                Log(new string('-', 60));
-                Log($"⚠ 检测到 {report.Suspects.Count} 个疑似插播广告/无效分片：");
-                foreach (var r in report.Reasons) Log("  · " + r);
-                foreach (var s in report.Suspects.Take(12))
-                    Log($"  [{s.Index}] {s.FileName}  {s.Duration:0.##}s  {s.ValidityNote}");
-                if (report.Suspects.Count > 12)
-                    Log($"  …另有 {report.Suspects.Count - 12} 个同类分片");
-                Log(AutoSkipAds
-                    ? "→ 已启用自动跳过，这些分片不会导致任务失败。"
-                    : "→ 未启用自动跳过，任务可能因这些分片失败。");
-                Log(new string('-', 60));
-            }
-            else
-            {
-                Log("未发现异目录/重复分片，播放列表看起来是干净的。");
-            }
-
-            var progress = new Progress<DownloadProgress>(p =>
+            var progress = new Progress<SingleFileProgress>(p =>
             {
                 Progress = p.Percent;
-                DetailText = $"{p.CompletedSegments + p.FailedSegments + p.SkippedSegments}/{p.TotalSegments} 分片  ·  " +
-                             $"{p.SizeText}  ·  {p.SpeedText}  ·  已用 {p.Elapsed:hh\\:mm\\:ss}" +
-                             (p.Eta.HasValue ? $"  ·  剩余约 {p.Eta.Value:hh\\:mm\\:ss}" : "");
+                StatusText = p.Phase;
+                DetailText = p.TotalSegments == 0
+                    ? p.Phase
+                    : $"{p.CompletedSegments + p.FailedSegments + p.SkippedSegments}/{p.TotalSegments} 分片  ·  " +
+                      $"{p.SizeText}  ·  {p.SpeedText}  ·  已用 {p.Elapsed:hh\\:mm\\:ss}" +
+                      (p.Eta.HasValue ? $"  ·  剩余约 {p.Eta.Value:hh\\:mm\\:ss}" : "");
             });
 
-            StatusText = "正在下载分片…";
-            var result = await downloader.DownloadAsync(media, options, progress, _cts.Token);
-
-            Log(new string('-', 60));
-            foreach (var m in result.Messages) Log(m);
-            Log($"分片：成功 {result.CompletedSegments} / 跳过 {result.SkippedSegments} / 失败 {result.FailedSegments} / 共 {result.TotalSegments}");
-            Log($"耗时：{result.Elapsed:hh\\:mm\\:ss}");
-
-            if (result.Success)
+            var report = await service.DownloadAsync(new SingleFileDownloadOptions
             {
-                Progress = 100;
-                StatusText = $"下载完成：{result.OutputPath}";
-                Log($"✔ 输出文件：{result.OutputPath}");
-                Log($"  大小：{result.OutputBytes / 1024.0 / 1024.0:0.0} MB");
-            }
-            else
+                Url = Url.Trim(),
+                Headers = headers,
+                OutputDirectory = OutputDirectory,
+                FileName = FileName,
+                SegmentConcurrency = Concurrency,
+                MaxRetries = MaxRetries,
+                AutoSkipInvalidSegments = AutoSkipAds,
+                FfmpegPath = FfmpegPath,
+                FullDecodeCheck = FullDecodeCheck,
+            }, progress, Log, _cts.Token);
+
+            switch (report.Outcome?.Status)
             {
-                StatusText = result.Error ?? "下载未完成。";
-                Log("✘ " + (result.Error ?? "下载未完成。"));
+                case EpisodeOutcomeStatus.Completed:
+                    Progress = 100;
+                    StatusText = $"下载完成：{report.OutputPath}";
+                    break;
+
+                case EpisodeOutcomeStatus.Canceled:
+                    StatusText = "已取消。已下载的分片已保留，可重新点击开始以续传。";
+                    break;
+
+                default:
+                    StatusText = report.Error ?? "下载未完成。";
+                    break;
             }
-        }
-        catch (OperationCanceledException)
-        {
-            StatusText = "已取消。已下载的分片已保留，可重新点击开始以续传。";
-            Log("已取消。");
         }
         catch (Exception ex)
         {
@@ -228,19 +200,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
             Logs.Add($"[{DateTime.Now:HH:mm:ss}] {message}");
             while (Logs.Count > 500) Logs.RemoveAt(0);
         });
-    }
-
-    private static string DescribeEncryption(HlsMediaPlaylist media)
-    {
-        var keys = media.Segments.Select(s => s.Key.Method).Distinct().ToList();
-        if (keys.Count == 1) return keys[0] == HlsEncryptionMethod.None ? "无加密" : keys[0].ToString();
-        return string.Join(" + ", keys);
-    }
-
-    private static string SanitizeFileName(string name)
-    {
-        foreach (var c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
-        return string.IsNullOrWhiteSpace(name) ? "video" : name.Trim();
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
