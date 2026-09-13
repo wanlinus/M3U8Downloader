@@ -231,8 +231,19 @@
                     <TextBox Grid.Column="1" x:Name="PageUrlBox"
                              PlaceholderText="粘贴视频网站的播放页或详情页地址，例如 https://www.example.com/vodplay/12345-1-1.html"
                              Text="{Binding PageUrl, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                    <Button Grid.Column="2" Content="识别并列出剧集" Click="OnParseSeries"
-                            IsEnabled="{Binding CanParse}" Style="{ThemeResource AccentButtonStyle}" />
+                    <Button Grid.Column="2" Click="OnParseSeries"
+                            IsEnabled="{Binding CanParse}" Style="{ThemeResource AccentButtonStyle}"
+                            MinWidth="150"
+                            AutomationProperties.Name="{Binding ParseButtonText}">
+                        <!-- 识别期间按钮里转圈：抓页面 + 可能过代理要好几秒，没有反馈会以为卡死 -->
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <ProgressRing Width="16" Height="16"
+                                          IsActive="{Binding IsBusy}"
+                                          Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}"
+                                          Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
+                            <TextBlock Text="{Binding ParseButtonText}" />
+                        </StackPanel>
+                    </Button>
                 </Grid>
 
                 <Grid Grid.Row="1" Grid.ColumnSpan="2" ColumnSpacing="8">
@@ -296,11 +307,18 @@
             </StackPanel>
 
             <!-- 剧集列表 -->
-            <Border Grid.Row="3" BorderThickness="1" CornerRadius="6"
+            <Border Grid.Row="3" x:Name="EpisodeListBorder" BorderThickness="1" CornerRadius="6"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                     Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
                 <ListView ItemsSource="{Binding VisibleEpisodes}" SelectionMode="None"
                           Padding="4" ScrollViewer.VerticalScrollBarVisibility="Auto">
+                    <!-- 识别完成后整批列表项依次淡入，比"唰"地一下全冒出来自然 -->
+                    <ListView.ItemContainerTransitions>
+                        <TransitionCollection>
+                            <EntranceThemeTransition FromVerticalOffset="18" />
+                            <RepositionThemeTransition />
+                        </TransitionCollection>
+                    </ListView.ItemContainerTransitions>
                     <ListView.ItemTemplate>
                         <DataTemplate>
                             <Grid ColumnSpacing="10" Padding="4,6">

@@ -192,6 +192,7 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
                 OnPropertyChanged(nameof(IsIdle));
                 OnPropertyChanged(nameof(CanParse));
                 OnPropertyChanged(nameof(CanDownload));
+                OnPropertyChanged(nameof(ParseButtonText));
             }
         }
     }
@@ -199,6 +200,12 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
     public bool IsIdle => !IsBusy;
     public bool CanParse => !IsBusy && !string.IsNullOrWhiteSpace(PageUrl);
     public bool CanDownload => !IsBusy && _series != null && Episodes.Any(e => e.IsSelected);
+
+    /// <summary>
+    /// 识别按钮上的文字。识别期间换成进行时 —— 按钮里还会转一个 ProgressRing，
+    /// 否则点了按钮要等好几秒（要抓页面、可能还要过代理），界面看起来像卡死了。
+    /// </summary>
+    public string ParseButtonText => IsBusy ? "正在识别…" : "识别并列出剧集";
 
     private string _statusText = "粘贴视频网站的播放页或详情页地址，点击「识别并列出剧集」。";
     public string StatusText { get => _statusText; set => Set(ref _statusText, value); }

@@ -1,6 +1,7 @@
 using H.NotifyIcon;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media.Animation;
 using M3U8Downloader.Core;
 using M3U8Downloader.Core.Ffmpeg;
 using M3U8Downloader.Core.Settings;
@@ -422,6 +423,40 @@ public sealed partial class MainWindow : Window
     {
         // 不再弹窗打断：多个播放源时，上方工具栏的「视频源」下拉里直接选
         await _batch.ParseAsync();
+
+        // 识别成功后让结果区淡入：列表是整批出现的，没有过渡会显得很突兀
+        if (_batch.HasSeries) PlayResultsEntrance();
+    }
+
+    /// <summary>
+    /// 识别成功时结果区淡入。
+    ///
+    /// 用代码构造 Storyboard 而不是 XAML 资源：省掉 NameScope 解析那一层不确定性
+    /// （动画找不到目标时是静默不播放，很难查）。Opacity 是合成动画，不占 UI 线程。
+    /// </summary>
+    private void PlayResultsEntrance()
+    {
+        try
+        {
+            var animation = new DoubleAnimation
+            {
+                From = 0,
+                To = 1,
+                Duration = new Duration(TimeSpan.FromMilliseconds(350)),
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+            };
+
+            Storyboard.SetTarget(animation, EpisodeListBorder);
+            Storyboard.SetTargetProperty(animation, "Opacity");
+
+            var storyboard = new Storyboard();
+            storyboard.Children.Add(animation);
+            storyboard.Begin();
+        }
+        catch
+        {
+            // 动画播不出来不影响功能
+        }
     }
 
     /// <summary>
