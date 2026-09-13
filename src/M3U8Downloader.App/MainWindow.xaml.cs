@@ -135,31 +135,69 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// 当前打开的模态对话框。
+    /// WinUI 同时只允许一个 ContentDialog，第二次 ShowAsync 会抛
+    /// 「Only a single ContentDialog can be open at any time」——
+    /// 而 OnOpenSettings 是 async void，异常没人接，直接崩掉整个程序。
+    /// 双击「设置」就能触发，所以这里挡一道。
+    /// </summary>
+    private ContentDialog? _openDialog;
+
     private async void OnOpenSettings(object sender, RoutedEventArgs e)
     {
+        if (_openDialog is not null) return;
+
         var dialog = new SettingsDialog(WindowNative.GetWindowHandle(this), AppSettingsStore.Load())
         {
             XamlRoot = Content.XamlRoot,
         };
 
-        var result = await dialog.ShowAsync();
-        if (result != ContentDialogResult.Primary || !dialog.Saved) return;
-
-        var settings = dialog.Result;
-        if (!AppSettingsStore.Save(settings))
+        _openDialog = dialog;
+        try
         {
-            _single.StatusText = "设置保存失败（无法写入 " + AppSettingsStore.SettingsFilePath + "）";
-            return;
-        }
+            var result = await dialog.ShowAsync();
+            if (result != ContentDialogResult.Primary || !dialog.Saved) return;
 
-        ApplySettings(settings);
-        _single.StatusText = $"设置已保存：{AppSettingsStore.SettingsFilePath}";
+            var settings = dialog.Result;
+            if (!AppSettingsStore.Save(settings))
+            {
+                _single.StatusText = "设置保存失败（无法写入 " + AppSettingsStore.SettingsFilePath + "）";
+                return;
+            }
+
+            ApplySettings(settings);
+            _single.StatusText = $"设置已保存：{AppSettingsStore.SettingsFilePath}";
+        }
+        catch (Exception ex)
+        {
+            // 对话框本身出问题也不该把程序带走
+            _single.StatusText = "打开设置失败：" + ex.Message;
+        }
+        finally
+        {
+            _openDialog = null;
+        }
     }
 
     private async void OnOpenAbout(object sender, RoutedEventArgs e)
     {
+        if (_openDialog is not null) return;
+
         var dialog = new AboutDialog { XamlRoot = Content.XamlRoot };
-        await dialog.ShowAsync();
+        _openDialog = dialog;
+        try
+        {
+            await dialog.ShowAsync();
+        }
+        catch (Exception ex)
+        {
+            _single.StatusText = "打开关于失败：" + ex.Message;
+        }
+        finally
+        {
+            _openDialog = null;
+        }
     }
 
     /// <summary>根据命令行参数决定初始模式</summary>

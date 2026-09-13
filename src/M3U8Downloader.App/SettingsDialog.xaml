@@ -8,115 +8,163 @@
     CloseButtonText="取消"
     DefaultButton="Primary">
 
-    <ScrollViewer MaxHeight="470" VerticalScrollBarVisibility="Auto" Padding="0,0,8,0">
-        <StackPanel Spacing="14" Width="470">
+    <!--
+        设置项按主题分页。之前是一长条堆叠，找个选项要滚半天，
+        而且「代理」那种带说明文字的分区会把下面的项挤得很远。
+        TabView 的每个 TabViewItem 各自滚动，切换不丢位置。
+    -->
+    <TabView x:Name="SettingsTabs"
+             Width="520" Height="452"
+             IsAddTabButtonVisible="False"
+             CanDragTabs="False"
+             CanReorderTabs="False"
+             TabWidthMode="SizeToContent">
 
-            <!-- ==================== FFmpeg ==================== -->
-            <TextBlock Text="FFmpeg" FontWeight="SemiBold" FontSize="14" />
-            <TextBlock FontSize="12" TextWrapping="Wrap"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       Text="用于把下载好的 TS 转成 MP4、读取媒体信息、以及对下载结果做解码校验。不安装也不影响下载本身。" />
+        <!-- ==================== 下载 ==================== -->
+        <TabViewItem IsClosable="False">
+            <TabViewItem.Header>
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <FontIcon FontSize="14" Glyph="&#xE896;" />
+                    <TextBlock Text="下载" />
+                </StackPanel>
+            </TabViewItem.Header>
 
-            <Border Padding="10,8" CornerRadius="6" BorderThickness="1"
-                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                    Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
-                <TextBlock x:Name="FfmpegStatusText" FontSize="12" TextWrapping="Wrap" />
-            </Border>
+            <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,4,8,0">
+                <StackPanel Spacing="14" Width="452">
 
-            <StackPanel Orientation="Horizontal" Spacing="8">
-                <Button x:Name="DownloadFfmpegButton" Content="自动下载 FFmpeg" Click="OnDownloadFfmpeg" />
-                <Button Content="重新检测" Click="OnDetectFfmpeg" />
-                <Button Content="清除已下载" Click="OnRemoveManagedFfmpeg" />
-            </StackPanel>
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="保存到" VerticalAlignment="Center" FontSize="12" Width="60" />
+                        <TextBox Grid.Column="1" x:Name="OutputDirBox" FontSize="12"
+                                 PlaceholderText="留空使用系统「下载」目录" />
+                        <Button Grid.Column="2" Content="浏览…" Click="OnPickOutputDir" />
+                    </Grid>
 
-            <StackPanel x:Name="DownloadProgressPanel" Spacing="4" Visibility="Collapsed">
-                <ProgressBar x:Name="DownloadProgressBar" Maximum="100" />
-                <TextBlock x:Name="DownloadProgressText" FontSize="12"
-                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-            </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="同时下载集数" VerticalAlignment="Center" FontSize="12" />
+                        <NumberBox x:Name="EpisodeConcurrencyBox" Minimum="1" Maximum="8" Width="90"
+                                   SpinButtonPlacementMode="Compact" FontSize="12" />
+                        <TextBlock Text="每集分片并发" VerticalAlignment="Center" FontSize="12" Margin="8,0,0,0" />
+                        <NumberBox x:Name="SegmentConcurrencyBox" Minimum="1" Maximum="64" Width="90"
+                                   SpinButtonPlacementMode="Compact" FontSize="12" />
+                    </StackPanel>
+                    <TextBlock FontSize="11" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               Text="提示：总连接数 ≈ 两数相乘，不要盲目调大，否则容易被源站限速。" />
 
-            <Grid ColumnSpacing="8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="手动指定" VerticalAlignment="Center" FontSize="12" Width="60" />
-                <TextBox Grid.Column="1" x:Name="FfmpegPathBox" FontSize="12"
-                         PlaceholderText="ffmpeg.exe 的完整路径（留空则自动探测）" />
-                <Button Grid.Column="2" Content="浏览…" Click="OnPickFfmpeg" />
-            </Grid>
+                    <Border Height="1" Background="{ThemeResource CardStrokeColorDefaultBrush}" />
 
-            <Grid ColumnSpacing="8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="下载源" VerticalAlignment="Center" FontSize="12" Width="60" />
-                <TextBox Grid.Column="1" x:Name="FfmpegUrlBox" FontSize="12"
-                         PlaceholderText="留空使用内置地址（BtbN 官方构建），可换成镜像" />
-            </Grid>
+                    <CheckBox x:Name="SkipAdsCheck" Content="自动跳过疑似插播广告分片" FontSize="12" />
+                    <CheckBox x:Name="SeriesSubdirCheck" Content="按网站下载时自动建「剧名」子目录" FontSize="12" />
+                    <CheckBox x:Name="FullDecodeCheckBox" FontSize="12"
+                              Content="下载完成后对每集做全量解码检查（能发现源站坏包，但每集要多花几十秒）" />
+                    <CheckBox x:Name="MinimizeToTrayCheck" FontSize="12"
+                              Content="点关闭按钮时最小化到托盘（下载在后台继续；真正退出要点托盘图标的右键菜单）" />
+                </StackPanel>
+            </ScrollViewer>
+        </TabViewItem>
 
-            <Border Height="1" Background="{ThemeResource CardStrokeColorDefaultBrush}" />
+        <!-- ==================== FFmpeg ==================== -->
+        <TabViewItem IsClosable="False">
+            <TabViewItem.Header>
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <FontIcon FontSize="14" Glyph="&#xE714;" />
+                    <TextBlock Text="FFmpeg" />
+                </StackPanel>
+            </TabViewItem.Header>
 
-            <!-- ==================== 代理 ==================== -->
-            <TextBlock Text="代理" FontWeight="SemiBold" FontSize="14" />
-            <TextBlock FontSize="12" TextWrapping="Wrap"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       Text="视频分片下载始终直连：源站基本都在国内，绕代理反而更慢，还可能因出口 IP 变化触发防盗链。" />
-            <TextBlock FontSize="12" TextWrapping="Wrap"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       Text="代理只用在两处：①「自动下载 FFmpeg」要访问 GitHub；② 极少数站点挂在 Cloudflare 后面、国内直连会被重置（例如努努影院）—— 下面填了地址，这类站点的页面就会自动经代理打开，分片仍然直连。" />
+            <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,4,8,0">
+                <StackPanel Spacing="14" Width="452">
 
-            <CheckBox x:Name="ProxyEnabledCheck" Content="下载 FFmpeg 时使用代理（默认关闭）" FontSize="12" />
-            <Grid ColumnSpacing="8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="地址" VerticalAlignment="Center" FontSize="12" Width="60" />
-                <TextBox Grid.Column="1" x:Name="ProxyUrlBox" FontSize="12"
-                         PlaceholderText="http://127.0.0.1:7897（也可只填 127.0.0.1:7897）" />
-                <Button Grid.Column="2" Content="测试" Click="OnTestProxy" />
-            </Grid>
-            <TextBlock x:Name="ProxyTestText" FontSize="12" TextWrapping="Wrap" Visibility="Collapsed" />
+                    <TextBlock FontSize="12" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               Text="用于把下载好的 TS 转成 MP4、读取媒体信息、以及对下载结果做解码校验。不安装也不影响下载本身。" />
 
-            <Border Height="1" Background="{ThemeResource CardStrokeColorDefaultBrush}" />
+                    <Border Padding="10,8" CornerRadius="6" BorderThickness="1"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
+                        <TextBlock x:Name="FfmpegStatusText" FontSize="12" TextWrapping="Wrap" />
+                    </Border>
 
-            <!-- ==================== 下载默认值 ==================== -->
-            <TextBlock Text="下载默认值" FontWeight="SemiBold" FontSize="14" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="DownloadFfmpegButton" Content="自动下载 FFmpeg" Click="OnDownloadFfmpeg" />
+                        <Button Content="重新检测" Click="OnDetectFfmpeg" />
+                        <Button Content="清除已下载" Click="OnRemoveManagedFfmpeg" />
+                    </StackPanel>
 
-            <Grid ColumnSpacing="8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="保存到" VerticalAlignment="Center" FontSize="12" Width="60" />
-                <TextBox Grid.Column="1" x:Name="OutputDirBox" FontSize="12"
-                         PlaceholderText="留空使用系统「下载」目录" />
-                <Button Grid.Column="2" Content="浏览…" Click="OnPickOutputDir" />
-            </Grid>
+                    <StackPanel x:Name="DownloadProgressPanel" Spacing="4" Visibility="Collapsed">
+                        <ProgressBar x:Name="DownloadProgressBar" Maximum="100" />
+                        <TextBlock x:Name="DownloadProgressText" FontSize="12"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
 
-            <StackPanel Orientation="Horizontal" Spacing="8">
-                <TextBlock Text="同时下载集数" VerticalAlignment="Center" FontSize="12" />
-                <NumberBox x:Name="EpisodeConcurrencyBox" Minimum="1" Maximum="8" Width="90"
-                           SpinButtonPlacementMode="Compact" FontSize="12" />
-                <TextBlock Text="每集分片并发" VerticalAlignment="Center" FontSize="12" Margin="8,0,0,0" />
-                <NumberBox x:Name="SegmentConcurrencyBox" Minimum="1" Maximum="64" Width="90"
-                           SpinButtonPlacementMode="Compact" FontSize="12" />
-            </StackPanel>
-            <TextBlock FontSize="11" TextWrapping="Wrap"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       Text="提示：总连接数 ≈ 两数相乘，不要盲目调大，否则容易被源站限速。" />
+                    <Border Height="1" Background="{ThemeResource CardStrokeColorDefaultBrush}" />
 
-            <CheckBox x:Name="SkipAdsCheck" Content="自动跳过疑似插播广告分片" FontSize="12" />
-            <CheckBox x:Name="SeriesSubdirCheck" Content="按网站下载时自动建「剧名」子目录" FontSize="12" />
-            <CheckBox x:Name="FullDecodeCheckBox" FontSize="12"
-                      Content="下载完成后对每集做全量解码检查（能发现源站坏包，但每集要多花几十秒）" />
-            <CheckBox x:Name="MinimizeToTrayCheck" FontSize="12"
-                      Content="点关闭按钮时最小化到托盘（下载在后台继续；真正退出要点托盘图标的右键菜单）" />
-        </StackPanel>
-    </ScrollViewer>
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="手动指定" VerticalAlignment="Center" FontSize="12" Width="60" />
+                        <TextBox Grid.Column="1" x:Name="FfmpegPathBox" FontSize="12"
+                                 PlaceholderText="ffmpeg.exe 的完整路径（留空则自动探测）" />
+                        <Button Grid.Column="2" Content="浏览…" Click="OnPickFfmpeg" />
+                    </Grid>
+
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="下载源" VerticalAlignment="Center" FontSize="12" Width="60" />
+                        <TextBox Grid.Column="1" x:Name="FfmpegUrlBox" FontSize="12"
+                                 PlaceholderText="留空使用内置地址（BtbN 官方构建），可换成镜像" />
+                    </Grid>
+                </StackPanel>
+            </ScrollViewer>
+        </TabViewItem>
+
+        <!-- ==================== 代理 ==================== -->
+        <TabViewItem IsClosable="False">
+            <TabViewItem.Header>
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <FontIcon FontSize="14" Glyph="&#xE774;" />
+                    <TextBlock Text="代理" />
+                </StackPanel>
+            </TabViewItem.Header>
+
+            <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,4,8,0">
+                <StackPanel Spacing="14" Width="452">
+
+                    <TextBlock FontSize="12" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               Text="视频分片下载始终直连：源站基本都在国内，绕代理反而更慢，还可能因出口 IP 变化触发防盗链。" />
+                    <TextBlock FontSize="12" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               Text="代理只用在两处：①「自动下载 FFmpeg」要访问 GitHub；② 极少数站点挂在 Cloudflare 后面、国内直连会被重置（例如努努影院）—— 下面填了地址，这类站点的页面就会自动经代理打开，分片仍然直连。" />
+
+                    <CheckBox x:Name="ProxyEnabledCheck" Content="下载 FFmpeg 时使用代理（默认关闭）" FontSize="12" />
+
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="地址" VerticalAlignment="Center" FontSize="12" Width="60" />
+                        <TextBox Grid.Column="1" x:Name="ProxyUrlBox" FontSize="12"
+                                 PlaceholderText="http://127.0.0.1:7897（也可只填 127.0.0.1:7897）" />
+                        <Button Grid.Column="2" Content="测试" Click="OnTestProxy" />
+                    </Grid>
+
+                    <TextBlock x:Name="ProxyTestText" FontSize="12" TextWrapping="Wrap" Visibility="Collapsed" />
+                </StackPanel>
+            </ScrollViewer>
+        </TabViewItem>
+    </TabView>
 </ContentDialog>
