@@ -5,6 +5,7 @@ using Microsoft.UI.Dispatching;
 using M3U8Downloader.Core;
 using M3U8Downloader.Core.Settings;
 using M3U8Downloader.Core.Sites;
+using M3U8Downloader.Core.Tasks;
 
 namespace M3U8Downloader;
 
@@ -306,6 +307,17 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
     /// 因为界面绑定的是 VisibleEpisodes —— 如果新地址解析失败（比如换了不被支持的站点），
     /// 旧剧的剧集列表和「已完成」状态会继续留在界面上，看起来像"什么都没发生"。
     /// </summary>
+    /// <summary>
+    /// 任务已加入下载队列：清空当前页面，让用户可以立刻去贴下一个地址。
+    /// 连输入框一起清掉 —— 否则很容易手滑对同一部剧重复建任务。
+    /// </summary>
+    public void ClearAfterEnqueue()
+    {
+        ResetResults();
+        PageUrl = "";
+        StatusText = "任务已加入「下载任务」，可继续识别下一部剧。";
+    }
+
     private void ResetResults()
     {
         Episodes.Clear();
@@ -331,140 +343,72 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(MultipleSourcesVisibility));
     }
 
-    /// <summary>批量下载已勾选的剧集</summary>
-    public async Task StartDownloadAsync()
+    /// <summary>
+    /// 把当前已勾选的剧集加入下载队列（立即返回，不阻塞界面）。
+    /// 之后由「下载任务」面板负责展示进度与结果。
+    /// </summary>
+    public SeriesTask? EnqueueTo(DownloadTaskManager manager)
     {
-        if (IsBusy || _series == null) return;
+        if (IsBusy) return null;
+        if (_series is null)
+        {
+            StatusText = "请先识别剧集。";
+            return null;
+        }
         if (!Episodes.Any(e => e.IsSelected))
         {
             StatusText = "请至少勾选一集。";
-            return;
-        }
-
-        IsBusy = true;
-        TotalProgress = 0;
-        _cts = new CancellationTokenSource();
-
-        // 状态复位
-        foreach (var vm in Episodes)
-        {
-            vm.Status = vm.IsSelected ? "排队中" : "未选";
-            vm.Percent = 0;
-            vm.IsDone = false;
-            vm.IsFailed = false;
-            vm.IsDownloading = false;
+            return null;
         }
 
         try
         {
-            var options = new SeriesDownloadOptions
-            {
-                OutputDirectory = string.IsNullOrWhiteSpace(OutputDirectory) ? "." : OutputDirectory,
-                TempRootDirectory = Path.Combine(Path.GetTempPath(), "M3U8Downloader", "series"),
-                EpisodeConcurrency = Math.Clamp(EpisodeConcurrency, 1, 8),
-                SegmentConcurrency = Math.Clamp(SegmentConcurrency, 1, 64),
-                AutoSkipInvalidSegments = AutoSkipAds,
-                SeriesSubdirectory = SeriesSubdirectory,
-            };
-
-            // 站点建议的请求头（Referer / Origin / User-Agent）透传给下载引擎
-            foreach (var kv in _series.Headers) options.ExtraHeaders[kv.Key] = kv.Value;
+            var options = BuildOptions(_series);
+            var task = manager.Enqueue(_series, options);
 
             Log(new string('-', 60));
-            Log($"开始批量下载：{_series.Title}");
-            Log($"并发：{options.EpisodeConcurrency} 集 × {options.SegmentConcurrency} 分片" +
-                $"（总连接数约 {options.EpisodeConcurrency * options.SegmentConcurrency}）");
-            Log($"输出目录：{options.OutputDirectory}");
+            Log($"已加入下载队列：{_series.Title}");
+            Log($"并发：{options.EpisodeConcurrency} 集 × {options.SegmentConcurrency} 分片");
+            Log($"输出目录：{task.OutputDirectory}");
+            Log($"产物格式：{(string.IsNullOrWhiteSpace(options.FfmpegPath) ? "TS（未配置 FFmpeg）" : "MP4")}");
 
-            var episodeMap = Episodes.ToDictionary(e => e.Episode);
-
-            var progress = new Progress<SeriesDownloadProgress>(p =>
-            {
-                TotalProgress = p.TotalEpisodes == 0 ? 0
-                    : (p.FinishedEpisodes + p.CurrentEpisodePercent / 100.0) * 100.0 / p.TotalEpisodes;
-
-                DetailText = $"完成 {p.FinishedEpisodes}/{p.TotalEpisodes} 集" +
-                             (p.FailedEpisodes > 0 ? $"（失败 {p.FailedEpisodes}）" : "") +
-                             (p.CurrentEpisodeTitle != null ? $"  ·  正在下载 {p.CurrentEpisodeTitle}" : "") +
-                             (p.DownloadedBytes > 0 ? $"  ·  {p.DownloadedBytes / 1024.0 / 1024.0:0.0} MB" : "");
-
-                // 同步单集状态
-                if (p.CurrentEpisodeTitle != null)
-                {
-                    foreach (var vm in Episodes)
-                    {
-                        if (vm.Title == p.CurrentEpisodeTitle && !vm.IsDone && !vm.IsFailed)
-                        {
-                            vm.IsDownloading = true;
-                            vm.Status = "下载中";
-                            vm.Percent = p.CurrentEpisodePercent;
-                        }
-                    }
-                }
-            });
-
-            StatusText = "正在批量下载…";
-            var report = await _downloader.DownloadAsync(_series, options, progress, _cts.Token);
-
-            // 回填每集最终状态
-            foreach (var r in report.Episodes)
-            {
-                if (!episodeMap.TryGetValue(r.Episode, out var vm)) continue;
-                vm.IsDownloading = false;
-                vm.Percent = r.Percent;
-                switch (r.Status)
-                {
-                    case EpisodeDownloadStatus.Completed:
-                        vm.IsDone = true;
-                        vm.Status = $"完成 {r.OutputBytes / 1024.0 / 1024.0:0.0} MB";
-                        break;
-                    case EpisodeDownloadStatus.Failed:
-                        vm.IsFailed = true;
-                        vm.Status = "失败";
-                        break;
-                    case EpisodeDownloadStatus.Canceled:
-                        vm.Status = "已取消";
-                        break;
-                    default:
-                        vm.Status = r.Status.ToString();
-                        break;
-                }
-            }
-
-            Log(new string('-', 60));
-            foreach (var line in report.Log) Log(line);
-
-            var ok = report.Episodes.Count(r => r.Status == EpisodeDownloadStatus.Completed);
-            var fail = report.Episodes.Count(r => r.Status == EpisodeDownloadStatus.Failed);
-            Log($"汇总：成功 {ok} 集，失败 {fail} 集，共 {report.Episodes.Count} 集，耗时 {report.Elapsed:hh\\:mm\\:ss}");
-
-            TotalProgress = 100;
-            StatusText = fail == 0
-                ? $"全部完成：{ok} 集已下载到 {options.OutputDirectory}"
-                : $"完成 {ok} 集，{fail} 集失败。";
-        }
-        catch (OperationCanceledException)
-        {
-            StatusText = "已取消。已下载的分片已保留，可重新开始续传。";
-            Log("已取消。");
+            return task;
         }
         catch (Exception ex)
         {
-            StatusText = "下载出错：" + ex.Message;
+            StatusText = "加入队列失败：" + ex.Message;
             Log("✘ " + ex);
-        }
-        finally
-        {
-            IsBusy = false;
-            _cts?.Dispose();
-            _cts = null;
+            return null;
         }
     }
 
+    /// <summary>构建下载参数（输出目录、并发、请求头、ffmpeg 路径等）</summary>
+    public SeriesDownloadOptions BuildOptions(SiteSeries series)
+    {
+        var options = new SeriesDownloadOptions
+        {
+            OutputDirectory = string.IsNullOrWhiteSpace(OutputDirectory) ? "." : OutputDirectory,
+            EpisodeConcurrency = Math.Clamp(EpisodeConcurrency, 1, 8),
+            SegmentConcurrency = Math.Clamp(SegmentConcurrency, 1, 64),
+            AutoSkipInvalidSegments = AutoSkipAds,
+            SeriesSubdirectory = SeriesSubdirectory,
+            // 暂存目录留空 = 用下载目录下的 .m3u8tmp（不散落到系统临时目录）
+            FfmpegPath = FfmpegPath,
+        };
+
+        // 站点建议的请求头（Referer / Origin / User-Agent）透传给下载引擎
+        foreach (var kv in series.Headers) options.ExtraHeaders[kv.Key] = kv.Value;
+        return options;
+    }
+
+    /// <summary>ffmpeg 路径（来自设置）；为空则产物保留 TS 格式</summary>
+    public string? FfmpegPath { get; set; }
+
     public void Cancel()
     {
+        // 队列化之后，"取消"由「下载任务」面板里的按钮负责；这里只清掉解析中的请求
         _cts?.Cancel();
-        StatusText = "正在取消…";
+        StatusText = "已取消当前解析。";
     }
 
     public void SelectAll(bool selected)

@@ -73,8 +73,18 @@ public static class StagingStore
     /// <summary>我们生成的临时文件后缀</summary>
     private static readonly string[] TempSuffixes = { ".part" };
 
-    /// <summary>暂存目录里允许被我们删除的文件名</summary>
-    private static readonly string[] OwnedNames = { ManifestFileName, "index.m3u8" };
+    /// <summary>
+    /// 暂存目录里由本程序生成的文件名白名单（分片之外的）。
+    /// 合并出来的中间文件（merged.ts / merged.mp4）必须在这里 ——
+    /// 漏掉它会被清理逻辑误判成"外来文件"，导致整个暂存目录删不掉。
+    /// </summary>
+    private static readonly string[] OwnedNames =
+    {
+        ManifestFileName,
+        "index.m3u8",
+        "merged.ts",
+        "merged.mp4",
+    };
 
     public static string ManifestPath(string dir) => Path.Combine(dir, ManifestFileName);
 

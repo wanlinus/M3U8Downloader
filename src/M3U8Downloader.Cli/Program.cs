@@ -108,7 +108,9 @@ internal static class Program
             }
 
             // ---------- FFmpeg 状态 / 安装（不涉及下载视频） ----------
-            if (ffmpegStatus || ffmpegDownload || ffmpegPathArg != null)
+            // 注意：--ffmpeg-path 只是"指定路径"的修饰参数，不能单独触发这个分支，
+            // 否则 `--series ... --ffmpeg-path xxx` 会被误判成"只看状态"而不去下载。
+            if (ffmpegStatus || ffmpegDownload)
             {
                 var settings = AppSettingsStore.Load();
                 if (ffmpegPathArg != null) settings.FfmpegPath = ffmpegPathArg;
@@ -180,7 +182,7 @@ internal static class Program
             {
                 return await RunSeriesModeAsync(seriesUrl, episodesSpec, listOnly || dryRun, allSources,
                     preferHeight, epConcurrency, concurrency, retries, skipAds,
-                    outputDir, logFile, proxyArg, log, Write);
+                    outputDir, logFile, proxyArg, ffmpegPathArg, log, Write);
             }
 
             var urlText = url!;
@@ -313,13 +315,31 @@ internal static class Program
         }
     }
 
+    /// <summary>解析可用的 ffmpeg 路径：命令行优先，其次设置（手动指定 → 程序目录 → 用户目录 → PATH）</summary>
+    private static async Task<string?> ResolveFfmpegPathAsync(string? ffmpegPathArg)
+    {
+        var settings = AppSettingsStore.Load();
+        if (ffmpegPathArg != null) settings.FfmpegPath = ffmpegPathArg;
+
+        try
+        {
+            var status = await FfmpegLocator.DetectAsync(settings);
+            return status.FfmpegPath;
+        }
+        catch
+        {
+            return settings.FfmpegPath;
+        }
+    }
+
     /// <summary>
     /// 站点/剧集模式：识别站点 → 列出剧集 → 按选择批量下载。
     /// </summary>
     private static async Task<int> RunSeriesModeAsync(
         string seriesUrl, string? episodesSpec, bool listOnly, bool allSources,
         int preferHeight, int epConcurrency, int segmentConcurrency, int retries, bool skipAds,
-        string outputDir, string? logFile, string? proxyArg, StringBuilder log, Action<string> Write)
+        string outputDir, string? logFile, string? proxyArg, string? ffmpegPathArg,
+        StringBuilder log, Action<string> Write)
     {
         // 站点解析与分片下载都不走代理（--proxy 只影响 FFmpeg 下载）
         using var seriesDownloader = new SeriesDownloader();
@@ -371,8 +391,9 @@ internal static class Program
             MaxRetries = Math.Clamp(retries, 0, 10),
             AutoSkipInvalidSegments = skipAds,
             OutputDirectory = outputDir,
-            TempRootDirectory = Path.Combine(Path.GetTempPath(), "M3U8Downloader", "series"),
             PreferHeight = preferHeight > 0 ? preferHeight : null,
+            // 暂存目录留空 = 用下载目录下的 .m3u8tmp（不再散落到系统临时目录）
+            FfmpegPath = await ResolveFfmpegPathAsync(ffmpegPathArg),
         };
 
         // 实际落盘位置 = 系统「下载」目录（或 -o 指定）+ 自动生成的「剧名」子目录

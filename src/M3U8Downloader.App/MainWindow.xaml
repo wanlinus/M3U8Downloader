@@ -5,9 +5,13 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:local="using:M3U8Downloader"
     mc:Ignorable="d">
 
     <Grid x:Name="RootGrid">
+        <Grid.Resources>
+            <local:BoolToVisibilityConverter x:Key="BoolToVis" />
+        </Grid.Resources>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
@@ -35,6 +39,8 @@
                                   IsChecked="True" Click="OnModeSingle" MinWidth="118" />
                     <ToggleButton x:Name="BatchModeButton" Content="站点批量下载"
                                   IsChecked="False" Click="OnModeBatch" MinWidth="118" />
+                    <ToggleButton x:Name="TaskModeButton" Content="下载任务"
+                                  IsChecked="False" Click="OnModeTasks" MinWidth="100" />
                     <Button Content="设置" Click="OnOpenSettings" MinWidth="64" />
                     <Button Content="关于" Click="OnOpenAbout" MinWidth="64" />
                 </StackPanel>
@@ -341,12 +347,109 @@
                           Content="自动跳过疑似插播广告/无效分片（推荐）"
                           IsChecked="{Binding AutoSkipAds, Mode=TwoWay}" />
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-                    <Button Content="取消" Click="OnBatchCancel" IsEnabled="{Binding IsBusy}" />
-                    <Button x:Name="BatchStartButton" Content="开始批量下载" Click="OnBatchStart"
+                    <Button Content="加入下载队列" Click="OnBatchStart"
                             IsEnabled="{Binding CanDownload}"
                             Style="{ThemeResource AccentButtonStyle}" />
                 </StackPanel>
             </Grid>
+        </Grid>
+
+        <!-- ==================== 模式三：下载任务 ==================== -->
+        <Grid x:Name="TaskPanel" Grid.Row="1" Padding="16" RowSpacing="12" Visibility="Collapsed">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <!-- 工具栏 -->
+            <Grid Grid.Row="0" ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                    <TextBlock Text="下载任务" FontWeight="SemiBold" FontSize="15" VerticalAlignment="Center" />
+                    <TextBlock Text="{Binding SummaryText}" FontSize="12" VerticalAlignment="Center"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                    <Button Content="清理已完成" Click="OnClearFinishedTasks" FontSize="12" Padding="10,4" />
+                </StackPanel>
+            </Grid>
+
+            <!-- 空状态 -->
+            <Border Grid.Row="1" BorderThickness="1" CornerRadius="6"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    Visibility="{Binding HasNoTasks, Converter={StaticResource BoolToVis}}">
+                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="6">
+                    <TextBlock Text="还没有下载任务" FontSize="14" HorizontalAlignment="Center" />
+                    <TextBlock FontSize="12" HorizontalAlignment="Center"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               Text="到「站点批量下载」里识别剧集，点「加入下载队列」即可" />
+                </StackPanel>
+            </Border>
+
+            <!-- 任务列表 -->
+            <Border Grid.Row="1" BorderThickness="1" CornerRadius="6"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    Visibility="{Binding HasTasks, Converter={StaticResource BoolToVis}}">
+                <ListView ItemsSource="{Binding Tasks}" SelectionMode="None" Padding="4"
+                          ScrollViewer.VerticalScrollBarVisibility="Auto">
+                    <ListView.ItemTemplate>
+                        <DataTemplate>
+                            <Grid ColumnSpacing="12" Padding="8,10" MinHeight="86">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+
+                                <!-- 左：标题 / 状态 / 进度 -->
+                                <StackPanel Grid.Column="0" Spacing="6">
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold" FontSize="14"
+                                                   TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{Binding StateText}" FontSize="12" VerticalAlignment="Center"
+                                                   Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                    </StackPanel>
+
+                                    <TextBlock FontSize="11" TextTrimming="CharacterEllipsis"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}">
+                                        <Run Text="{Binding SiteName}" />
+                                        <Run Text=" · " />
+                                        <Run Text="{Binding OutputDirectory}" />
+                                    </TextBlock>
+
+                                    <ProgressBar Value="{Binding Percent}" Maximum="100" Height="6" />
+
+                                    <StackPanel Orientation="Horizontal" Spacing="10">
+                                        <TextBlock Text="{Binding ProgressText}" FontSize="11"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                        <TextBlock Text="{Binding CurrentEpisodeText}" FontSize="11"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                        <TextBlock Text="{Binding Message}" FontSize="11" TextTrimming="CharacterEllipsis"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    </StackPanel>
+                                </StackPanel>
+
+                                <!-- 右：操作按钮 -->
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6"
+                                            VerticalAlignment="Center">
+                                    <Button Content="取消" FontSize="12" Padding="10,4" Click="OnTaskCancel"
+                                            Visibility="{Binding CanCancel, Converter={StaticResource BoolToVis}}" />
+                                    <Button Content="重试失败集" FontSize="12" Padding="10,4" Click="OnTaskRetryFailed"
+                                            Visibility="{Binding NeedsRetry, Converter={StaticResource BoolToVis}}" />
+                                    <Button Content="下载报告" FontSize="12" Padding="10,4" Click="OnTaskOpenReport"
+                                            Visibility="{Binding HasReport, Converter={StaticResource BoolToVis}}" />
+                                    <Button Content="打开目录" FontSize="12" Padding="10,4" Click="OnTaskOpenFolder" />
+                                    <Button Content="移除" FontSize="12" Padding="10,4" Click="OnTaskRemove" />
+                                </StackPanel>
+                            </Grid>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+            </Border>
         </Grid>
     </Grid>
 </Window>
