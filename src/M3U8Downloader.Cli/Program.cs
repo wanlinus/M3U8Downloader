@@ -406,7 +406,7 @@ internal static class Program
 
         Write(new string('-', 72));
         foreach (var e in report.Episodes.OrderBy(x => x.Episode.Number)) Write("  · " + e);
-        foreach (var l in report.Log.Where(l => l.Contains("清晰度"))) Write("  · " + l);
+        foreach (var l in report.Log) Write("  · " + l);
         Write($"  {report}");
         Write($"  耗时     : {report.Elapsed:hh\\:mm\\:ss}");
         Write($"  结果     : {(report.Success ? "全部成功" : "存在失败/取消")}");

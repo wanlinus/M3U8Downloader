@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
+using M3U8Downloader.Core.Staging;
 
 namespace M3U8Downloader.Core;
 
@@ -194,6 +195,21 @@ public sealed class HlsDownloader : IDisposable
         if (unavailableKeys.Count > 0)
             result.Messages.Add($"有 {unavailableKeys.Count} 个密钥地址无法获取，引用它们的分片将被跳过。");
 
+        // ---------- 2b. 暂存清单：防止复用"上一次不同播放列表"留下的旧分片 ----------
+        // 源站可能每次请求都重新生成列表（例如随机插入广告），于是"分片序号 ↔ 内容"
+        // 的对应关系会变；直接续传就会拼出错位的文件，而且大小看着还挺正常。
+        var manifest = new StagingManifest
+        {
+            PlaylistUrl = playlist.SourceUrl,
+            OutputPath = options.OutputPath,
+            SegmentCount = segments.Count,
+            TotalDuration = playlist.TotalDuration,
+            SkippedSegments = skipSet.OrderBy(i => i).ToList(),
+            Fingerprint = StagingStore.Fingerprint(segments.Select(s => s.Uri)),
+        };
+        var manifestNote = PrepareStaging(options.TempDirectory, manifest);
+        if (manifestNote is not null) result.Messages.Add(manifestNote);
+
         // ---------- 3. 断点续传：扫描已存在的分片 ----------
         var states = new SegmentState[segments.Count];
         int alreadyDone = 0;
@@ -353,21 +369,35 @@ public sealed class HlsDownloader : IDisposable
         result.OutputBytes = outInfo.Exists ? outInfo.Length : 0;
         result.Elapsed = sw.Elapsed;
 
-        // 合并结果校验
+        // 合并结果校验：TS 产物做**全量**逐包对齐检查
+        var alignmentOk = true;
         if (outInfo.Exists && outInfo.Length > 0)
         {
-            var aligned = await VerifyTsAlignmentAsync(options.OutputPath, ct).ConfigureAwait(false);
-            if (aligned)
-                result.Messages.Add("合并产物校验通过（MPEG-TS 188 字节包对齐完好）。");
+            if (playlist.IsFmp4)
+            {
+                result.Messages.Add("fMP4 产物，跳过 MPEG-TS 包对齐校验。");
+            }
             else
-                result.Messages.Add("警告：合并产物未通过包对齐校验，可能存在错位。");
+            {
+                alignmentOk = await VerifyTsAlignmentAsync(options.OutputPath, ct).ConfigureAwait(false);
+                result.Messages.Add(alignmentOk
+                    ? "合并产物校验通过（全量逐包检查，188 字节对齐完好）。"
+                    : "合并产物未通过包对齐校验：可能拼接错位，暂存目录已保留以便排查。");
+            }
         }
 
-        result.Success = result.FailedSegments == 0 && result.OutputBytes > 0;
+        result.Success = result.FailedSegments == 0 && result.OutputBytes > 0 && alignmentOk;
         if (!result.Success && result.FailedSegments > 0)
             result.Error = $"有 {result.FailedSegments} 个分片下载失败。";
         else if (result.OutputBytes == 0)
             result.Error = "输出文件为空。";
+        else if (!alignmentOk)
+            result.Error = "产物未通过 TS 包对齐校验（可能拼接错位）。";
+
+        // 只有「下载无失败 + 产物校验通过」才清理暂存目录；
+        // 中间任何一步出错都保留，便于排查或下次续传。
+        if (result.Success)
+            CleanupStaging(options.TempDirectory, options, result);
 
         Report(result.Success ? "下载完成" : result.Error);
         return result;
@@ -687,33 +717,110 @@ public sealed class HlsDownloader : IDisposable
         File.Move(tempOut, options.OutputPath);
     }
 
-    /// <summary>校验输出文件是否为对齐的 MPEG-TS</summary>
-    private static async Task<bool> VerifyTsAlignmentAsync(string path, CancellationToken ct)
+    /// <summary>
+    /// 准备暂存目录并校验清单。
+    ///
+    /// 返回一句给用户看的说明（无需说明时返回 null）：
+    /// - 清单一致 → 允许断点续传；
+    /// - 清单不一致（列表被重新生成过）→ 丢弃旧分片重新下载；
+    /// - 有分片但没有清单（旧版本残留）→ 同样丢弃，因为无法确认对应关系。
+    /// </summary>
+    private static string? PrepareStaging(string tempDirectory, StagingManifest current)
     {
         try
         {
-            await using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
-                4096, useAsync: true);
-            var size = fs.Length;
-            if (size < 188 * 3) return false;
+            var existing = StagingStore.TryLoad(tempDirectory);
 
-            var buf = new byte[1];
-            // 头部、中部、尾部各抽查
-            foreach (var pos in new[] { 0L, size / 2 / 188 * 188, (size - 188 * 3) / 188 * 188 })
+            if (existing is null)
+            {
+                var stray = StagingStore.ClearSegments(tempDirectory);
+                StagingStore.Save(tempDirectory, current);
+                return stray > 0
+                    ? $"暂存目录里有 {stray} 个无清单的旧分片（无法确认与当前列表是否对应），已清理后重新下载。"
+                    : null;
+            }
+
+            if (!string.Equals(existing.Fingerprint, current.Fingerprint, StringComparison.OrdinalIgnoreCase))
+            {
+                var removed = StagingStore.ClearSegments(tempDirectory);
+                StagingStore.Save(tempDirectory, current);
+                return $"检测到播放列表已重新生成（分片序号与内容的对应关系已变化），" +
+                       $"已丢弃 {removed} 个旧分片并重新下载，避免拼出错位的文件。";
+            }
+
+            // 指纹一致：保留清单，分片可安全复用
+            StagingStore.Save(tempDirectory, current);
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 全部成功后的收尾：删除暂存目录。
+    ///
+    /// 只有"下载无失败 + 产物校验通过"才会走到这里；
+    /// 任何一步出错都**保留**暂存目录，便于排查或下次续传。
+    /// </summary>
+    private static void CleanupStaging(string tempDirectory, DownloadOptions options, DownloadResult result)
+    {
+        if (!options.DeleteTempOnSuccess) return;
+
+        if (StagingStore.TryRemoveStagingDirectory(tempDirectory))
+            result.Messages.Add("已清理暂存目录（下载与校验均已通过）。");
+        else
+            result.Messages.Add($"暂存目录未自动清理（目录内有其他文件，或正被占用）：{tempDirectory}");
+    }
+
+    /// <summary>
+    /// 校验输出文件是否为对齐的 MPEG-TS：**逐包**检查同步字节。
+    ///
+    /// 早期实现只抽查"头、中、尾各 3 个字节"—— 中间任何位置错位都发现不了，
+    /// 那种校验基本没有意义。实测 400MB 全量扫描约 1 秒，代价可以接受。
+    /// </summary>
+    private static async Task<bool> VerifyTsAlignmentAsync(string path, CancellationToken ct)
+    {
+        const int packetSize = 188;
+
+        try
+        {
+            await using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
+                1 << 20, useAsync: true);
+
+            var size = fs.Length;
+            if (size < packetSize) return false;
+
+            // 末尾出现半包 —— 必然发生了错位或截断
+            if (size % packetSize != 0) return false;
+
+            var buffer = new byte[packetSize * 4096];
+            long offset = 0;
+
+            while (offset < size)
             {
                 ct.ThrowIfCancellationRequested();
-                for (int k = 0; k < 3; k++)
+
+                var want = (int)Math.Min(buffer.Length, size - offset);
+                var read = await fs.ReadAtLeastAsync(buffer.AsMemory(0, want), want,
+                    throwOnEndOfStream: false, ct).ConfigureAwait(false);
+                if (read <= 0) break;
+
+                for (var i = 0; i + packetSize <= read; i += packetSize)
                 {
-                    var at = pos + k * 188;
-                    if (at + 1 > size) break;
-                    fs.Position = at;
-                    if (await fs.ReadAsync(buf.AsMemory(0, 1), ct).ConfigureAwait(false) != 1) return false;
-                    if (buf[0] != 0x47) return false;
+                    if (buffer[i] != 0x47) return false;
                 }
+
+                offset += read;
             }
-            return true;
+
+            return offset == size;
         }
-        catch { return false; }
+        catch
+        {
+            return false;
+        }
     }
 
     private static string SegmentPath(string tempDir, int index) =>
