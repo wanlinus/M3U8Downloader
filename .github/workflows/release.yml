@@ -80,27 +80,13 @@ jobs:
           files: dist/*.zip
           generate_release_notes: true
           body: |
-            ## 免安装，解压即用
-
-            下载 `M3U8Downloader-*-win-x64.zip`，解压后双击 `M3U8Downloader.exe` 即可。
-            包内已自带 .NET 运行时与 Windows App SDK 运行时，**目标机器不需要预装任何东西**。
+            解压后双击 `M3U8Downloader.exe`，免安装（已自带 .NET 与 Windows App SDK 运行时）。
 
             | 包 | 用途 |
             |---|---|
             | `M3U8Downloader-*-win-x64.zip` | 图形界面（主程序） |
-            | `m3u8dl-*-win-x64.zip` | 命令行版，供脚本调用 |
+            | `m3u8dl-*-win-x64.zip` | 命令行版 |
 
-            ## 系统要求
-
-            Windows 10 1809 及以上 / Windows 11，64 位。
-
-            ## 关于 FFmpeg
-
-            **包内不含 FFmpeg** —— 它是独立的第三方组件，许可与体积都不适合打进包。
-            不做任何配置也能正常下载，只是产物保留为 `.ts`（不转 `.mp4`）、并跳过解码校验。
-            需要转 MP4 时，在「设置 → FFmpeg」里点一次「自动下载 FFmpeg」即可（约 200 MB）。
-
-            ## 首次运行提示
-
-            程序没有代码签名，Windows SmartScreen 可能提示「已保护你的电脑」——
-            点「更多信息」→「仍要运行」即可。
+            - **系统要求**：Windows 10 1809+ / Windows 11，64 位
+            - **不含 FFmpeg**：不配置也能正常下载，只是产物保留 `.ts` 不转 MP4；需要转 MP4 时在「设置 → FFmpeg」一键下载
+            - **首次运行**：程序无代码签名，若被 SmartScreen 拦住，点「更多信息」→「仍要运行」
