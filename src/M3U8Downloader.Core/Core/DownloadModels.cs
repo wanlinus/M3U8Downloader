@@ -172,6 +172,9 @@ public sealed class ContainerProbe
 ///
 /// 为什么必须做这一步：容器、时长、包对齐**全对**也不代表内容没坏 ——
 /// 源站返回的坏包会原样拼进产物，只有把它整条解一遍才看得出来。
+///
+/// 注意「输出阶段」的告警不计入 <see cref="Issues"/>（见 <see cref="IgnoredMuxerWarnings"/>）：
+/// 那是检查方式自己产生的噪声，不代表文件有问题。
 /// </summary>
 public sealed class DecodeCheckResult
 {
@@ -183,6 +186,15 @@ public sealed class DecodeCheckResult
 
     /// <summary>告警/错误计数（按类型归类）</summary>
     public List<string> Issues { get; } = new();
+
+    /// <summary>
+    /// 已被忽略的「输出阶段」告警条数（muxer 时间戳提示）。
+    ///
+    /// 带 B 帧的源必然产生这类提示 —— 它来自 <c>-f null</c> 输出侧的重新计时，
+    /// 与产物内容无关。数量记下来只是为了能在日志里说清楚"检查到底看到了什么"，
+    /// **不参与 <see cref="Passed"/> 判定**。
+    /// </summary>
+    public int IgnoredMuxerWarnings { get; set; }
 
     /// <summary>检查耗时</summary>
     public TimeSpan Elapsed { get; set; }

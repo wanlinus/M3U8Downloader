@@ -423,10 +423,15 @@ public sealed class EpisodePipeline
             outcome.DecodeCheck = await FfmpegRunner.RunDecodeCheckAsync(ffmpegPath!, path, ct).ConfigureAwait(false);
             if (outcome.DecodeCheck is not null)
             {
+                // 输出阶段的时间戳提示单列出来说，免得用户以为产物坏了
+                var ignored = outcome.DecodeCheck.IgnoredMuxerWarnings > 0
+                    ? $"（另有 {outcome.DecodeCheck.IgnoredMuxerWarnings} 条输出阶段时间戳提示，带 B 帧的源必然出现，与产物无关）"
+                    : "";
+
                 _log(outcome.DecodeCheck.Passed
-                    ? $"[{outcome.Title}] 全量解码检查通过（{outcome.DecodeCheck.Elapsed.TotalSeconds:0.0}s）。"
+                    ? $"[{outcome.Title}] 全量解码检查通过（{outcome.DecodeCheck.Elapsed.TotalSeconds:0.0}s）{ignored}。"
                     : $"[{outcome.Title}] ⚠ 全量解码检查发现异常（退出码 {outcome.DecodeCheck.ExitCode}）：" +
-                      $"{string.Join("；", outcome.DecodeCheck.Issues)}。这通常是源站数据问题，不是拼接错位。");
+                      $"{string.Join("；", outcome.DecodeCheck.Issues)}。这通常是源站数据问题，不是拼接错位{ignored}。");
             }
         }
         catch

@@ -1001,6 +1001,16 @@ public sealed class SeriesDownloader : IDisposable
                 }
                 sb.AppendLine();
             }
+
+            // 输出阶段的提示单独说一句：不写清楚的话，用户看到日志里几百条
+            // "non monotonically increasing dts" 会以为下载坏了
+            var ignoredMuxer = decoded.Sum(e => e.DecodeCheck!.IgnoredMuxerWarnings);
+            if (ignoredMuxer > 0)
+            {
+                sb.AppendLine($"- 解码检查期间另有 **{ignoredMuxer} 条输出阶段的时间戳提示**已忽略：" +
+                              "`-f null` 的输出会重新计时，带 B 帧的源必然触发，与产物质量无关。");
+                sb.AppendLine();
+            }
         }
 
         sb.AppendLine("## 分集明细");

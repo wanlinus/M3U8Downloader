@@ -424,6 +424,14 @@ public sealed class SingleFileDownloadService
             sb.AppendLine();
         }
 
+        // 输出阶段的提示单独说一句，免得用户以为产物坏了
+        if (outcome.DecodeCheck is { IgnoredMuxerWarnings: > 0 } dc)
+        {
+            sb.AppendLine($"- 解码检查期间另有 **{dc.IgnoredMuxerWarnings} 条输出阶段的时间戳提示**已忽略：" +
+                          "`-f null` 的输出会重新计时，带 B 帧的源必然触发，与产物质量无关。");
+            sb.AppendLine();
+        }
+
         sb.AppendLine("## 运行日志");
         sb.AppendLine();
         sb.AppendLine("```");

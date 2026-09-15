@@ -211,6 +211,13 @@ public static class FfmpegRunner
             text = text.Trim();
             if (text.Length == 0) continue;
 
+            // 输出阶段的告警不算产物的毛病 —— 它描述的是「检查方式自己」，见 IsMuxerStageWarning
+            if (IsMuxerStageWarning(text))
+            {
+                result.IgnoredMuxerWarnings++;
+                continue;
+            }
+
             categories[text] = categories.TryGetValue(text, out var n) ? n + 1 : 1;
         }
 
@@ -220,6 +227,28 @@ public static class FfmpegRunner
         result.Passed = r.ExitCode == 0 && result.Issues.Count == 0;
         return result;
     }
+
+    /// <summary>
+    /// 这条告警是不是「输出阶段」产生的（即：与产物内容无关）。
+    ///
+    /// 为什么必须把它们分开：<c>-f null</c> 的输出用的是两个**假编码器** ——
+    /// 视频走 <c>wrapped_avframe</c>、音频走 <c>pcm_s16le</c>，都不真的编码。
+    /// 而 <c>wrapped_avframe</c> 会把解码帧的 PTS 直接当作输出包的 DTS，
+    /// 输出的时间基又被规范成整数帧率（如 25），输入的 90kHz 时间戳换算过来会**取整撞车**；
+    /// 再加上 H.264 的 B 帧本来就让 PTS 非单调，于是 muxer 每遇到一个重复/回退的时间戳
+    /// 就刷一条 <c>… non monotonically increasing dts to muxer in stream 0: 7500 >= 7500</c>
+    /// （注意两个数可以**相等** —— 这正是取整撞车的特征）。
+    ///
+    /// 实测：《交锋》第 21 集（70887 帧、has_b_frames=2、25.09fps 变帧率）触发 258 条这种告警，
+    /// 而同一条流的 DTS **完全单调**（0 处回退）、时长核对与容器探测全部通过、
+    /// 整条流**零解码错误**（没有任何 Packet corrupt / error while decoding）。
+    /// 也就是说这东西是检查工具自己的产物，报给用户只会造成恐慌。
+    ///
+    /// 判据只看 "to muxer"：真正指向内容问题的告警（Packet corrupt、
+    /// error while decoding、Invalid NAL、concealing errors…）都不含这个词。
+    /// </summary>
+    private static bool IsMuxerStageWarning(string text) =>
+        text.Contains("to muxer", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>找 ffmpeg 同目录下的兄弟程序（ffprobe）</summary>
     private static string? FindSibling(string ffmpegPath, string fileName)
