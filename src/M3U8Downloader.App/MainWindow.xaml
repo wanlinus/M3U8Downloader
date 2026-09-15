@@ -578,6 +578,8 @@
                                                 Visibility="{Binding NeedsRetry, Converter={StaticResource BoolToVis}}" />
                                         <Button Content="下载报告" FontSize="12" Padding="10,4" Click="OnTaskOpenReport"
                                                 Visibility="{Binding HasReport, Converter={StaticResource BoolToVis}}" />
+                                        <!-- 补救入口：下载时没装 FFmpeg 的话产物是 TS，装好后用这个补转 -->
+                                        <Button Content="转 MP4" FontSize="12" Padding="10,4" Click="OnTaskRemuxMp4" />
                                         <Button Content="打开目录" FontSize="12" Padding="10,4" Click="OnTaskOpenFolder" />
                                         <Button Content="移除" FontSize="12" Padding="10,4" Click="OnTaskRemove" />
                                     </StackPanel>

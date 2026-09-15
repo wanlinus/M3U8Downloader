@@ -451,30 +451,40 @@ public sealed partial class MainWindow : Window
     /// 代理类失败多给一个「打开设置」按钮：那种情况下用户要做的就是去改代理，
     /// 省得他再自己找一遍入口。
     /// </summary>
-    private async Task ShowParseFailureAsync(string message, bool needsProxy)
+    private Task ShowParseFailureAsync(string message, bool needsProxy) =>
+        ShowInfoAsync("识别失败", message, offerSettings: needsProxy);
+
+    /// <summary>
+    /// 通用提示框。<paramref name="offerSettings"/> 为真时把主按钮换成「打开设置」——
+    /// 用在"用户下一步动作就是去改设置"的场合（代理没开、FFmpeg 没装）。
+    ///
+    /// 全程受 <see cref="_openDialog"/> 保护：WinUI 同时只允许一个 ContentDialog，
+    /// 第二次 ShowAsync 会直接抛异常，而调用方多半是 async void，没人接就崩。
+    /// </summary>
+    private async Task ShowInfoAsync(string title, string message, bool offerSettings)
     {
-        if (_openDialog is not null) return;   // 同时只能有一个 ContentDialog
+        if (_openDialog is not null) return;
 
         var dialog = new ContentDialog
         {
             XamlRoot = Content.XamlRoot,
-            Title = "识别失败",
+            Title = title,
             Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
-            PrimaryButtonText = needsProxy ? "打开设置" : "知道了",
+            PrimaryButtonText = offerSettings ? "打开设置" : "知道了",
             DefaultButton = ContentDialogButton.Primary,
         };
-        if (needsProxy) dialog.CloseButtonText = "关闭";
+        if (offerSettings) dialog.CloseButtonText = "关闭";
 
         _openDialog = dialog;
         var openSettings = false;
         try
         {
             var result = await dialog.ShowAsync();
-            openSettings = needsProxy && result == ContentDialogResult.Primary;
+            openSettings = offerSettings && result == ContentDialogResult.Primary;
         }
         catch (Exception ex)
         {
-            // 弹窗自身出问题也不该把程序带走；状态栏里已经写了失败原因
+            // 弹窗自身出问题也不该把程序带走；状态栏里已经写了原因
             _single.StatusText = "提示框打开失败：" + ex.Message;
         }
         finally
@@ -484,6 +494,64 @@ public sealed partial class MainWindow : Window
         }
 
         if (openSettings) OnOpenSettings(this, new RoutedEventArgs());
+    }
+
+    /// <summary>
+    /// 把已经下好的任务补转成 MP4。
+    ///
+    /// 存在的理由：下载那会儿还没装 FFmpeg 的话，产物是按 TS 留下的；
+    /// 事后装好 FFmpeg 再想转，原来的流程里没有任何补救手段（只能整部重下）。
+    /// 这个按钮就是那条补救路径 —— 不重下，只是就地换个封装。
+    /// </summary>
+    private async void OnTaskRemuxMp4(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: SeriesTask task }) return;
+        if (sender is not Button button) return;
+
+        // 没装 FFmpeg 就先把他引到设置里，而不是点了一下什么都没发生
+        var ffmpegPath = _batch.FfmpegPath ?? _single.FfmpegPath;
+        if (string.IsNullOrWhiteSpace(ffmpegPath) || !File.Exists(ffmpegPath))
+        {
+            await ShowInfoAsync("需要 FFmpeg",
+                "转 MP4 需要 FFmpeg，但当前没有检测到。\n\n" +
+                "请到「设置 → FFmpeg」点一次「自动下载 FFmpeg」，" +
+                "或手动指定 ffmpeg.exe 的位置，然后再回来点这个按钮。",
+                offerSettings: true);
+            return;
+        }
+
+        button.IsEnabled = false;
+        try
+        {
+            // Progress 在主线程创建，回调会自动封送回 UI 线程
+            var progress = new Progress<string>(m => task.Message = m);
+            using var cts = new CancellationTokenSource();
+            var outcome = await _taskManager.RemuxToMp4Async(task, ffmpegPath!, progress, cts.Token);
+
+            task.Message = outcome.Describe();
+            var detail = outcome.Messages.Count > 0
+                ? "\n\n" + string.Join("\n", outcome.Messages.Take(10)) +
+                  (outcome.Messages.Count > 10 ? $"\n…另有 {outcome.Messages.Count - 10} 条" : "")
+                : "";
+
+            await ShowInfoAsync(
+                outcome.Failed > 0 ? "转 MP4 完成（有失败）" : "转 MP4 完成",
+                outcome.Describe() + detail,
+                offerSettings: false);
+        }
+        catch (OperationCanceledException)
+        {
+            task.Message = "转 MP4 已取消。";
+        }
+        catch (Exception ex)
+        {
+            task.Message = "转 MP4 失败：" + ex.Message;
+            await ShowInfoAsync("转 MP4 失败", ex.Message, offerSettings: false);
+        }
+        finally
+        {
+            button.IsEnabled = true;
+        }
     }
 
     /// <summary>

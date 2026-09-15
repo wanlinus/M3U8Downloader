@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using M3U8Downloader.Core.Ffmpeg;
 using M3U8Downloader.Core.Sites;
 namespace M3U8Downloader.Core.Tasks;
 
@@ -104,6 +105,30 @@ public sealed class TaskEpisodeItem : INotifyPropertyChanged
 
     private void OnPropertyChanged([CallerMemberName] string? name = null) =>
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+}
+
+/// <summary>
+/// 「补转 MP4」的结果。
+/// </summary>
+/// <param name="Converted">成功转了几集</param>
+/// <param name="Skipped">跳过几集（已经是 MP4，或产物文件已不在）</param>
+/// <param name="Failed">失败几集</param>
+/// <param name="Messages">逐集说明（失败原因、原文件删不掉之类）</param>
+public sealed record Mp4RemuxOutcome(int Converted, int Skipped, int Failed, List<string> Messages)
+{
+    /// <summary>一句话总结，直接给用户看</summary>
+    public string Describe()
+    {
+        if (Converted == 0 && Failed == 0)
+            return "没有需要转换的集（都已经在是 MP4，或产物文件已不在）。";
+
+        var text = $"已转好 {Converted} 集";
+        if (Failed > 0) text += $"，{Failed} 集失败";
+        return text + "。";
+    }
+
+    /// <summary>是否需要提醒用户注意（有失败）</summary>
+    public bool HasProblem => Failed > 0 || Messages.Count > 0;
 }
 
 /// <summary>
@@ -687,6 +712,79 @@ public sealed class DownloadTaskManager : IDisposable
         });
         return tcs.Task;
     }
+
+    /// <summary>
+    /// 把任务里已完成、但还不是 MP4 的产物补转成 MP4。
+    ///
+    /// 用途只有一个：**下载那会儿还没装 FFmpeg** —— 产物按 TS 留下了，
+    /// 事后装好 FFmpeg 再想转，原来的流程里没有任何补救手段（只能重下）。
+    ///
+    /// 所以它是纯粹的补救操作：不重下任何东西、不改任务的下载状态，
+    /// 某一集转失败也只是这一集没转成，原文件原样保留。
+    /// 转成功才删原 .ts（流复制是无损的，留着白占一倍空间）。
+    /// </summary>
+    public async Task<Mp4RemuxOutcome> RemuxToMp4Async(
+        SeriesTask task, string ffmpegPath, IProgress<string>? progress = null,
+        CancellationToken ct = default)
+    {
+        // 集合必须在 UI 线程上快照：本方法跑在后台线程，直接遍历界面绑定的
+        // ObservableCollection 会与之撞车（见 pitfalls 第 14 条）
+        TaskEpisodeItem[] episodes = Array.Empty<TaskEpisodeItem>();
+        await RunOnUiAsync(() => episodes = task.Episodes.OrderBy(e => e.Number).ToArray())
+            .ConfigureAwait(false);
+
+        var todo = episodes.Where(NeedsRemux).ToList();
+        var converted = 0;
+        var failed = 0;
+        var messages = new List<string>();
+
+        foreach (var ep in todo)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var src = ep.OutputPath!;
+            var dst = Path.ChangeExtension(src, ".mp4");
+
+            progress?.Report($"正在转 MP4：第 {ep.Number:00} 集（{converted + failed + 1}/{todo.Count}）");
+
+            var r = await FfmpegRunner.RemuxToMp4Async(ffmpegPath, src, dst, ct).ConfigureAwait(false);
+            if (!r.Success || !File.Exists(dst) || new FileInfo(dst).Length == 0)
+            {
+                failed++;
+                messages.Add($"第 {ep.Number:00} 集转失败：{r.Error ?? "产物为空"}");
+                try { if (File.Exists(dst)) File.Delete(dst); } catch { /* 半成品留着也没用，删不掉就算了 */ }
+                continue;
+            }
+
+            // 转好了再删原文件：万一 MP4 有问题，至少 TS 还在
+            try
+            {
+                File.Delete(src);
+            }
+            catch (Exception ex)
+            {
+                messages.Add($"第 {ep.Number:00} 集已转好，但原文件删不掉（{ex.Message}）");
+            }
+
+            await RunOnUiAsync(() => ep.OutputPath = dst).ConfigureAwait(false);
+            converted++;
+        }
+
+        // 产物路径变了，得落盘 —— 否则下次「继续下载」会以为这一集的文件不见了
+        if (converted > 0) ScheduleSave();
+
+        return new Mp4RemuxOutcome(converted, episodes.Length - todo.Count, failed, messages);
+    }
+
+    /// <summary>
+    /// 这一集需不需要补转：已完成、产物记录还在、文件确实在磁盘上、而且还不是 MP4。
+    /// 「文件确实在」这一条不能省 —— 用户可能自己删过或挪过。
+    /// </summary>
+    private static bool NeedsRemux(TaskEpisodeItem ep) =>
+        ep.State == EpisodeDownloadStatus.Completed
+        && !string.IsNullOrWhiteSpace(ep.OutputPath)
+        && File.Exists(ep.OutputPath)
+        && !ep.OutputPath!.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>状态有变化：通知界面，并安排一次落盘（节流）</summary>
     private void RaiseChanged()
