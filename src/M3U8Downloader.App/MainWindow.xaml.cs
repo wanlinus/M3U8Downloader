@@ -429,8 +429,61 @@ public sealed partial class MainWindow : Window
         // 不再弹窗打断：多个播放源时，上方工具栏的「视频源」下拉里直接选
         await _batch.ParseAsync();
 
-        // 识别成功后让结果区淡入：列表是整批出现的，没有过渡会显得很突兀
-        if (_batch.HasSeries) PlayResultsEntrance();
+        if (_batch.HasSeries)
+        {
+            // 识别成功后让结果区淡入：列表是整批出现的，没有过渡会显得很突兀
+            PlayResultsEntrance();
+            return;
+        }
+
+        // 识别失败必须弹窗 —— 理由见 ShowParseFailureAsync
+        if (_batch.LastError is { Length: > 0 } error)
+            await ShowParseFailureAsync(error, _batch.LastErrorNeedsProxy);
+    }
+
+    /// <summary>
+    /// 识别失败的提示框。
+    ///
+    /// 为什么非弹不可：用户贴完地址点「识别」，视线多半还停在输入框那一片，
+    /// 只在下面写一行状态文字的话，"没反应"和"失败了"他分不出来。
+    /// 尤其是失败原因还需要他动手改设置的时候（典型：站点要过代理、而代理没开）。
+    ///
+    /// 代理类失败多给一个「打开设置」按钮：那种情况下用户要做的就是去改代理，
+    /// 省得他再自己找一遍入口。
+    /// </summary>
+    private async Task ShowParseFailureAsync(string message, bool needsProxy)
+    {
+        if (_openDialog is not null) return;   // 同时只能有一个 ContentDialog
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = Content.XamlRoot,
+            Title = "识别失败",
+            Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
+            PrimaryButtonText = needsProxy ? "打开设置" : "知道了",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+        if (needsProxy) dialog.CloseButtonText = "关闭";
+
+        _openDialog = dialog;
+        var openSettings = false;
+        try
+        {
+            var result = await dialog.ShowAsync();
+            openSettings = needsProxy && result == ContentDialogResult.Primary;
+        }
+        catch (Exception ex)
+        {
+            // 弹窗自身出问题也不该把程序带走；状态栏里已经写了失败原因
+            _single.StatusText = "提示框打开失败：" + ex.Message;
+        }
+        finally
+        {
+            // 必须先释放再开设置，否则 OnOpenSettings 会被自己的守卫挡掉
+            _openDialog = null;
+        }
+
+        if (openSettings) OnOpenSettings(this, new RoutedEventArgs());
     }
 
     /// <summary>

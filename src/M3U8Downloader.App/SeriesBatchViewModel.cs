@@ -76,6 +76,20 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
     private bool _fullDecodeCheck = true;
     public bool FullDecodeCheck { get => _fullDecodeCheck; set => Set(ref _fullDecodeCheck, value); }
 
+    private string? _lastError;
+
+    /// <summary>
+    /// 上一次识别的失败原因（成功或取消时为 null）。
+    ///
+    /// 界面拿它弹窗。只在状态栏写一行小字是不够的：用户贴完地址点了识别，
+    /// 眼睛还在地址框上，很容易把"没反应"当成"程序卡了"，
+    /// 尤其是失败原因需要他动手改设置（比如代理没开）的时候。
+    /// </summary>
+    public string? LastError { get => _lastError; private set => Set(ref _lastError, value); }
+
+    /// <summary>这次失败是不是代理的问题（界面据此把「打开设置」摆出来）</summary>
+    public bool LastErrorNeedsProxy { get; private set; }
+
     // ---------------- 解析结果 ----------------
 
     /// <summary>全部播放源的剧集（供下载状态回填与映射，界面不直接绑定）</summary>
@@ -261,6 +275,8 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
         }
 
         IsBusy = true;
+        LastError = null;
+        LastErrorNeedsProxy = false;
         ResetResults();
         _cts = new CancellationTokenSource();
 
@@ -322,7 +338,15 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
         }
         catch (Exception ex)
         {
-            StatusText = "解析失败：" + ex.Message;
+            // 代理类失败的消息本来就是写给用户看的（自带"该去改什么"），原样弹；
+            // 其余异常补一句上下文，免得弹窗里孤零零一行英文堆栈式消息
+            LastErrorNeedsProxy = ex is SiteProxyRequiredException;
+            LastError = LastErrorNeedsProxy
+                ? ex.Message
+                : $"没能识别出这个页面：{ex.Message}";
+
+            // 状态栏只有一行，把多行消息压平再放，否则会被截得莫名其妙
+            StatusText = "解析失败：" + ex.Message.ReplaceLineEndings(" ");
             Log("✘ " + ex);
         }
         finally

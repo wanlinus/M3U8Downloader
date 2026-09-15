@@ -425,13 +425,9 @@ public sealed class SiteResolver
         {
             html = await ctx.GetHtmlAsync(uri.ToString(), adapter, ct).ConfigureAwait(false);
         }
-        catch (Exception ex) when (adapter.NeedsProxy && !ctx.HasProxy)
+        catch (Exception ex) when (adapter.NeedsProxy && !ct.IsCancellationRequested)
         {
-            // 这类站点（Cloudflare 等）直连会被直接重置，报错必须说清"差什么"，
-            // 否则用户只会看到一句莫名其妙的连接失败。
-            throw new NotSupportedException(
-                $"{adapter.Name} 的页面需要通过代理访问（当前直连失败：{ex.Message}）。" +
-                "请到「设置 → 代理」填好代理地址后重试；视频分片本身是直连下载的，不受影响。", ex);
+            throw await BuildProxyErrorAsync(adapter, ctx, ex, ct).ConfigureAwait(false);
         }
 
         var series = await adapter.ParseAsync(html, uri, ctx, ct).ConfigureAwait(false);
@@ -452,6 +448,47 @@ public sealed class SiteResolver
         return series;
     }
 
+    /// <summary>
+    /// 把「需要代理的站点抓不到页面」翻译成一句能让人立刻知道该干什么的话。
+    ///
+    /// 为什么要专门做这件事：用户最常遇到的**不是**"没填代理"，而是
+    /// "填了、但代理软件没开"（Clash 关掉了 / 换了端口）。这时原始异常只有一句
+    /// 「由于目标计算机积极拒绝，无法连接」，从里面根本看不出跟代理有关 ——
+    /// 用户会以为"这软件坏了"，而不是"我代理没开"。
+    ///
+    /// 所以这里顺手测一次代理：测通了说明问题在站点那边，测不通就把代理这条线索点破。
+    /// 代价是一次几十字节的请求，换来的是用户不用为此来问我们。
+    /// </summary>
+    private static async Task<SiteProxyRequiredException> BuildProxyErrorAsync(
+        ISiteAdapter adapter, SiteContext ctx, Exception error, CancellationToken ct)
+    {
+        const string tail = "视频分片本身是直连下载的，不受影响。";
+
+        if (!ctx.HasProxy)
+        {
+            return new SiteProxyRequiredException(
+                $"{adapter.Name} 必须通过代理才能访问，但还没有配置代理。\n\n" +
+                $"请到「设置 → 代理」填好地址（例如 http://127.0.0.1:7897）后重试。{tail}",
+                error)
+            { ProxyMissing = true };
+        }
+
+        var test = await ProxyHelper.TestAsync(ctx.ProxyUrl, ct).ConfigureAwait(false);
+        if (test.Success)
+        {
+            // 代理是通的 → 问题在站点那边（改版 / 临时故障 / 需要人机验证）
+            return new SiteProxyRequiredException(
+                $"{adapter.Name} 的页面抓取失败，但代理 {ctx.ProxyUrl} 是通的（{test.Message}）。\n\n" +
+                $"可能是站点临时不可用或改版了。\n\n原始错误：{error.Message}",
+                error);
+        }
+
+        return new SiteProxyRequiredException(
+            $"{adapter.Name} 必须通过代理才能访问，但代理 {ctx.ProxyUrl} 连不上：{test.Message}\n\n" +
+            $"请确认代理软件（Clash / v2ray 等）正在运行，且端口与「设置 → 代理」里填的一致。{tail}",
+            error);
+    }
+
     /// <summary>把一集补全为 m3u8 直链</summary>
     public async Task<string> ResolvePlaylistUrlAsync(SiteSeries series, SiteEpisode episode,
         SiteContext ctx, CancellationToken ct = default)
@@ -463,4 +500,23 @@ public sealed class SiteResolver
         episode.PlaylistUrl = await adapter.ResolvePlaylistUrlAsync(episode, ctx, ct).ConfigureAwait(false);
         return episode.PlaylistUrl!;
     }
+}
+
+/// <summary>
+/// 站点必须过代理才能打开，而当前代理不可用：要么压根没配，要么配了但连不上。
+///
+/// 单独建一个类型（而不是继续用 <see cref="NotSupportedException"/>）是为了让界面
+/// 能据此把「打开设置」按钮摆出来 —— 靠匹配异常消息的文本来猜意图太脆，
+/// 改一个错别字就失效了。继承 <see cref="NotSupportedException"/> 是为了兼容
+/// 已有的捕获逻辑（调用方仍然可以只 catch NotSupportedException）。
+/// </summary>
+public sealed class SiteProxyRequiredException : NotSupportedException
+{
+    public SiteProxyRequiredException(string message, Exception? inner = null)
+        : base(message, inner)
+    {
+    }
+
+    /// <summary>true = 压根没配代理；false = 配了但连不上（或代理通、站点本身有问题）</summary>
+    public bool ProxyMissing { get; init; }
 }
