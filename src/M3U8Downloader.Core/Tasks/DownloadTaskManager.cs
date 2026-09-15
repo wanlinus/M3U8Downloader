@@ -737,6 +737,7 @@ public sealed class DownloadTaskManager : IDisposable
         var converted = 0;
         var failed = 0;
         var messages = new List<string>();
+        var renames = new List<(string Old, string New)>();
 
         foreach (var ep in todo)
         {
@@ -767,13 +768,47 @@ public sealed class DownloadTaskManager : IDisposable
             }
 
             await RunOnUiAsync(() => ep.OutputPath = dst).ConfigureAwait(false);
+            renames.Add((Path.GetFileName(src), Path.GetFileName(dst)));
             converted++;
         }
 
         // 产物路径变了，得落盘 —— 否则下次「继续下载」会以为这一集的文件不见了
-        if (converted > 0) ScheduleSave();
+        if (converted > 0)
+        {
+            UpdateReportAfterRemux(task, renames);
+            ScheduleSave();
+        }
 
         return new Mp4RemuxOutcome(converted, episodes.Length - todo.Count, failed, messages);
+    }
+
+    /// <summary>
+    /// 补转之后把下载报告里的产物名改过来。
+    ///
+    /// 报告是**下载那一刻**的快照，里面写的还是 `.ts`；补转之后那个文件已经不存在了，
+    /// 用户照着报告去目录里找会找不到。这里只替换文件名与「产物格式」那一行，
+    /// 其余内容一个字都不动 —— 报告终究是历史记录，不该被重写成另一份东西。
+    /// </summary>
+    private static void UpdateReportAfterRemux(
+        SeriesTask task, IReadOnlyList<(string Old, string New)> renames)
+    {
+        var path = task.ReportPath;
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
+
+        try
+        {
+            var text = File.ReadAllText(path);
+            foreach (var (oldName, newName) in renames)
+                text = text.Replace(oldName, newName, StringComparison.Ordinal);
+
+            text = text.Replace("- **产物格式**：TS", "- **产物格式**：MP4", StringComparison.Ordinal);
+
+            File.WriteAllText(path, text);
+        }
+        catch
+        {
+            // 报告改不动不影响主流程：产物本身已经转好了
+        }
     }
 
     /// <summary>
