@@ -198,6 +198,11 @@ public sealed partial class MainWindow : Window
         if (_openDialog is not null) return;
 
         var dialog = new AboutDialog { XamlRoot = Content.XamlRoot };
+
+        // 「关于」里点「立即更新」时，交给主窗口执行 ——
+        // 进度弹窗、收尾脚本、退出程序都归这边管
+        dialog.AutoUpdateRequested += async (_, latest) => await RunAutoUpdateAsync(latest);
+
         _openDialog = dialog;
         try
         {

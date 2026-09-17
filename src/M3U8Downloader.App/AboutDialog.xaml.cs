@@ -18,6 +18,14 @@ namespace M3U8Downloader;
 public sealed partial class AboutDialog : ContentDialog
 {
     private string _ffmpegStatusText = "";
+    private ReleaseInfo? _latestRelease;
+
+    /// <summary>
+    /// 用户在「关于」里点了「立即更新」。
+    /// 由主窗口接过去执行 —— 进度弹窗、收尾脚本、退出程序都归它管，
+    /// 这个对话框自己只负责把新版本信息递出去。
+    /// </summary>
+    public event EventHandler<ReleaseInfo>? AutoUpdateRequested;
 
     public AboutDialog()
     {
@@ -92,6 +100,7 @@ public sealed partial class AboutDialog : ContentDialog
         args.Cancel = true;
 
         UpdateLink.Visibility = Visibility.Collapsed;
+        UpdateNowButton.Visibility = Visibility.Collapsed;
         UpdateStatusText.Text = "正在检查…";
         UpdateStatusText.Visibility = Visibility.Visible;
 
@@ -114,11 +123,15 @@ public sealed partial class AboutDialog : ContentDialog
             }
 
             var latest = result.Latest;
+            _latestRelease = latest;
+
             UpdateStatusText.Text = $"发现新版本 {latest.Tag}（当前 {result.CurrentVersion}）" +
                                     (latest.DownloadSizeText.Length > 0 ? $"，约 {latest.DownloadSizeText}" : "") +
                                     "。";
 
-            UpdateLink.Content = "打开发布页面 →";
+            // 主推「立即更新」；链接留给想自己去发布页看的人
+            UpdateNowButton.Visibility = Visibility.Visible;
+            UpdateLink.Content = "或到发布页面下载 →";
             UpdateLink.NavigateUri = new Uri(latest.HtmlUrl);
             UpdateLink.Visibility = Visibility.Visible;
         }
@@ -126,5 +139,20 @@ public sealed partial class AboutDialog : ContentDialog
         {
             UpdateStatusText.Text = "检查失败：" + ex.Message;
         }
+    }
+
+    /// <summary>
+    /// 点「立即更新」：关掉自己，把新版本信息交给主窗口去装。
+    ///
+    /// 必须先 Hide 再用 DispatcherQueue 排队触发 —— 主窗口的进度弹窗有自己的
+    /// 「同时只能有一个 ContentDialog」守卫，得等这个对话框彻底关掉、
+    /// 那边把 _openDialog 清空之后才轮得到它。
+    /// </summary>
+    private void OnUpdateNow(object sender, RoutedEventArgs e)
+    {
+        if (_latestRelease is not { } latest) return;
+
+        Hide();
+        DispatcherQueue.TryEnqueue(() => AutoUpdateRequested?.Invoke(this, latest));
     }
 }

@@ -25,6 +25,9 @@
                            Margin="0,2,0,0" Visibility="Collapsed" />
                 <HyperlinkButton x:Name="UpdateLink" FontSize="12" Padding="0,2,0,0"
                                  Visibility="Collapsed" />
+                <!-- 查到新版本时才出现：不劳用户跑去浏览器手动下载 -->
+                <Button x:Name="UpdateNowButton" Content="立即更新" FontSize="12"
+                        Margin="0,4,0,0" Visibility="Collapsed" Click="OnUpdateNow" />
             </StackPanel>
 
             <!-- 版权 -->
