@@ -451,11 +451,14 @@ public sealed partial class MainWindow : Window
     private readonly HashSet<string> _adNoticeShown = new();
 
     /// <summary>
-    /// 任务下载完成、且跳过过插播广告时，主动弹一次提示。
+    /// 任务下载完成、且过滤过插播广告时，主动弹一次提示。
     ///
     /// 为什么非弹不可：用户**察觉不到**"少了几十秒"—— 不做声的话这个功能做了也等于没做，
     /// 用户只会觉得"怎么比别人短一截"，甚至怀疑下载丢了内容。
     /// 这是本工具少数几个"替用户省了事"的功能，得让他看见。
+    ///
+    /// 但只说数量：识别原理、时长为什么变短这些是**实现细节**，
+    /// 用户关心的是"过滤掉了几个广告"，不是我们怎么认出来的。
     /// </summary>
     private void CheckSkippedAdsNotice()
     {
@@ -466,10 +469,8 @@ public sealed partial class MainWindow : Window
             if (!task.HasSkippedAds || !task.IsFinished) continue;
             if (!_adNoticeShown.Add(task.Id)) continue;   // 这个任务已经提示过
 
-            _ = ShowInfoAsync("已自动跳过插播广告",
-                $"《{task.Title}》本次下载识别并跳过了 {task.SkippedAdSegments} 个插播广告分片。\n\n" +
-                "识别依据：这些分片的编号跳出了正片的连续编号带，且两侧都有编码断层标记。\n\n" +
-                "产物里不会出现这些内容，所以时长会比源站标称的短一点 —— 这是正常的。",
+            _ = ShowInfoAsync("已自动过滤广告",
+                $"《{task.Title}》过滤了 {task.SkippedAdSegments} 个广告分片。",
                 offerSettings: false);
             return;   // 一次只提示一个，其余的下次 Changed 再说
         }

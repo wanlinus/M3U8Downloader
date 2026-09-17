@@ -228,8 +228,9 @@ public sealed class SeriesTask : INotifyPropertyChanged
     /// <summary>跳过了广告才显示那一行提示</summary>
     public bool HasSkippedAds => _skippedAdSegments > 0;
 
+    /// <summary>卡片上那一行提示 —— 只报数量，不解释原理</summary>
     public string SkippedAdsText => _skippedAdSegments > 0
-        ? $"已自动跳过 {_skippedAdSegments} 个插播广告分片"
+        ? $"已过滤 {_skippedAdSegments} 个广告分片"
         : "";
 
     private int _failedEpisodes;
