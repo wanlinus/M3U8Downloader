@@ -47,6 +47,10 @@ public sealed class SeriesTaskRecord
     public long DownloadedBytes { get; set; }
     public string? ReportPath { get; set; }
     public string? Message { get; set; }
+
+    /// <summary>本次下载自动跳过的插播广告分片数（老记录里没有这个字段，读到就是 0）</summary>
+    public int SkippedAdSegments { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.Now;
     public DateTimeOffset? FinishedAt { get; set; }
 

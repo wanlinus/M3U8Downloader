@@ -509,11 +509,20 @@
                                                    ToolTipService.ToolTip="{Binding MessageText}"
                                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
 
-                                        <!-- 完整输出目录（允许换行，不截断） -->
-                                        <TextBlock Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="4"
-                                                   Text="{Binding DisplayDirectory}" FontSize="11"
-                                                   TextWrapping="Wrap" Margin="0,2,0,0"
-                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                        <!-- 完整输出目录（允许换行，不截断）+ 跳过广告的提示 -->
+                                        <StackPanel Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="4"
+                                                    Margin="0,2,0,0" Spacing="2">
+                                            <TextBlock Text="{Binding DisplayDirectory}" FontSize="11"
+                                                       TextWrapping="Wrap"
+                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                            <!--
+                                                跳过广告必须显式说出来。用户自己是察觉不到"少了几十秒"的 ——
+                                                不做声的话，这个功能做了也等于没做，用户只会觉得"怎么短了一截"。
+                                            -->
+                                            <TextBlock Text="{Binding SkippedAdsText}" FontSize="11"
+                                                       Foreground="{ThemeResource SystemFillColorSuccessBrush}"
+                                                       Visibility="{Binding HasSkippedAds, Converter={StaticResource BoolToVis}}" />
+                                        </StackPanel>
                                     </Grid>
                                 </Expander.Header>
 

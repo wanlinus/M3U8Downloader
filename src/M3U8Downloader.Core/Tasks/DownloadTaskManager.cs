@@ -205,6 +205,33 @@ public sealed class SeriesTask : INotifyPropertyChanged
     private int _succeededEpisodes;
     public int SucceededEpisodes { get => _succeededEpisodes; internal set => Set(ref _succeededEpisodes, value); }
 
+    private int _skippedAdSegments;
+
+    /// <summary>
+    /// 本次下载自动跳过的插播广告分片数。
+    ///
+    /// 单独记下来并显示给用户，是因为「少下了几十秒」这件事用户自己**察觉不到**：
+    /// 不做声的话这个功能等于白做 —— 用户只会觉得"怎么短了一截"，
+    /// 甚至怀疑是下载丢了内容。显式说出来，它才是一个用户能感知到的价值。
+    /// </summary>
+    public int SkippedAdSegments
+    {
+        get => _skippedAdSegments;
+        internal set
+        {
+            if (!Set(ref _skippedAdSegments, value)) return;
+            OnPropertyChanged(nameof(HasSkippedAds));
+            OnPropertyChanged(nameof(SkippedAdsText));
+        }
+    }
+
+    /// <summary>跳过了广告才显示那一行提示</summary>
+    public bool HasSkippedAds => _skippedAdSegments > 0;
+
+    public string SkippedAdsText => _skippedAdSegments > 0
+        ? $"已自动跳过 {_skippedAdSegments} 个插播广告分片"
+        : "";
+
     private int _failedEpisodes;
     public int FailedEpisodes
     {
@@ -882,6 +909,7 @@ public sealed class DownloadTaskManager : IDisposable
             Percent = t.Percent,
             DownloadedBytes = t.DownloadedBytes,
             ReportPath = t.ReportPath,
+            SkippedAdSegments = t.SkippedAdSegments,
             Message = t.Message,
             CreatedAt = t.CreatedAt,
             FinishedAt = t.FinishedAt,
@@ -971,6 +999,7 @@ public sealed class DownloadTaskManager : IDisposable
         task.Percent = r.Percent;
         task.DownloadedBytes = r.DownloadedBytes;
         task.ReportPath = r.ReportPath;
+        task.SkippedAdSegments = r.SkippedAdSegments;
         task.FinishedAt = r.FinishedAt;
 
         var done = task.Episodes.Count(e => e.State == EpisodeDownloadStatus.Completed);
@@ -1685,6 +1714,10 @@ public sealed class DownloadTaskManager : IDisposable
         RunOnUi(() =>
         {
             var paused = task.PauseRequested;
+
+            // 跳过的广告数必须说出来：用户看不出"少了几十秒"，
+            // 不声不响的话这个功能做了也等于没做
+            task.SkippedAdSegments = report.TotalSkippedAds;
 
             foreach (var ep in report.Episodes)
             {
