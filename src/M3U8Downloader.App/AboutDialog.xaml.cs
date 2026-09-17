@@ -4,6 +4,7 @@ using M3U8Downloader.Core;
 using M3U8Downloader.Core.Ffmpeg;
 using M3U8Downloader.Core.Settings;
 using M3U8Downloader.Core.Sites;
+using M3U8Downloader.Core.Update;
 using Windows.ApplicationModel.DataTransfer;
 
 namespace M3U8Downloader;
@@ -23,6 +24,7 @@ public sealed partial class AboutDialog : ContentDialog
         InitializeComponent();
         Loaded += OnLoaded;
         PrimaryButtonClick += OnCopyDiagnostics;
+        SecondaryButtonClick += OnCheckUpdate;
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -75,6 +77,54 @@ public sealed partial class AboutDialog : ContentDialog
         {
             CopyHintText.Text = "复制失败，可手动截图";
             CopyHintText.Visibility = Visibility.Visible;
+        }
+    }
+
+    /// <summary>
+    /// 「检查更新」：查 GitHub Release 上有没有比当前更新的版本。
+    ///
+    /// 结果**就地**显示在版本号下面，不再开第二个 ContentDialog ——
+    /// 「关于」本身就是一个 ContentDialog，而 WinUI 同一时刻只允许一个。
+    /// </summary>
+    private async void OnCheckUpdate(ContentDialog sender, ContentDialogButtonClickEventArgs args)
+    {
+        // 保持对话框开着，让用户看到结果
+        args.Cancel = true;
+
+        UpdateLink.Visibility = Visibility.Collapsed;
+        UpdateStatusText.Text = "正在检查…";
+        UpdateStatusText.Visibility = Visibility.Visible;
+
+        try
+        {
+            // 代理只在这里用：GitHub 在国内常常连不上；没配代理也只是查不到，不是错误
+            var proxy = AppSettingsStore.Load().ProxyUrl;
+            var result = await UpdateChecker.CheckAsync(AppInfo.Version, proxy);
+
+            if (result.Failed)
+            {
+                UpdateStatusText.Text = $"检查失败：{result.Error}";
+                return;
+            }
+
+            if (!result.HasUpdate || result.Latest is null)
+            {
+                UpdateStatusText.Text = $"已是最新版本（{result.CurrentVersion}）。";
+                return;
+            }
+
+            var latest = result.Latest;
+            UpdateStatusText.Text = $"发现新版本 {latest.Tag}（当前 {result.CurrentVersion}）" +
+                                    (latest.DownloadSizeText.Length > 0 ? $"，约 {latest.DownloadSizeText}" : "") +
+                                    "。";
+
+            UpdateLink.Content = "打开发布页面 →";
+            UpdateLink.NavigateUri = new Uri(latest.HtmlUrl);
+            UpdateLink.Visibility = Visibility.Visible;
+        }
+        catch (Exception ex)
+        {
+            UpdateStatusText.Text = "检查失败：" + ex.Message;
         }
     }
 }

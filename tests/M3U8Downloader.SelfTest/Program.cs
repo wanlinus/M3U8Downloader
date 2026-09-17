@@ -1688,11 +1688,42 @@ var okInsertedGuard = false;
     Console.WriteLine($"  反例（无断层标记）: 标记 {report2.Suspects.Count} 片，应为 0 → {(okInsertedGuard ? "✔" : "✘")}");
 }
 
+// ---------------------------------------------------------------- 阶段 M：更新检测
+//
+// 只测纯逻辑（版本比较）—— 网络那部分刻意不测：自检的约定是"不依赖外网"。
+// 端到端在本地手动验过：GitHub API 直连 0.8 秒返回，代理没开也照样查到。
+
+Console.WriteLine();
+Console.WriteLine("阶段 M：更新检测（版本比较）");
+
+var okVersionCompare = false;
+{
+    var cases = new (string Left, string Right, int Expected)[]
+    {
+        ("1.4.0", "1.3.0", 1),
+        ("v1.3.0", "1.3.0", 0),      // tag 的 v 前缀要能剥掉
+        ("1.3.0", "1.4.0", -1),
+        ("1.3.1", "1.3.0", 1),       // 补丁号也比
+        ("2.0.0", "10.0.0", -1),     // 数值比较，不是字符串比较（"2" > "10" 那种错法）
+        ("1.10.0", "1.9.0", 1),
+    };
+
+    var bad = new List<string>();
+    foreach (var (l, r, expected) in cases)
+    {
+        var actual = M3U8Downloader.Core.Update.UpdateChecker.CompareVersions(l, r);
+        if (actual != expected) bad.Add($"{l} vs {r} 期望 {expected} 实得 {actual}");
+    }
+
+    okVersionCompare = bad.Count == 0;
+    Console.WriteLine($"  版本比较 {cases.Length} 组: {(okVersionCompare ? "✔" : "✘ " + string.Join("；", bad))}");
+}
+
 Console.WriteLine();
 var ok = okB && okC && okPaused && okStopped && okResume && okSettled && okRetry
          && okResumeSubset && okFallback && okDuration && encOk && okSingle
          && okRegistry && okNnyy && okNnyyMovie && okGeneric && okEmpty && okWakuredo
-         && okNoSystemProxy && okInserted && okInsertedGuard;
+         && okNoSystemProxy && okInserted && okInsertedGuard && okVersionCompare;
 Console.WriteLine(ok
     ? "自检结果       : ✔ 通过"
     : $"自检结果       : ✘ 失败（阶段B {okB} / 阶段C {okC} / 暂停 {okPaused} / 暂停后静止 {okStopped}" +
@@ -1701,7 +1732,7 @@ Console.WriteLine(ok
       $" / 密文首字节 0x3C {encOk} / 单文件服务 {okSingle}" +
       $" / 适配器登记 {okRegistry} / 努努影院 {okNnyy} / 努努电影页 {okNnyyMovie} / 通用兜底 {okGeneric}" +
       $" / 空页面报错 {okEmpty} / 影迷界影院 {okWakuredo} / 直连不走代理 {okNoSystemProxy}" +
-      $" / 插播广告识别 {okInserted}(反例 {okInsertedGuard})）");
+      $" / 插播广告识别 {okInserted}(反例 {okInsertedGuard}) / 版本比较 {okVersionCompare}）");
 
 listener.Stop();
 return ok ? 0 : 1;

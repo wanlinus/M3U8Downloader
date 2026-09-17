@@ -56,6 +56,7 @@ public sealed partial class SettingsDialog : ContentDialog
         SeriesSubdirCheck.IsChecked = _working.SeriesSubdirectory;
         FullDecodeCheckBox.IsChecked = _working.FullDecodeCheck;
         MinimizeToTrayCheck.IsChecked = _working.MinimizeToTrayOnClose;
+        UpdateCheckBox.IsChecked = _working.CheckUpdateOnStartup;
     }
 
     private void CollectBack()
@@ -71,6 +72,7 @@ public sealed partial class SettingsDialog : ContentDialog
         _working.SeriesSubdirectory = SeriesSubdirCheck.IsChecked == true;
         _working.FullDecodeCheck = FullDecodeCheckBox.IsChecked == true;
         _working.MinimizeToTrayOnClose = MinimizeToTrayCheck.IsChecked == true;
+        _working.CheckUpdateOnStartup = UpdateCheckBox.IsChecked == true;
         _working.Normalize();
     }
 

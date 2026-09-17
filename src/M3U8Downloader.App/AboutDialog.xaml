@@ -5,6 +5,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     Title="关于"
     PrimaryButtonText="复制诊断信息"
+    SecondaryButtonText="检查更新"
     CloseButtonText="关闭"
     DefaultButton="Close">
 
@@ -16,6 +17,14 @@
                 <TextBlock x:Name="AppNameText" FontSize="18" FontWeight="SemiBold" />
                 <TextBlock x:Name="VersionText" FontSize="12"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <!--
+                    检查更新的结果就地显示在这儿，而不是再弹一个对话框：
+                    WinUI 同一时刻只允许一个 ContentDialog，而这个「关于」本身就是一个。
+                -->
+                <TextBlock x:Name="UpdateStatusText" FontSize="12" TextWrapping="Wrap"
+                           Margin="0,2,0,0" Visibility="Collapsed" />
+                <HyperlinkButton x:Name="UpdateLink" FontSize="12" Padding="0,2,0,0"
+                                 Visibility="Collapsed" />
             </StackPanel>
 
             <!-- 版权 -->

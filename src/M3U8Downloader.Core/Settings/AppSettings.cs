@@ -63,7 +63,10 @@ public sealed class AppSettings
     /// <summary>代理地址，如 <c>http://127.0.0.1:7897</c>（也可只填 <c>127.0.0.1:7897</c>）</summary>
     public string? ProxyUrl { get; set; }
 
-    /// <summary>启动时是否检查更新（预留，暂未实现）</summary>
+    /// <summary>
+    /// 启动时是否检查更新（默认关，免得每次启动都联网）。
+    /// 查不到、网络不通都**不会**打扰用户；只有真查到新版本才提示。
+    /// </summary>
     public bool CheckUpdateOnStartup { get; set; }
 
     [JsonIgnore]

@@ -7,6 +7,7 @@ using M3U8Downloader.Core.Ffmpeg;
 using M3U8Downloader.Core.Settings;
 using M3U8Downloader.Core.Sites;
 using M3U8Downloader.Core.Tasks;
+using M3U8Downloader.Core.Update;
 using Windows.Graphics;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
@@ -60,6 +61,11 @@ public sealed partial class MainWindow : Window
         SinglePanel.DataContext = _single;
         BatchPanel.DataContext = _batch;
         TaskPanel.DataContext = _tasks;
+
+        // 启动时检查更新（设置里默认关，免得每次启动都联网）。
+        // 只有查到新版本才出声 —— 见 CheckForUpdatesOnStartupAsync
+        if (AppSettingsStore.Load().CheckUpdateOnStartup)
+            _ = CheckForUpdatesOnStartupAsync();
 
         // 日志追加后自动滚到底部
         _single.Logs.CollectionChanged += (_, __) => ScrollLogToEnd();
@@ -449,6 +455,83 @@ public sealed partial class MainWindow : Window
     /// 用界面侧的 HashSet 而不是给任务加标记位：这是纯粹的界面行为，不该污染 Core 的模型。
     /// </summary>
     private readonly HashSet<string> _adNoticeShown = new();
+
+    /// <summary>
+    /// 启动时静默检查更新：**只有查到新版本才出声**。
+    ///
+    /// 查不到、网络不通、GitHub 被墙 —— 全都什么都不说：用户没主动问，
+    /// 弹一个"检查更新失败"纯属打扰。要主动看结果请用「关于 → 检查更新」。
+    /// </summary>
+    private async Task CheckForUpdatesOnStartupAsync()
+    {
+        try
+        {
+            // 等界面先出来，别和启动流程抢资源
+            await Task.Delay(3000);
+
+            var settings = AppSettingsStore.Load();
+            var result = await UpdateChecker.CheckAsync(AppInfo.Version, settings.ProxyUrl);
+            if (!result.HasUpdate || result.Latest is null) return;
+
+            await ShowUpdateAvailableAsync(result.Latest, result.CurrentVersion);
+        }
+        catch
+        {
+            // 静默检查，失败就算了
+        }
+    }
+
+    /// <summary>
+    /// 发现新版本时的提示：给一个直接跳发布页的按钮。
+    ///
+    /// 刻意**不做自动下载替换**：那要覆盖 300 多个文件（其中不少正在被本进程使用），
+    /// 得靠一个脱离主进程的脚本等我们退出后再动，写错一次就是把用户的程序弄坏。
+    /// 收益只是省下"解压覆盖"这一步，不值得 —— 打开页面让用户自己下更稳。
+    /// </summary>
+    private async Task ShowUpdateAvailableAsync(ReleaseInfo latest, string currentVersion)
+    {
+        if (_openDialog is not null) return;   // 同时只能有一个 ContentDialog
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = Content.XamlRoot,
+            Title = $"发现新版本 {latest.Tag}",
+            Content = new TextBlock
+            {
+                TextWrapping = TextWrapping.Wrap,
+                Text = $"当前版本 {currentVersion}，最新版本 {latest.Tag}" +
+                       (latest.DownloadSizeText.Length > 0 ? $"（约 {latest.DownloadSizeText}）" : "") +
+                       "。\n\n打开项目页面下载新版，解压覆盖原来的文件即可。",
+            },
+            PrimaryButtonText = "打开发布页面",
+            CloseButtonText = "稍后",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+
+        _openDialog = dialog;
+        var open = false;
+        try
+        {
+            open = await dialog.ShowAsync() == ContentDialogResult.Primary;
+        }
+        catch (Exception ex)
+        {
+            _single.StatusText = "提示框打开失败：" + ex.Message;
+        }
+        finally
+        {
+            _openDialog = null;
+        }
+
+        if (open) OpenInBrowser(latest.HtmlUrl);
+    }
+
+    /// <summary>用系统默认浏览器打开链接</summary>
+    private static void OpenInBrowser(string url)
+    {
+        try { _ = Windows.System.Launcher.LaunchUriAsync(new Uri(url)); }
+        catch { /* 打不开就算了，地址已经在弹窗里给过 */ }
+    }
 
     /// <summary>
     /// 任务下载完成、且过滤过插播广告时，主动弹一次提示。
