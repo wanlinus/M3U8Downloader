@@ -111,10 +111,138 @@ public sealed class SegmentInspector
                 report.Reasons.Add($"整条流为 {encryptedCount} 片加密，但有 {plainSegs.Count} 片被声明为明文（METHOD=NONE）。");
         }
 
+        // ---------- 4. 编号带断裂：同目录、不重复、密钥正常的插播广告 ----------
+        DetectNumberingGap(playlist, report);
+
         report.Suspects.AddRange(playlist.Segments.Where(s =>
-            s.Validity is SegmentValidity.SuspectForeign or SegmentValidity.Undecryptable));
+            s.Validity is SegmentValidity.SuspectForeign
+                        or SegmentValidity.SuspectInserted
+                        or SegmentValidity.Undecryptable));
 
         return report;
+    }
+
+    /// <summary>少于这么多片就谈不上"编号带"</summary>
+    private const int MinSegmentsForNumbering = 20;
+
+    /// <summary>主编号带至少要占的比例</summary>
+    private const double NumberingBandRatio = 0.7;
+
+    /// <summary>落单分片的数量上限（插播广告不会这么长）</summary>
+    private const int MaxInsertedSegments = 30;
+
+    /// <summary>
+    /// 规则 4：分片名的「编号带」断裂。
+    ///
+    /// 实测场景（影迷界影院《交锋》第 25 集）：源站在正片里插了两段各 7 片的赌博广告，
+    /// 它们**同目录、不重复、密钥也正常** —— 前三条规则一条都盖不住，于是被完整下载。
+    /// 而广告是 1920x1080、正片是 1080x460，同一个视频轨道里分辨率中途突变，
+    /// 转成 MP4 后多数播放器解不出来，表现出来就是「广告有声音、没画面」。
+    ///
+    /// 特征很干净：正片的编号严格 +1 递增，插播段来自另一个编号段 ——
+    ///     正片 …000000…000073 │ 广告 …359691…359697 │ 正片 …000074…000493 │ …
+    /// 做法就是取每个分片名的尾随数字，找最长的那条「连续 +1」的带，掉在带外的即为插播。
+    ///
+    /// 判错就会把正片当广告删掉，所以门槛设得很死，任何一条不满足就整条放弃
+    /// （宁可留着广告，也不能删正片）：
+    ///   · 90% 以上的分片要能取到尾随数字（纯 hash 命名的站点直接放弃）；
+    ///   · 编号必须各不相同；
+    ///   · 主编号带占比 ≥ 70%（占比低说明编号本来就乱，那是"删过号"不是"插播"）；
+    ///   · 落单分片 ≤ 30 片；
+    ///   · 落单分片必须**连续成段**，且每段都被 #EXT-X-DISCONTINUITY 夹住
+    ///     —— 编号跳变与时间戳断层两个信号同时命中才动手。
+    /// </summary>
+    private static void DetectNumberingGap(HlsMediaPlaylist playlist, Report report)
+    {
+        var segments = playlist.Segments;
+        if (segments.Count < MinSegmentsForNumbering) return;
+
+        // 1) 取尾随数字
+        var numbered = new List<(HlsSegment Seg, long Number)>(segments.Count);
+        foreach (var seg in segments)
+        {
+            if (TryGetTrailingNumber(seg.Uri, out var n)) numbered.Add((seg, n));
+        }
+        if (numbered.Count < segments.Count * 0.9) return;
+        if (numbered.Select(x => x.Number).Distinct().Count() != numbered.Count) return;
+
+        // 2) 找最长的连续 +1 带
+        var sorted = numbered.OrderBy(x => x.Number).ToList();
+        var bestStart = 0;
+        var bestLen = 1;
+        var runStart = 0;
+        for (var i = 1; i <= sorted.Count; i++)
+        {
+            var continues = i < sorted.Count && sorted[i].Number == sorted[i - 1].Number + 1;
+            if (continues) continue;
+
+            if (i - runStart > bestLen) { bestLen = i - runStart; bestStart = runStart; }
+            runStart = i;
+        }
+
+        // 3) 门槛
+        if (bestLen < sorted.Count * NumberingBandRatio) return;
+
+        var inBand = new HashSet<HlsSegment>();
+        for (var i = bestStart; i < bestStart + bestLen; i++) inBand.Add(sorted[i].Seg);
+
+        var outsiders = new HashSet<HlsSegment>(segments.Where(s => !inBand.Contains(s)));
+        if (outsiders.Count == 0 || outsiders.Count > MaxInsertedSegments) return;
+
+        // 4) 落单的必须连续成段，且每段都被 DISCONTINUITY 夹住
+        var runs = new List<(int Start, int End)>();
+        for (var i = 0; i < segments.Count; i++)
+        {
+            if (!outsiders.Contains(segments[i])) continue;
+            if (runs.Count > 0 && runs[^1].End == i - 1) runs[^1] = (runs[^1].Start, i);
+            else runs.Add((i, i));
+        }
+
+        foreach (var (start, end) in runs)
+        {
+            // 段首那片自己要带断层标记，段后紧邻的那片也要带 —— 一前一后把它夹住
+            var leading = segments[start].Discontinuity;
+            var trailing = end + 1 < segments.Count && segments[end + 1].Discontinuity;
+            if (!leading || !trailing) return;   // 验证不过 → 整条规则放弃
+        }
+
+        // 5) 通过：标记为插播
+        foreach (var seg in outsiders)
+        {
+            seg.Validity = SegmentValidity.SuspectInserted;
+            seg.ValidityNote = "分片编号跳出了正片的连续编号带，且两侧都有编码断层标记，疑似同目录插播广告";
+        }
+
+        report.Reasons.Add(
+            $"发现 {outsiders.Count} 个分片脱离了正片的连续编号带（分 {runs.Count} 段，两侧均有 #EXT-X-DISCONTINUITY），已标记为疑似插播广告。");
+    }
+
+    /// <summary>
+    /// 取文件名末尾的连续数字。
+    ///
+    /// 少于 3 位数字不予采信 —— "seg1.ts" 这种顺序号区分度太低，
+    /// 拿它去找"编号带"只会把正常分片也卷进来。
+    /// </summary>
+    private static bool TryGetTrailingNumber(string uri, out long number)
+    {
+        number = 0;
+
+        string name;
+        try
+        {
+            var path = new Uri(uri).AbsolutePath;
+            name = path[(path.LastIndexOf('/') + 1)..];
+        }
+        catch { return false; }
+
+        var dot = name.LastIndexOf('.');
+        if (dot > 0) name = name[..dot];
+
+        var i = name.Length;
+        while (i > 0 && char.IsAsciiDigit(name[i - 1])) i--;
+        if (name.Length - i < 3) return false;
+
+        return long.TryParse(name.AsSpan(i), out number);
     }
 
     /// <summary>

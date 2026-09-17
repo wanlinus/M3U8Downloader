@@ -1631,11 +1631,68 @@ var okNoSystemProxy = false;
     }
 }
 
+// ---------------------------------------------------------------- 阶段 L：插播广告识别
+//
+// 实测场景：影迷界影院《交锋》第 25 集，源站在正片里插了两段各 7 片的赌博广告。
+// 它们**同目录、不重复、密钥也正常**，原有三条规则一条都盖不住，于是被完整下载；
+// 而广告是 1920x1080、正片 1080x460，同一个视频轨道里分辨率中途突变，
+// 转成 MP4 后多数播放器解不出来 —— 表现就是「广告有声音、没画面」。
+//
+// 新规则要两个信号同时命中才动手：编号脱离正片的连续编号带 + 两侧有 DISCONTINUITY。
+
+Console.WriteLine();
+Console.WriteLine("阶段 L：插播广告识别（编号带断裂）");
+
+var okInserted = false;
+var okInsertedGuard = false;
+{
+    // 用例 1：正片 30 片（编号 0-29），中间插 5 片编号 359691+ 的广告，两侧有断层标记
+    var sb = new StringBuilder();
+    sb.AppendLine("#EXTM3U");
+    sb.AppendLine("#EXT-X-VERSION:3");
+    sb.AppendLine("#EXT-X-TARGETDURATION:8");
+    sb.AppendLine("#EXT-X-MEDIA-SEQUENCE:0");
+    sb.AppendLine("#EXT-X-DISCONTINUITY");
+    for (var i = 0; i < 10; i++) sb.AppendLine($"#EXTINF:4.000,\nseg{i:000000}.ts");
+    sb.AppendLine("#EXT-X-DISCONTINUITY");
+    for (var i = 0; i < 5; i++) sb.AppendLine($"#EXTINF:4.000,\nseg{359691 + i}.ts");
+    sb.AppendLine("#EXT-X-DISCONTINUITY");
+    for (var i = 10; i < 30; i++) sb.AppendLine($"#EXTINF:4.000,\nseg{i:000000}.ts");
+    sb.AppendLine("#EXT-X-ENDLIST");
+
+    var parsed = M3U8Parser.Parse(sb.ToString(), "https://example.com/hls/index.m3u8");
+    var report = SegmentInspector.Inspect(parsed.Media!);
+    var marked = report.Suspects.Select(s => s.Index).OrderBy(x => x).ToList();
+
+    Console.WriteLine($"  插播用例: 共 {report.TotalSegments} 片，标记 {marked.Count} 片 → {string.Join(",", marked)}");
+    foreach (var r in report.Reasons) Console.WriteLine($"    · {r}");
+
+    okInserted = marked.SequenceEqual(new[] { 10, 11, 12, 13, 14 });
+    Console.WriteLine($"  只标记中间那 5 片（10-14）: {(okInserted ? "✔" : "✘")}");
+
+    // 用例 2（反例）：编号同样跳变，但**没有** DISCONTINUITY 夹住 → 必须一片都不标记。
+    // 这条守着"宁可留着广告，也不能删正片"：编号乱也可能只是源站删过号。
+    var sb2 = new StringBuilder();
+    sb2.AppendLine("#EXTM3U");
+    sb2.AppendLine("#EXT-X-VERSION:3");
+    sb2.AppendLine("#EXT-X-TARGETDURATION:8");
+    sb2.AppendLine("#EXT-X-MEDIA-SEQUENCE:0");
+    for (var i = 0; i < 10; i++) sb2.AppendLine($"#EXTINF:4.000,\nseg{i:000000}.ts");
+    for (var i = 0; i < 5; i++) sb2.AppendLine($"#EXTINF:4.000,\nseg{359691 + i}.ts");
+    for (var i = 10; i < 30; i++) sb2.AppendLine($"#EXTINF:4.000,\nseg{i:000000}.ts");
+    sb2.AppendLine("#EXT-X-ENDLIST");
+
+    var parsed2 = M3U8Parser.Parse(sb2.ToString(), "https://example.com/hls/index.m3u8");
+    var report2 = SegmentInspector.Inspect(parsed2.Media!);
+    okInsertedGuard = report2.Suspects.Count == 0;
+    Console.WriteLine($"  反例（无断层标记）: 标记 {report2.Suspects.Count} 片，应为 0 → {(okInsertedGuard ? "✔" : "✘")}");
+}
+
 Console.WriteLine();
 var ok = okB && okC && okPaused && okStopped && okResume && okSettled && okRetry
          && okResumeSubset && okFallback && okDuration && encOk && okSingle
          && okRegistry && okNnyy && okNnyyMovie && okGeneric && okEmpty && okWakuredo
-         && okNoSystemProxy;
+         && okNoSystemProxy && okInserted && okInsertedGuard;
 Console.WriteLine(ok
     ? "自检结果       : ✔ 通过"
     : $"自检结果       : ✘ 失败（阶段B {okB} / 阶段C {okC} / 暂停 {okPaused} / 暂停后静止 {okStopped}" +
@@ -1643,7 +1700,8 @@ Console.WriteLine(ok
       $" / 续传只下选中集 {okResumeSubset} / 多源兜底 {okFallback} / 时长核对 {okDuration}" +
       $" / 密文首字节 0x3C {encOk} / 单文件服务 {okSingle}" +
       $" / 适配器登记 {okRegistry} / 努努影院 {okNnyy} / 努努电影页 {okNnyyMovie} / 通用兜底 {okGeneric}" +
-      $" / 空页面报错 {okEmpty} / 影迷界影院 {okWakuredo} / 直连不走代理 {okNoSystemProxy}）");
+      $" / 空页面报错 {okEmpty} / 影迷界影院 {okWakuredo} / 直连不走代理 {okNoSystemProxy}" +
+      $" / 插播广告识别 {okInserted}(反例 {okInsertedGuard})）");
 
 listener.Stop();
 return ok ? 0 : 1;

@@ -44,6 +44,13 @@ public enum SegmentValidity
     Ok,
     /// <summary>与主播放列表不同目录，疑似插播广告</summary>
     SuspectForeign,
+    /// <summary>
+    /// 分片编号脱离了正片的连续编号带，疑似同目录插播广告。
+    ///
+    /// 与 <see cref="SuspectForeign"/> 的区别：这类广告**同目录、不重复、密钥也正常**，
+    /// 前三条规则一条都盖不住，只能靠"编号序列断裂 + 两侧 DISCONTINUITY"认出来。
+    /// </summary>
+    SuspectInserted,
     /// <summary>明文段混入加密流，且其密钥不可得 —— 必失败</summary>
     Undecryptable,
     /// <summary>下载后校验失败</summary>
