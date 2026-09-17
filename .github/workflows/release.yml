@@ -23,6 +23,9 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
+        with:
+          # 生成 Release 说明要读「上一个 tag..本 tag」的提交，浅克隆拿不到历史 tag
+          fetch-depth: 0
 
       - name: 安装 .NET SDK 10
         uses: actions/setup-dotnet@v4
@@ -72,21 +75,61 @@ jobs:
           path: dist/*.zip
           retention-days: 30
 
+      # 把「这次到底解决了什么问题」写进 Release 页面 —— 用户点进来第一眼要看的
+      # 就是这个，而不是安装说明。内容直接从提交标题生成，所以提交标题要写成人话。
+      - name: 整理更新说明
+        shell: pwsh
+        run: |
+          $tag = '${{ steps.ver.outputs.tag }}'
+
+          # 上一个 tag；万一没有（首次发版）就退回到仓库的第一个提交
+          $prev = git describe --tags --abbrev=0 "$tag^" 2>$null
+          if (-not $prev) { $prev = git rev-list --max-parents=0 HEAD | Select-Object -Last 1 }
+          Write-Host "比对范围：$prev..$tag"
+
+          # 只取提交标题，并按时间正序（git log 默认倒序）
+          # 「版本号 x.y.z」这类提交没有信息量，跳过
+          $items = @(git log "$prev..$tag" --no-merges --pretty=format:"%s" --reverse |
+                     Where-Object { $_ -and $_.Trim() -and $_ -notmatch '^版本号\s' })
+
+          $changes = if ($items.Count -gt 0) {
+            ($items | ForEach-Object { "- $_" }) -join "`n"
+          } else {
+            '（本次以内部调整为主，没有面向用户的功能或修复）'
+          }
+
+          $repoUrl = "https://github.com/${{ github.repository }}"
+          $lines = @(
+            '解压后双击 `M3U8Downloader.exe`，免安装（已自带 .NET 与 Windows App SDK 运行时）。'
+            ''
+            '| 包 | 用途 |'
+            '|---|---|'
+            '| `M3U8Downloader-*-win-x64.zip` | 图形界面（主程序） |'
+            '| `m3u8dl-*-win-x64.zip` | 命令行版 |'
+            ''
+            '## 本次解决的问题'
+            ''
+            $changes
+            ''
+            '## 使用提示'
+            ''
+            '- **系统要求**：Windows 10 1809+ / Windows 11，64 位'
+            '- **不含 FFmpeg**：不配置也能正常下载，只是产物保留 `.ts` 不转 MP4；需要转 MP4 时在「设置 → FFmpeg」一键下载'
+            '- **首次运行**：程序无代码签名，若被 SmartScreen 拦住，点「更多信息」→「仍要运行」'
+            ''
+            "**完整改动**：$repoUrl/compare/$prev...$tag"
+          )
+
+          $lines | Out-File -FilePath release-notes.md -Encoding utf8
+          Write-Host '----- release-notes.md -----'
+          Get-Content release-notes.md
+
       - name: 发布到 Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
           name: M3U8 视频下载器 ${{ steps.ver.outputs.tag }}
           files: dist/*.zip
-          generate_release_notes: true
-          body: |
-            解压后双击 `M3U8Downloader.exe`，免安装（已自带 .NET 与 Windows App SDK 运行时）。
-
-            | 包 | 用途 |
-            |---|---|
-            | `M3U8Downloader-*-win-x64.zip` | 图形界面（主程序） |
-            | `m3u8dl-*-win-x64.zip` | 命令行版 |
-
-            - **系统要求**：Windows 10 1809+ / Windows 11，64 位
-            - **不含 FFmpeg**：不配置也能正常下载，只是产物保留 `.ts` 不转 MP4；需要转 MP4 时在「设置 → FFmpeg」一键下载
-            - **首次运行**：程序无代码签名，若被 SmartScreen 拦住，点「更多信息」→「仍要运行」
+          # 说明由上一步生成；不用 generate_release_notes（它只认 PR，
+          # 而本仓库是直接往 master 提交的，生成出来是空的）
+          body_path: release-notes.md
