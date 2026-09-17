@@ -201,7 +201,17 @@ public sealed partial class MainWindow : Window
 
         // 「关于」里点「立即更新」时，交给主窗口执行 ——
         // 进度弹窗、收尾脚本、退出程序都归这边管
-        dialog.AutoUpdateRequested += async (_, latest) => await RunAutoUpdateAsync(latest);
+        dialog.AutoUpdateRequested += async (_, latest) =>
+        {
+            UpdateInstaller.Trace("主窗口收到自动更新请求");
+
+            // 关键：先手动清掉守卫。
+            // 「关于」刚刚 Hide 掉，但 OnOpenAbout 的 finally 还没跑到 —— 那个
+            // await ShowAsync() 的恢复同样排在这个 DispatcherQueue 上，顺序不保证。
+            // 不清的话下面的进度弹窗会被这个守卫直接挡掉，表现就是"点了没反应"。
+            _openDialog = null;
+            await RunAutoUpdateAsync(latest);
+        };
 
         _openDialog = dialog;
         try
@@ -545,7 +555,13 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private async Task RunAutoUpdateAsync(ReleaseInfo latest)
     {
-        if (_openDialog is not null) return;
+        if (_openDialog is not null)
+        {
+            UpdateInstaller.Trace("RunAutoUpdateAsync 被 _openDialog 守卫挡掉，放弃");
+            return;
+        }
+
+        UpdateInstaller.Trace($"开始自动更新到 {latest.Tag}（{latest.DownloadSizeText}）");
 
         var progressBar = new ProgressBar { Minimum = 0, Maximum = 100, Value = 0 };
         var statusText = new TextBlock { FontSize = 12, TextWrapping = TextWrapping.Wrap, Text = "正在连接…" };

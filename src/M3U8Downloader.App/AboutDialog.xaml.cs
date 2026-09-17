@@ -150,9 +150,19 @@ public sealed partial class AboutDialog : ContentDialog
     /// </summary>
     private void OnUpdateNow(object sender, RoutedEventArgs e)
     {
-        if (_latestRelease is not { } latest) return;
+        if (_latestRelease is not { } latest)
+        {
+            UpdateInstaller.Trace("点了「立即更新」，但没有版本信息，忽略");
+            return;
+        }
 
+        UpdateInstaller.Trace($"点了「立即更新」→ {latest.Tag}，关闭「关于」");
         Hide();
-        DispatcherQueue.TryEnqueue(() => AutoUpdateRequested?.Invoke(this, latest));
+
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            UpdateInstaller.Trace("派发 AutoUpdateRequested 事件");
+            AutoUpdateRequested?.Invoke(this, latest);
+        });
     }
 }

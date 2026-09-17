@@ -37,6 +37,30 @@ public static class UpdateInstaller
 
     public static string LogPath => Path.Combine(WorkDirectory, "update.log");
 
+    /// <summary>
+    /// 更新流程的诊断日志 —— 记的是**收尾脚本被拉起来之前**那一段。
+    ///
+    /// 单独一份、和脚本写的 update.log 分开：像"点了按钮没反应"这种情况，
+    /// 问题几乎都出在脚本启动之前（对话框时序、守卫、下载失败）。
+    /// 不留痕就只能靠猜。
+    /// </summary>
+    public static string AppTracePath => Path.Combine(WorkDirectory, "app-update.log");
+
+    public static void Trace(string message)
+    {
+        try
+        {
+            Directory.CreateDirectory(WorkDirectory);
+            File.AppendAllText(AppTracePath,
+                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}  {message}{Environment.NewLine}",
+                new UTF8Encoding(false));
+        }
+        catch
+        {
+            // 记日志失败不能影响更新本身
+        }
+    }
+
     /// <summary>装更新包必须有的文件 —— 少一个就说明解压不完整，绝不能拿它去覆盖</summary>
     private static readonly string[] RequiredFiles =
     {
