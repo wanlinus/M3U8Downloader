@@ -25,6 +25,7 @@
 11. **WinUI 下读命令行**：`Environment.GetCommandLineArgs()` 在 WinUI 的启动路径里不保证可靠（实测会返回空，导致启动参数失效），应改用 Win32 `GetCommandLineW`。
 
 12. **PowerShell 脚本编码**：Windows PowerShell 5.1 读取**无 BOM 的 UTF-8** 脚本时会按系统 ANSI 代码页（中文系统为 GBK）解码。含中文的脚本若不加 BOM，中文字符的尾字节会把后面的引号吞掉 → 语法错误。含中文的 `.ps1` 请存为 **UTF-8 with BOM**，或只用 ASCII。
+    - 补充：**程序在运行时生成 `.ps1` 也一样要带 BOM**（`new UTF8Encoding(encoderShouldEmitUTF8Identifier: true)`）。自动更新的收尾脚本就这么翻过车 —— 编译、启动都正常，只是脚本一跑就 `Unexpected token '}'`，排查半天才想起这条。
 
 13. **根目录分片被整批当广告跳过**：目录聚类用「路径里最后一个 `/` 之前的部分」当目录键，而 `/seg0.ts` 的 `LastIndexOf('/')` 是 0，直接切片会得到 `/seg0.ts` 本身 —— 每个分片都成了独立目录，于是除第一片外全被标记为「异目录插播广告」并跳过。结果是一集只下了 1 片却报"成功"，产物小得离谱。目录键必须把这种情况归到 `/`。同时增加了保护：跳过比例超过 30% 时明确告警。
 

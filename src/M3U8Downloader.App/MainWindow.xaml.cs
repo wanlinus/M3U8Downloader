@@ -501,18 +501,20 @@ public sealed partial class MainWindow : Window
                 TextWrapping = TextWrapping.Wrap,
                 Text = $"当前版本 {currentVersion}，最新版本 {latest.Tag}" +
                        (latest.DownloadSizeText.Length > 0 ? $"（约 {latest.DownloadSizeText}）" : "") +
-                       "。\n\n打开项目页面下载新版，解压覆盖原来的文件即可。",
+                       "。\n\n点「立即更新」会自动下载并装好，装完程序自己重开；" +
+                       "也可以到发布页自己下载。",
             },
-            PrimaryButtonText = "打开发布页面",
+            PrimaryButtonText = "立即更新",
+            SecondaryButtonText = "打开发布页面",
             CloseButtonText = "稍后",
             DefaultButton = ContentDialogButton.Primary,
         };
 
         _openDialog = dialog;
-        var open = false;
+        var result = ContentDialogResult.None;
         try
         {
-            open = await dialog.ShowAsync() == ContentDialogResult.Primary;
+            result = await dialog.ShowAsync();
         }
         catch (Exception ex)
         {
@@ -523,7 +525,99 @@ public sealed partial class MainWindow : Window
             _openDialog = null;
         }
 
-        if (open) OpenInBrowser(latest.HtmlUrl);
+        if (result == ContentDialogResult.Primary)
+            await RunAutoUpdateAsync(latest);
+        else if (result == ContentDialogResult.Secondary)
+            OpenInBrowser(latest.HtmlUrl);
+    }
+
+    /// <summary>
+    /// 全自动更新：下载 → 解压校验 → 交给更新脚本 → 自己退出。
+    ///
+    /// 最后一步"自己退出"是必须的，不是偷懒：本程序就跑在要被替换的那批文件里，
+    /// 而 Windows 不允许覆盖正在使用的 exe/dll。所以真正的替换交给一个短命进程，
+    /// 等我们退出之后再动手（见 <see cref="UpdateInstaller"/> 的说明）。
+    /// </summary>
+    private async Task RunAutoUpdateAsync(ReleaseInfo latest)
+    {
+        if (_openDialog is not null) return;
+
+        var progressBar = new ProgressBar { Minimum = 0, Maximum = 100, Value = 0 };
+        var statusText = new TextBlock { FontSize = 12, TextWrapping = TextWrapping.Wrap, Text = "正在连接…" };
+        var panel = new StackPanel { Spacing = 10, Width = 380 };
+        panel.Children.Add(new TextBlock
+        {
+            TextWrapping = TextWrapping.Wrap,
+            Text = $"正在下载 {latest.Tag}。下载期间可以照常用，中途取消不影响当前版本。",
+        });
+        panel.Children.Add(progressBar);
+        panel.Children.Add(statusText);
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = Content.XamlRoot,
+            Title = "正在更新",
+            Content = panel,
+            CloseButtonText = "取消",
+        };
+
+        using var cts = new CancellationTokenSource();
+        dialog.CloseButtonClick += (_, _) => cts.Cancel();
+
+        _openDialog = dialog;
+        var ready = false;
+        string? error = null;
+
+        // 刻意不 await：要让进度条在对话框显示期间持续刷新
+        var shown = dialog.ShowAsync().AsTask();
+        try
+        {
+            var progress = new Progress<UpdateDownloadProgress>(p =>
+            {
+                progressBar.Value = p.Percent;
+                statusText.Text = p.Text;
+            });
+
+            var settings = AppSettingsStore.Load();
+            var dir = await UpdateInstaller.DownloadAndExtractAsync(latest, settings.ProxyUrl, progress, cts.Token);
+
+            statusText.Text = "下载完成，正在准备安装…";
+
+            // 先把收尾脚本拉起来，再退出 —— 顺序反了就没人替我们完成替换
+            var targetDir = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
+            var exeName = Path.GetFileName(Environment.ProcessPath) ?? "M3U8Downloader.exe";
+            UpdateInstaller.LaunchUpdater(dir, targetDir, exeName);
+
+            ready = true;
+        }
+        catch (OperationCanceledException)
+        {
+            statusText.Text = "已取消。";
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            try { dialog.Hide(); } catch { /* 已经关了 */ }
+            _openDialog = null;
+        }
+
+        try { await shown; } catch { /* 关窗时的取消异常，忽略 */ }
+
+        if (error is not null)
+        {
+            await ShowInfoAsync("更新失败", $"{error}\n\n也可以到发布页手动下载：{latest.HtmlUrl}", false);
+            return;
+        }
+
+        if (!ready) return;   // 用户取消下载
+
+        // 任务状态先落盘：更新脚本马上会结束本进程，来不及再存一次
+        try { _taskManager.SaveNow(); } catch { }
+
+        Application.Current.Exit();
     }
 
     /// <summary>用系统默认浏览器打开链接</summary>
