@@ -10,7 +10,7 @@
     会显示不同的版本号。
   -->
   <PropertyGroup>
-    <Version>1.4.1</Version>
+    <Version>1.4.2</Version>
   </PropertyGroup>
 
 </Project>
