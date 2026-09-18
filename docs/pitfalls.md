@@ -14,7 +14,7 @@
 
 6. **路径中的双斜杠不能归一化**：某些源的主清单是 `/20260906/xx//1395kb/hls/index.m3u8`，把 `//` 折叠成 `/` 会直接 404。
 
-7. **WinUI 3 部署**：非打包（unpackaged）应用若不自包含，会因缺少 DDLM 包而弹「Windows App Runtime 组件缺失」。设 `WindowsAppSDKSelfContained=true` + `SelfContained=true` 可彻底免除依赖。
+7. **WinUI 部署**：非打包（unpackaged）应用若不自包含，会因缺少 DDLM 包而弹「Windows App Runtime 组件缺失」。设 `WindowsAppSDKSelfContained=true` + `SelfContained=true` 可彻底免除依赖。
 
 8. **勾选状态不会回写**：WinUI 的 `CheckBox` 双向绑定要求属性实现 `INotifyPropertyChanged`。Core 模型保持朴素，界面侧用 `EpisodeItemViewModel` 薄包装。
 
@@ -56,6 +56,16 @@
 26. **苹果 CMS 不止一种 URL 形态，详情页 ID 也未必等于播放页 ID**：`MacCmsAdapter` 起初只认 `/vodplay/{id}-{sid}-{nid}.html`（伪静态）。实测至少还有两种：原生形态 `/index.php/vod/play/id/{id}/sid/{sid}/nid/{nid}.html`（欧乐影院），以及斜杠形态 `/play/{id}/{sid}/{nid}.html`（影迷界影院）。更麻烦的是**斜杠形态的站点常常有两套编号** —— 详情页 `/t/62329.html` 是 62329，播放页却是 `/play/2337178967/…`。原先"按详情页 ID 过滤剧集链接"的写法会把本剧链接全部滤掉，最后误报"页面里既没有 player_aaaa 也没有剧集链接"。正确做法是**先收集、再投票**：优先取与详情页 ID 相同的那个，取不到就取页内出现次数最多的那个（要求至少 2 次，免得把日期型误匹配当成剧集）。
 
 27. **CI 发 Release 用 `softprops/action-gh-release` 传大包会超时**：它底层 HTTP 客户端等响应头有 300 秒上限，上传 87 MB 主包时 GitHub 端没回响应头就直接报 `Headers Timeout Error`，整个 Release 步骤失败且什么都不留。v1.4.2 首发就是这么挂的（构建、自检全绿，只挂在最后一步）。改用 runner 预装的 **`gh` CLI**（Go 客户端，无此限制），并写成幂等：release 已存在就 `upload --clobber` + `edit`，不存在才 `create` —— 重跑 CI 也不会撞出"release 已存在"的错误。
+
+28. **分集行的「已完成」可能只是字面**：一轮下载的收尾回填原来只写 `StatusText`，`State` 和 `OutputPath` 指望引擎最后一次进度快照补上。但快照走 `Progress<T>` **异步**到达，经常落在收尾闸门（`roundFinished`）之后被整批拦掉 —— 于是行上写着「已完成」，`State` 还停在 Downloading、`OutputPath` 是空。后果是「继续下载」把这集当成没下过的再下一遍（续下自检阶段 N 首跑就抓到了）。**收尾回填必须把 `State` 与 `OutputPath` 一起写死**，快照只能锦上添花，不能是唯一来源。
+
+29. **`Microsoft.Data.Sqlite` 默认开连接池，库文件被程序一直占着**：连接 `Dispose()` 之后底层句柄仍然留在池里，于是 `downloads.db` 被锁住 —— 用户想删掉它、备份一份、或拿 DB 工具打开看一眼，都会撞上 `The process cannot access the file ... because it is being used by another process`。这个坑是在单独验证 SQLite 实现时读文件头发现的（`File.OpenRead` 直接抛 IOException）。我们的写入频率极低（一轮下载几十次），池化省不下什么，所以在连接串里显式写 **`Pooling = false`**，用完即关。顺带：`busy_timeout` 要设（并发写时等一下比直接失败好），所有读写都要吞异常 —— 历史记不上绝不该影响下载。
+
+30. **「下过没有」要以磁盘文件为准，不能只信记录**：任务列表会被「清理已完成」清掉、重装程序或换台机器就没了，但视频还好好躺在文件夹里。补更（续下）时如果只查记录，用户会看到一堆"没下过"的集，勾了就是重复下载几百 MB。正确做法是拿文件名模板**正向**算出每一集该叫什么名字，再看目录里有没有这个文件（详见 `EpisodeFileScanner`）—— 正向算才能和下载时用的是同一套规则（`{title}` 会过一遍非法字符替换、集号有补零差异，用正则反向猜模板必然出错）。记录与下载历史降级为辅助：只用来解释"为什么没有"（上次失败 / 曾下载过但文件已不在）。注意空文件不算下过（中断会留下 0 字节文件）。
+
+31. **刷新元数据时别把旧的请求头冲掉**：站点快照里的 Referer / Origin 是分片与清单请求必须带的（`SeriesDownloader` 里 `headers = new(series.Headers)`），而"重新解析页面刷新快照"这条路径拿到的新 Headers **可能是空的** —— 通用兜底解析器就不填 Referer。直接覆盖等于把原来存好的头抹掉：快照里集号、标题都还在，看起来一切正常，只是下次用快照续下时**每个分片请求都被站点 403**。正确做法是**旧头铺底、新头覆盖**。自检阶段 P 用"重启恢复后快照里还剩几个请求头"守住了这条。
+
+32. **`IsFinished` 里包含「暂停」和「取消」，别拿它当"下载完成"**：`SeriesTask.IsFinished` 的语义是"任务已经停下、可以继续/重试/移除"，所以 `Paused`、`Canceled` 都算在内。拿它当完成类提示的判据，用户**一点暂停就会弹「已自动过滤 N 个广告」**（实机反馈的 bug）—— 暂停是他自己按的，弹这个窗像是程序在催他什么。要判"这一轮真的跑完了"用 `IsRoundFinished`（完成 / 部分完成 / 失败）。项目里其它几处 `IsFinished` 的用法（能不能继续、能不能重试、清理已完成）语义都是对的 —— 新增判断前先想清楚自己要的是哪一个。
 
 ---
 

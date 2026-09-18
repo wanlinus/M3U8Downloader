@@ -4,7 +4,7 @@ using Microsoft.UI.Xaml.Data;
 namespace M3U8Downloader;
 
 /// <summary>
-/// bool → Visibility。WinUI 3 没有内置转换器（WPF 才自带），所以自己写一个。
+/// bool → Visibility。WinUI 没有内置转换器（WPF 才自带），所以自己写一个。
 /// 传 ConverterParameter="invert" 可反向（true → 折叠）。
 /// </summary>
 public sealed class BoolToVisibilityConverter : IValueConverter

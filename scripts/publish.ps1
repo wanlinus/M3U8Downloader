@@ -58,7 +58,14 @@ if (-not $SkipApp) {
 
     # Verify the private runtime was actually bundled, otherwise the target
     # machine will fail with "required components of the Windows App Runtime are missing".
-    $required = @('M3U8Downloader.exe', 'hostpolicy.dll', 'coreclr.dll', 'Microsoft.WindowsAppRuntime.dll', 'Microsoft.ui.xaml.dll')
+    # e_sqlite3.dll is the native SQLite library (download history). Missing it is
+    # nastier than the others: the app starts fine and only blows up later, the first
+    # time the history is used -- so it belongs in this completeness check.
+    $required = @(
+        'M3U8Downloader.exe', 'hostpolicy.dll', 'coreclr.dll',
+        'Microsoft.WindowsAppRuntime.dll', 'Microsoft.ui.xaml.dll',
+        'e_sqlite3.dll', 'Microsoft.Data.Sqlite.dll'
+    )
     $missing = @()
     foreach ($f in $required) {
         if (-not (Test-Path (Join-Path $appOut $f))) { $missing += $f }

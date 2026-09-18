@@ -59,7 +59,7 @@ https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-lat
 | 组件 | 许可证 | 说明 |
 |---|---|---|
 | .NET / C# 运行时与类库 | MIT License | © Microsoft Corporation |
-| Windows App SDK（WinUI 3） | Microsoft 软件许可条款 | © Microsoft Corporation |
+| Windows App SDK（WinUI） | Microsoft 软件许可条款 | © Microsoft Corporation |
 | Windows SDK | Microsoft 软件许可条款 | © Microsoft Corporation |
 | [H.NotifyIcon](https://github.com/HavenDV/H.NotifyIcon) / H.NotifyIcon.WinUI | MIT License | 系统托盘图标、气泡通知与托盘右键菜单（© HavenDV） |
 
@@ -71,7 +71,7 @@ Windows App SDK 运行时，其分发受上述各自许可证约束。
 ## 3. 参考与致谢
 
 本项目的功能设计参考了 **[Liubsyy/M3U8Quicker](https://github.com/Liubsyy/M3U8Quicker)**
-（Tauri + Rust，Apache-2.0）。本项目为独立的 C# / WinUI 3 实现，
+（Tauri + Rust，Apache-2.0）。本项目为独立的 C# / WinUI 实现，
 **未复制其源代码**；仅参考了其公开的功能设计与部署经验
 （如 ffmpeg 的探测顺序、非打包 WinUI 应用的自包含部署等）。
 

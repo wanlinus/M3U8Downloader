@@ -5,16 +5,50 @@
 
 ## 这个项目是什么
 
-WinUI 3 的 M3U8 下载器。四个项目，**严格单向依赖**：
+WinUI 的 M3U8 下载器。四个项目，**严格单向依赖**：
 
 ```
 M3U8Downloader.Core              纯 BCL，不引任何第三方包
-  ├── M3U8Downloader.App         WinUI 3 界面
+  ├── M3U8Downloader.App         WinUI 界面
   ├── M3U8Downloader.Cli         命令行
   └── tests/M3U8Downloader.SelfTest   自检（无界面、不依赖外网）
 ```
 
 **改 Core 时不要引入外部依赖** —— 另外三个都靠它。
+
+## 平台事实与依赖边界（2026-09 核实过，别再重复踩）
+
+**术语**：微软已把 "WinUI 3" 正式改称 **WinUI**（UWP 那套改称 "WinUI for UWP"），
+并在 Build 2026 明确 WinUI 是 Windows 11 的长期 UI 框架 —— **不会再有 "WinUI 4" 来替换它**。
+本项目用 **Windows App SDK 2.4.0**；包名仍是 `Microsoft.WindowsAppSDK`（它是 WinUI 的
+分发包，不是另一个 UI 框架）。文档与注释请跟随新叫法，别写 "WinUI 3"。
+
+**别把元包换成组件包**：2.x 的 SDK 拆成了 `Microsoft.WindowsAppSDK.WinUI` / `.Base` /
+`.Foundation` / `.AI` / `.ML` / `.Search` / `.Widgets` 等组件，官方说可以按需引用来减小包体。
+但 `H.NotifyIcon.WinUI` 声明依赖的是**元包** `Microsoft.WindowsAppSDK >= 1.6` —— 一旦不显式引
+元包，它会把 1.6 元包拖回来和 2.x 组件混用（还附带 NU1603 警告）。实测过，收益不确定，已回退。
+
+**托盘图标（通知区域）没有官方 API**，Windows App SDK 2.4 仍然没有：
+
+- `AppWindow.SetTaskbarIcon` 是**任务栏上的窗口图标**（与 `SetTitleBarIcon` 并列）
+  —— 不是通知区域图标，别拿它当替代品；
+- 官方《[Windows notifications overview](https://learn.microsoft.com/windows/apps/develop/notifications/)》
+  只列了应用通知（`AppNotificationManager`）、推送、徽章三类，没有托盘图标；
+- 官方仓库里从 [#519](https://github.com/microsoft/WindowsAppSDK/discussions/519)（2021）
+  问到 [#3394](https://github.com/microsoft/WindowsAppSDK/discussions/3394)（2023）
+  **都没有"已计划"的答复**；结论是托盘只能走 `Shell_NotifyIcon`。
+
+**所以 `H.NotifyIcon` 的哪些部分能替、哪些不能**：
+
+| 现在用 H.NotifyIcon 做的 | 官方替代 | 结论 |
+|---|---|---|
+| 气泡通知 `ShowNotification` | WinAppSDK 的 `AppNotificationManager`（官方推荐，打包/非打包都能用） | **可替**，且体验更好：正规 toast、能进通知中心、可点击 |
+| `WindowExtensions.Hide/Show` | Win32 `ShowWindow` —— 几行 P/Invoke | **可替** |
+| 托盘图标 + 右键菜单 | **没有** | 替不掉。要么留 H.NotifyIcon，要么自己封 `Shell_NotifyIcon`（得处理 `TaskbarCreated` 重新注册、图标句柄、DPI），要么改用 WinForms 的 `NotifyIcon`（.NET 官方组件、自动重注册，但菜单是 `ContextMenuStrip`、不跟随 WinUI 主题） |
+
+结论是**保留 `H.NotifyIcon`** —— 它承担的那部分（托盘图标）恰恰是官方不提供的；
+把通知换成 `AppNotificationManager` 属于可选的体验改进，代价是要额外处理
+`Register()/Unregister()` 与"点通知激活应用"跟单实例逻辑的配合。
 
 ## 常用命令
 
@@ -57,6 +91,14 @@ dotnet run --project tests\M3U8Downloader.SelfTest -c Debug
 
 - 标题一句话，**中文**，说清做了什么；
 - 正文写：为什么改、怎么验证的、有什么已知限制；
+- **提交信息里含英文双引号时不要用 `-m` 直接传**：`git.exe` 是原生命令，PowerShell 会
+  重组命令行，消息会被引号对拆成多个参数，git 报一堆 `pathspec ... did not match`
+  （提交不会执行，但 `git add` 已经生效，文件留在暂存区）。写进临时文件再
+  `git commit -F <文件>` 最稳。
+- **写这类临时文件要用无 BOM 的 UTF-8**：这台机器上的 PowerShell 是 **5.1**，
+  `Set-Content -Encoding utf8NoBOM` 它不认（那是 PowerShell 7 才有的枚举值），
+  用 `[System.IO.File]::WriteAllText($path, $msg, (New-Object System.Text.UTF8Encoding($false)))`。
+  BOM 混进提交标题的话，会一路显示到 Release 说明里（那一节由提交标题生成）。
 - 修 bug 的提交，同时往 `docs/pitfalls.md` 补一条。
 
 ## 几条硬约定（都是踩过坑换来的）
@@ -68,6 +110,18 @@ dotnet run --project tests\M3U8Downloader.SelfTest -c Debug
 - **后台线程不要遍历界面绑定的 `ObservableCollection`**，先在 UI 线程快照一份。
 - **站点适配是模块化的**：新增站点 = 在 `Core/Sites/` 加一个 `ISiteAdapter` 实现，
   反射会自动登记（按 `Priority` 排序）。**不要改注册代码**。
+- **第三方存储只挂在界面层，Core 只留接口**。典型例子：下载历史用 SQLite
+  （`Microsoft.Data.Sqlite`），但 `Core` 里只有 `IDownloadHistoryStore` 协议，
+  实现 `SqliteDownloadHistory` 在 `M3U8Downloader.App` 里。理由：Core 被另外三个项目
+  依赖，一旦引包，命令行、自检、界面全都会被带上原生库。
+- **「下过没有」以磁盘文件为准**。任务记录会被「清理已完成」清掉、重装会丢，
+  视频却还躺在文件夹里。判断某集下载过没有，用 `EpisodeFileScanner` 按文件名模板
+  正向算出文件名再查文件；任务记录与下载历史只用来说明"为什么没有"。
+- **数据路径一律走 `AppPaths`，不要自己拼 `%APPDATA%`**。设置、任务列表、下载历史、
+  日志都在同一个数据目录里（优先程序目录下的 `data\`，不可写时退回
+  `%APPDATA%\M3U8Downloader\`）。散着拼路径的后果是数据被劈成两半：
+  便携版在程序目录、回退时又在用户目录，用户拷走文件夹却发现任务没跟过去。
+  新增任何需要落盘的东西，都在 `AppPaths` 里加一个属性。
 - **广告识别宁可不跳也不能误删正片**。判断规则的门槛设得保守，
   任何一条不满足就整条放弃；新增规则时同样要留"反例"自检。
 - **做了对用户有价值的事就要显式说出来**。比如过滤掉广告后，任务卡片与完成弹窗

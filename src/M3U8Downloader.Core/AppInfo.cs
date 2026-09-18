@@ -57,7 +57,7 @@ public static class AppInfo
 
         ── 运行平台与框架 ──
         .NET / C#（MIT License，© Microsoft Corporation）
-        Windows App SDK / WinUI 3（Microsoft 软件许可条款）
+        Windows App SDK / WinUI（Microsoft 软件许可条款）
         Windows SDK（Microsoft 软件许可条款）
 
         ── 界面依赖 ──
