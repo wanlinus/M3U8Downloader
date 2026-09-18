@@ -1089,14 +1089,24 @@ public sealed class SeriesDownloader : IDisposable
         return sb.ToString();
     }
 
-    private static string BuildFileName(string pattern, SiteSeries series, SiteEpisode episode)
+    private static string BuildFileName(string pattern, SiteSeries series, SiteEpisode episode) =>
+        BuildFileName(pattern, series, episode.Number);
+
+    /// <summary>
+    /// 按模板算出某一集的产物文件名（不含扩展名）。
+    ///
+    /// 按**集号**而不是 <see cref="SiteEpisode"/> 取参，是为了让"扫目录看这一集下过没有"
+    /// 也能用同一套规则（见 <c>EpisodeFileScanner</c>）：正向算出来的名字一定和下载时一致，
+    /// 不用拿正则去反向猜模板里的补零与非法字符替换。
+    /// </summary>
+    internal static string BuildFileName(string pattern, SiteSeries series, int number)
     {
         var name = pattern
             .Replace("{title}", series.Title)
             .Replace("{site}", series.SiteName)
-            .Replace("{number:00}", episode.Number.ToString("00"))
-            .Replace("{number:000}", episode.Number.ToString("000"))
-            .Replace("{number}", episode.Number.ToString());
+            .Replace("{number:00}", number.ToString("00"))
+            .Replace("{number:000}", number.ToString("000"))
+            .Replace("{number}", number.ToString());
         return Sanitize(name);
     }
 

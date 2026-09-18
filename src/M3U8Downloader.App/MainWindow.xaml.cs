@@ -23,6 +23,9 @@ public sealed partial class MainWindow : Window
     private readonly DownloadTaskManager _taskManager;
     private readonly TaskListViewModel _tasks;
 
+    /// <summary>启动时从旧数据目录搬过来的文件（非空时给用户一句提示）</summary>
+    private readonly string? _migratedData;
+
     /// <summary>
     /// 点窗口右上角的关闭时是否只是隐藏到托盘（来自设置）。
     /// 托盘图标起不来时 App 会把它置成 false —— 免得窗口藏起来又找不回来。
@@ -31,6 +34,20 @@ public sealed partial class MainWindow : Window
 
     public MainWindow()
     {
+        // 数据目录（程序目录\data\，不可写时退回 %APPDATA%）要在**任何东西读盘之前**定下来：
+        // 并把旧位置的设置/任务/历史搬过来 —— 老用户升级后不会因为换了目录就"全丢了"。
+        // 必须在 InitializeComponent 之前：界面构造里就会读设置。
+        try
+        {
+            var moved = AppPaths.MigrateLegacyData();
+            if (moved.Count > 0)
+                _migratedData = string.Join("、", moved);
+        }
+        catch
+        {
+            // 迁移失败不影响启动，只是旧数据留在原处
+        }
+
         InitializeComponent();
 
         // 标题栏和界面顶部都带上版本号：反馈问题时用户一眼就能报出用的是哪一版
@@ -48,6 +65,12 @@ public sealed partial class MainWindow : Window
         _taskManager = new DownloadTaskManager(null, a => DispatcherQueue.TryEnqueue(() => a()), new TaskStore())
         {
             Diagnostics = TaskDiagnostics.Create("tasks"),
+
+            // 下载历史（SQLite）：记住哪部剧的哪一集下过。
+            // 注意它只是**辅助**依据 —— 判断"这一集下过没有"的权威依据始终是磁盘上的
+            // 文件本身（EpisodeFileScanner），因为任务记录和历史都可能被清理，
+            // 视频却还在文件夹里。历史用来解释"文件怎么不在了"这类情况。
+            History = new SqliteDownloadHistory(),
         };
 
         // 跳过广告要在下载完成时主动说一声 —— 理由见 CheckSkippedAdsNotice
@@ -93,12 +116,21 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private async void RestorePreviousTasks()
     {
+        // 数据是从旧位置搬过来的 —— 一并说出来，免得用户以为数据丢了
+        var migration = _migratedData is { Length: > 0 }
+            ? $"；数据目录已改到程序目录下的 data\\（从旧位置搬来了 {_migratedData}）"
+            : "";
+
         try
         {
             var count = await _taskManager.RestoreAsync();
-            if (count == 0) return;
+            if (count == 0)
+            {
+                if (migration.Length > 0) _tasks.SetNotice(migration.TrimStart('；'));
+                return;
+            }
 
-            _tasks.SetNotice($"已恢复上次的 {count} 个任务；没下完的会接着下（已完成的集不会重下）");
+            _tasks.SetNotice($"已恢复上次的 {count} 个任务；没下完的会接着下（已完成的集不会重下）{migration}");
             ShowTasksPanel();
         }
         catch (Exception ex)
@@ -297,8 +329,7 @@ public sealed partial class MainWindow : Window
             var path = _taskManager.Diagnostics.FilePath;
             var dir = path is { Length: > 0 }
                 ? Path.GetDirectoryName(path)!
-                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                    "M3U8Downloader", "logs");
+                : AppPaths.LogsDirectory;
 
             Directory.CreateDirectory(dir);
             await Windows.System.Launcher.LaunchFolderPathAsync(dir);
@@ -339,6 +370,145 @@ public sealed partial class MainWindow : Window
         catch (Exception ex)
         {
             task.Message = "继续下载失败：" + ex.Message;
+        }
+    }
+
+    /// <summary>
+    /// 续下更新：重新解析站点，把**用户勾选**的新集补下来。
+    /// 场景是热播剧每天更新几集 —— 昨天下过、今天只想补刚更新的那几集。
+    ///
+    /// 两段式：
+    /// 1. 先用任务里保存的**站点快照**出列表（不联网，点一下就来）—— 站点解析不了也能续下；
+    /// 2. 弹窗期间在后台刷新一次，把站点新更新的集补进勾选框。
+    /// 老任务（没存过快照）退回联网解析。
+    /// </summary>
+    private async void OnTaskFetchNew(object sender, RoutedEventArgs e)
+    {
+        if (TaskOf(sender) is not { } task) return;
+
+        try
+        {
+            task.Message = "正在检查站点更新…";
+
+            var preview = await _taskManager.PreviewFromSnapshotAsync(task);
+            var hasSnapshot = preview is not null;
+
+            if (preview is null)
+            {
+                // 首次续下（老任务没存过快照）：只能联网解析一次，顺便把快照补上
+                preview = await _taskManager.PreviewFetchNewAsync(task);
+                if (preview is null) return;
+            }
+
+            // 站点上的集在磁盘上都有文件了 —— 没什么可补的，直接说清楚
+            if (preview.PendingCount == 0)
+            {
+                task.Message = $"站点上的 {preview.Candidates.Count} 集都已在磁盘上，没有要补的。";
+                await ShowInfoAsync("续下更新", task.Message, offerSettings: false);
+                return;
+            }
+
+            // 快照版才需要后台刷新（联网版拿到的已经是最新的）
+            var selected = await ShowFetchNewPickerAsync(task, preview, refresh: hasSnapshot);
+            if (selected is null)
+            {
+                task.Message = "已取消续下。";
+                return;
+            }
+            if (selected.Count == 0)
+            {
+                task.Message = "没有勾选任何一集。";
+                return;
+            }
+
+            // 把预检结果一并带上：不用再抓一遍页面，且"下哪几集"完全按勾选来
+            if (!await _taskManager.ResumeAsync(task, includeNewEpisodes: true,
+                    preview: preview, onlyNumbers: selected))
+                task.Message ??= "没有需要续下的集。";
+        }
+        catch (SiteProxyRequiredException ex)
+        {
+            task.Message = "续下失败：这个站点需要代理。";
+            await ShowParseFailureAsync(ex.Message, needsProxy: true);
+        }
+        catch (Exception ex)
+        {
+            task.Message = "续下失败：" + ex.Message;
+            await ShowInfoAsync("续下失败", ex.Message, offerSettings: false);
+        }
+    }
+
+    /// <summary>
+    /// 弹「续下更新」勾选框。返回用户勾选的集号；null = 取消（或已经有别的弹窗开着）。
+    /// 受 <see cref="_openDialog"/> 保护 —— WinUI 同时只允许一个 ContentDialog。
+    /// </summary>
+    /// <param name="refresh">
+    /// true = 弹窗期间后台刷新一次集列表（快照秒开的那条路径）。
+    /// </param>
+    private async Task<IReadOnlySet<int>?> ShowFetchNewPickerAsync(SeriesTask task, FetchNewPreview preview,
+        bool refresh = false)
+    {
+        if (_openDialog is not null) return null;
+
+        var dialog = new FetchNewDialog(task.Title, preview) { XamlRoot = Content.XamlRoot };
+
+        // 手动刷新：用户自己点「刷新集列表」（自动刷新没连上时、或就想再拉一次）
+        dialog.RefreshRequested += (_, _) => _ = RefreshPickerAsync(task, dialog);
+
+        _openDialog = dialog;
+
+        // 不 await：先让弹窗显示出来，刷新结果到了再补进列表
+        if (refresh) _ = RefreshPickerAsync(task, dialog);
+
+        try
+        {
+            return await dialog.ShowAsync() == ContentDialogResult.Primary
+                ? dialog.SelectedNumbers
+                : null;
+        }
+        catch (Exception ex)
+        {
+            task.Message = "勾选框打开失败：" + ex.Message;
+            return null;
+        }
+        finally
+        {
+            _openDialog = null;
+        }
+    }
+
+    /// <summary>
+    /// 弹窗期间后台刷新集列表：有新集就补进勾选框，连不上就说明"用的是本地数据"。
+    /// 刷新失败**不影响**已经列出的集 —— 照旧能勾能下。
+    /// 同一段逻辑既服务自动刷新（弹窗时），也服务手动刷新（用户点按钮）。
+    /// </summary>
+    private async Task RefreshPickerAsync(SeriesTask task, FetchNewDialog dialog)
+    {
+        try
+        {
+            var result = await _taskManager.RefreshEpisodesSnapshotAsync(task);
+
+            void Apply()
+            {
+                if (result.NewCandidates.Count == 0)
+                    dialog.SetRefreshStatus($"已是最新（站点共 {result.TotalOnSite} 集）");
+                else
+                    dialog.AppendEpisodes(result.NewCandidates,
+                        $"又发现 {result.NewCandidates.Count} 集新更新（站点共 {result.TotalOnSite} 集），已勾上");
+            }
+
+            // 回调可能在后台线程，界面更新要封送回 UI 线程
+            DispatcherQueue.TryEnqueue(Apply);
+        }
+        catch (Exception ex)
+        {
+            DispatcherQueue.TryEnqueue(() => dialog.SetRefreshStatus(
+                "没能从站点拉到集列表，用的是本地保存的数据（照样可以勾选下载）：" + ex.Message));
+        }
+        finally
+        {
+            // 手动刷新时按钮要恢复可点
+            DispatcherQueue.TryEnqueue(() => dialog.SetRefreshing(false));
         }
     }
 
@@ -657,6 +827,9 @@ public sealed partial class MainWindow : Window
     ///
     /// 但只说数量：识别原理、时长为什么变短这些是**实现细节**，
     /// 用户关心的是"过滤掉了几个广告"，不是我们怎么认出来的。
+    ///
+    /// 判据用 IsRoundFinished 而不是 IsFinished：后者把**暂停与取消**也算"结束"，
+    /// 用它的话用户一点暂停就弹这个窗，像是程序在催他什么。
     /// </summary>
     private void CheckSkippedAdsNotice()
     {
@@ -664,7 +837,7 @@ public sealed partial class MainWindow : Window
 
         foreach (var task in _taskManager.Tasks)
         {
-            if (!task.HasSkippedAds || !task.IsFinished) continue;
+            if (!task.HasSkippedAds || !task.IsRoundFinished) continue;
             if (!_adNoticeShown.Add(task.Id)) continue;   // 这个任务已经提示过
 
             _ = ShowInfoAsync("已自动过滤广告",

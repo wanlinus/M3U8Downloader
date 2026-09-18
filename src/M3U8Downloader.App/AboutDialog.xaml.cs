@@ -42,8 +42,11 @@ public sealed partial class AboutDialog : ContentDialog
         CopyrightText.Text = $"{AppInfo.Author}  ·  {AppInfo.Copyright}";
         LicenseText.Text = AppInfo.LicenseName;
         RuntimeText.Text = AppInfo.RuntimeDescription;
+        // 数据目录（设置 / 任务列表 / 下载历史 / 日志都在这里）——
+        // 用户报问题、备份、或想把数据一起拷走时，一眼能看到它在哪
+        var dataKind = AppPaths.IsPortable ? "程序目录（便携）" : "用户目录";
         PathsText.Text =
-            $"设置文件：{AppSettingsStore.SettingsFilePath}\n" +
+            $"数据目录（{dataKind}）：{AppPaths.DataDirectory}\n" +
             $"FFmpeg 目录：{FfmpegLocator.PreferredInstallDirectory}\n" +
             $"已适配站点：{string.Join("、", SiteResolver.CreateDefault().Adapters.Select(a => a.Name))}";
         ThirdPartyText.Text = AppInfo.ThirdPartyNotices;

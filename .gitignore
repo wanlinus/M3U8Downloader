@@ -37,3 +37,6 @@ _diag/
 _probe/
 _verify/
 *.log
+
+# 运行期数据目录（程序目录下的 data\：设置 / 任务 / 下载历史 / 日志）
+/data/

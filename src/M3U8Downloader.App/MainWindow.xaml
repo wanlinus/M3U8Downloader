@@ -581,6 +581,9 @@
                                                 Visibility="{Binding CanPause, Converter={StaticResource BoolToVis}}" />
                                         <Button Content="继续下载" FontSize="12" Padding="10,4" Click="OnTaskResume"
                                                 Visibility="{Binding CanResume, Converter={StaticResource BoolToVis}}" />
+                                        <!-- 续下更新：热播剧隔天补更，点它只下站点上新出现的集 -->
+                                        <Button Content="续下更新" FontSize="12" Padding="10,4" Click="OnTaskFetchNew"
+                                                Visibility="{Binding CanFetchNewEpisodes, Converter={StaticResource BoolToVis}}" />
                                         <Button Content="取消" FontSize="12" Padding="10,4" Click="OnTaskCancel"
                                                 Visibility="{Binding CanCancel, Converter={StaticResource BoolToVis}}" />
                                         <Button Content="重试失败集" FontSize="12" Padding="10,4" Click="OnTaskRetryFailed"

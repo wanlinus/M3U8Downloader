@@ -5,6 +5,69 @@ using System.Text.Json.Serialization;
 
 namespace M3U8Downloader.Core.Tasks;
 
+/// <summary>
+/// 站点上一集的**稳定**元数据快照。
+///
+/// 为什么要存它：首次下载时就该把"站点上全部集"记下来（不只是用户勾了的那几集），
+/// 之后点「续下」不必联网解析页面，也能列出全部集、判断哪些下过 ——
+/// 站点解析失败（断网、站点挂了、代理没开）时照样能续下。
+///
+/// 为什么**不存 m3u8 直链**：直链带时效签名、很快就会失效；而且下载流程本来就是
+/// 每集下载前现解析一次（<c>SeriesDownloader</c> 里的 ResolvePlaylistUrlAsync）。
+/// 所以只要留下播放页地址与站点集标识，这些元数据就一直可用。
+/// </summary>
+public sealed class EpisodeMetadata
+{
+    /// <summary>集号（1 基）</summary>
+    public int Number { get; set; }
+
+    /// <summary>显示名，如「第01集」</summary>
+    public string Title { get; set; } = "";
+
+    /// <summary>播放页绝对地址</summary>
+    public string PageUrl { get; set; } = "";
+
+    /// <summary>站点自定义的集标识（如努努的 ep_slug），解析直链时要用</summary>
+    public string? Key { get; set; }
+
+    /// <summary>所属播放源</summary>
+    public int SourceId { get; set; }
+}
+
+/// <summary>
+/// 一部剧的站点快照：播放源信息 + 站点上**全部集**的元数据。
+///
+/// 这是「续下不必联网」的依据，首轮入队时就存下来。
+/// 必须连 <see cref="Headers"/> 一起存 —— 下载分片与清单时要带 Referer/Origin
+/// （<c>SeriesDownloader</c> 里 <c>headers = new(series.Headers)</c>），
+/// 从快照重建的 SiteSeries 少了这些头，站点会直接 403。
+///
+/// 而适配器是**按每集的 PageUrl 的 host** 挑的（<c>SiteResolver.ResolvePlaylistUrlAsync</c>），
+/// 所以只要有 PageUrl + Key 就能重新解析出直链，不用存会过期的 m3u8 直链。
+/// </summary>
+public sealed class SeriesSnapshot
+{
+    /// <summary>站点类型名（存枚举名而不是值，改枚举也不会读坏旧文件）</summary>
+    public string Kind { get; set; } = nameof(Sites.SiteKind.Generic);
+
+    public string SiteName { get; set; } = "";
+    public string PageUrl { get; set; } = "";
+    public string SeriesId { get; set; } = "";
+    public string Title { get; set; } = "";
+
+    /// <summary>站点建议的请求头（Referer / Origin / User-Agent）</summary>
+    public Dictionary<string, string> Headers { get; set; } = new();
+
+    /// <summary>选定的播放源 id</summary>
+    public int? SourceId { get; set; }
+
+    /// <summary>抓取时间（界面可以显示"集列表更新于…"）</summary>
+    public DateTimeOffset CapturedAt { get; set; } = DateTimeOffset.Now;
+
+    /// <summary>站点上该源的全部集，按集号升序</summary>
+    public List<EpisodeMetadata> Episodes { get; set; } = new();
+}
+
 /// <summary>任务里一集的持久化记录</summary>
 public sealed class TaskEpisodeRecord
 {
@@ -64,6 +127,14 @@ public sealed class SeriesTaskRecord
 
     public List<TaskEpisodeRecord> Episodes { get; set; } = new();
 
+    // ---- 站点快照（「续下」不必联网的依据）----
+
+    /// <summary>
+    /// 首轮入队时存下的站点快照（含**全部集**，不只是用户勾选的那些）。
+    /// 老记录里没有这个字段 → null，那类任务第一次续下会联网解析并顺手补上。
+    /// </summary>
+    public SeriesSnapshot? Snapshot { get; set; }
+
     public SeriesTaskState ParsedState =>
         Enum.TryParse<SeriesTaskState>(State, ignoreCase: true, out var s) ? s : SeriesTaskState.Queued;
 }
@@ -71,8 +142,9 @@ public sealed class SeriesTaskRecord
 /// <summary>
 /// 任务列表的落盘仓库。
 ///
-/// 位置：<c>%APPDATA%\M3U8Downloader\tasks.json</c>（与设置同一个目录，每用户一份）。
-/// 写入方式与设置一致：先写 <c>.tmp</c> 再原子替换，避免中途断电留下半个 JSON。
+/// 位置：数据目录下的 <c>tasks.json</c> —— 默认是**程序目录\data\**（便携，拷走即带走任务），
+/// 程序目录不可写时退回 <c>%APPDATA%\M3U8Downloader\</c>（见 <see cref="AppPaths"/>）。
+/// 写入方式：先写 <c>.tmp</c> 再原子替换，避免中途断电留下半个 JSON。
 ///
 /// 为什么要把整个任务列表（含每一集的进度与产物路径）都存下来：
 /// 关掉程序再打开时，用户不需要重新贴地址、重新下已经下好的集；
@@ -90,12 +162,11 @@ public sealed class TaskStore
 
     public TaskStore(string? filePath = null) => FilePath = filePath ?? DefaultFilePath;
 
-    /// <summary>存放任务列表的目录</summary>
-    public static string DefaultDirectory => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "M3U8Downloader");
+    /// <summary>存放任务列表的目录（= 数据目录）</summary>
+    public static string DefaultDirectory => AppPaths.DataDirectory;
 
     /// <summary>任务列表文件</summary>
-    public static string DefaultFilePath => Path.Combine(DefaultDirectory, "tasks.json");
+    public static string DefaultFilePath => AppPaths.TasksFile;
 
     public string FilePath { get; }
 

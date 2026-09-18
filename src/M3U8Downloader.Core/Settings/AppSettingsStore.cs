@@ -6,8 +6,11 @@ namespace M3U8Downloader.Core.Settings;
 /// <summary>
 /// 设置的落盘仓库。
 ///
-/// 位置：<c>%APPDATA%\M3U8Downloader\settings.json</c>（每用户，随漫游配置走）。
-/// 注意：**不使用任何与本机相关的硬编码路径** —— 分发给别人时会落到各自的用户目录。
+/// 位置：数据目录下的 <c>settings.json</c> —— 默认是**程序目录\data\**（便携，
+/// 拷走整个文件夹即带走设置），程序目录不可写时退回 <c>%APPDATA%\M3U8Downloader\</c>。
+/// 具体见 <see cref="AppPaths"/>。
+///
+/// 注意：**不使用任何与本机相关的硬编码路径** —— 分发给别人时会落到各自的目录。
 /// </summary>
 public static class AppSettingsStore
 {
@@ -17,12 +20,11 @@ public static class AppSettingsStore
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
     };
 
-    /// <summary>设置文件所在目录</summary>
-    public static string SettingsDirectory =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "M3U8Downloader");
+    /// <summary>设置文件所在目录（= 数据目录）</summary>
+    public static string SettingsDirectory => AppPaths.DataDirectory;
 
     /// <summary>设置文件完整路径</summary>
-    public static string SettingsFilePath => Path.Combine(SettingsDirectory, "settings.json");
+    public static string SettingsFilePath => AppPaths.SettingsFile;
 
     /// <summary>
     /// 读取设置。任何异常都回退到默认值 —— 设置坏了也不该让程序起不来。

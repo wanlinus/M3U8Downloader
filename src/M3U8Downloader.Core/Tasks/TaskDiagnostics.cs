@@ -1,4 +1,5 @@
 using System.Text;
+using M3U8Downloader.Core;
 
 namespace M3U8Downloader.Core.Tasks;
 
@@ -47,9 +48,7 @@ public sealed class TaskDiagnostics
         var path = "";
         try
         {
-            var dir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "M3U8Downloader", "logs");
+            var dir = AppPaths.LogsDirectory;
             Directory.CreateDirectory(dir);
 
             var probe = Path.Combine(dir, ".probe");

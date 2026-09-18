@@ -961,6 +961,9 @@ Console.WriteLine($"  报告明细     : 成功 {task3.Report?.SucceededCount} /
 
 // 暂停必须被当作「暂停」而不是「失败」：被打断的集显示「已暂停」，
 // 但**真的**失败（暂停那一刻分片恰好挂了）的集要如实保留，继续下载时会自动重下
+//
+// 另外：暂停不算"跑完"（IsRoundFinished = false）—— 完成类提示（"已自动过滤 N 个广告"）
+// 用的是这个判据，用错就会在用户点暂停时弹窗。
 var okPaused = pausedState == SeriesTaskState.Paused
                && pausedStillTodo > 0
                && pausedCanResume
@@ -968,6 +971,7 @@ var okPaused = pausedState == SeriesTaskState.Paused
                && !pausedNeedsRetry
                && pausedFailed == 0
                && pausedMessage.Contains("已暂停")
+               && await dispatcher3.InvokeAsync(() => task3.IsFinished && !task3.IsRoundFinished)
                && pausedRowList.All(e => e.State != EpisodeDownloadStatus.Canceled
                                          && e.StatusText is "已完成" or "失败" or "已暂停");
 
@@ -1719,11 +1723,394 @@ var okVersionCompare = false;
     Console.WriteLine($"  版本比较 {cases.Length} 组: {(okVersionCompare ? "✔" : "✘ " + string.Join("；", bad))}");
 }
 
+// ---------------------------------------------------------------- 阶段 N：续下更新
+//
+// 场景：热播剧每天更新几集 —— 今天下完 2 集，明天站点多了第 3、4 集。
+// 点「续下更新」要先**预检**列出候选，由用户勾选，最后只下勾中的那几集：
+// 勾了第 4 集就只下第 4 集，没勾的第 3 集绝不能自己跑进来。
+// 反例：候选都下完之后再预检，候选应为空。
+
+Console.WriteLine();
+Console.WriteLine("阶段 N：续下更新（预检列候选 → 用户勾选 → 只下勾中的）");
+
+var fetchNewDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-fetchnew-" + Guid.NewGuid().ToString("N")[..6]);
+Directory.CreateDirectory(fetchNewDir);
+
+// 站点"当前"的集数 —— 首轮 2 集，之后模拟隔天更新成 4 集
+var siteEpisodeCount = 2;
+var parseCount = 0;   // 预检解析了几次；续下带着预检结果就不该再抓页面
+
+var dispatcher7 = new FakeDispatcher();
+using var manager7 = new DownloadTaskManager(null, dispatcher7.Post)
+{
+    SeriesParser = (_, _) =>
+    {
+        Interlocked.Increment(ref parseCount);
+        return Task.FromResult(BuildSeries(siteEpisodeCount));
+    },
+};
+
+var task7 = manager7.Enqueue(BuildSeries(siteEpisodeCount), new SeriesDownloadOptions
+{
+    OutputDirectory = fetchNewDir,
+    EpisodeConcurrency = 2,
+    SegmentConcurrency = 2,
+    FfmpegPath = null,
+    WriteReport = true,
+    SeriesSubdirectory = true,
+    MaxRetries = 1,
+    RetryBaseDelayMs = 200,
+});
+await dispatcher7.InvokeAsync(() => { });
+
+var fetchFirstDone = new TaskCompletionSource();
+task7.PropertyChanged += (_, e) =>
+{
+    if (e.PropertyName == nameof(SeriesTask.State) && task7.IsFinished) fetchFirstDone.TrySetResult();
+};
+
+await WaitUntilAsync(async () => await dispatcher7.InvokeAsync(() => task7.IsRunning),
+    TimeSpan.FromSeconds(30), "任务开始下载");
+await fetchFirstDone.Task.WaitAsync(TimeSpan.FromMinutes(2));
+await dispatcher7.InvokeAsync(() => { });
+
+// 模拟隔天：站点更新出第 3、4 集
+siteEpisodeCount = 4;
+
+var preview1 = await manager7.PreviewFetchNewAsync(task7);
+// 预检返回的是**站点上的全部集**：已下载的要能看出来（界面里置灰），待补的才可勾
+var preview1Grey = preview1?.Candidates.Where(c => c.IsDownloaded).Select(c => c.Number).ToList()
+                   ?? new List<int>();
+var preview1Pending = preview1?.Candidates.Where(c => !c.IsDownloaded)
+    .Select(c => (c.Number, c.IsNew)).ToList() ?? new List<(int, bool)>();
+var parseAfterPreview = Interlocked.CompareExchange(ref parseCount, 0, 0);
+
+// 用户只勾了第 4 集：第 3 集不许跟着进来
+var fetched = await manager7.ResumeAsync(task7, includeNewEpisodes: true,
+    preview: preview1, onlyNumbers: new HashSet<int> { 4 });
+await WaitUntilAsync(async () => await dispatcher7.InvokeAsync(() => task7.IsFinished),
+    TimeSpan.FromMinutes(2), "续下跑完");
+await dispatcher7.InvokeAsync(() => { });
+
+var parseAfterResume = Interlocked.CompareExchange(ref parseCount, 0, 0);
+var fetchRows = await dispatcher7.InvokeAsync(() => task7.Episodes
+    .Select(e => (e.Number, e.StatusText)).ToList());
+var fetchTotal = await dispatcher7.InvokeAsync(() => task7.TotalEpisodes);
+var fetchState = await dispatcher7.InvokeAsync(() => task7.State);
+
+// 新集的产物必须真的在磁盘上 —— "续下"不是只改了行上的字
+var ep4Output = await dispatcher7.InvokeAsync(() =>
+    task7.Episodes.FirstOrDefault(e => e.Number == 4)?.OutputPath);
+var ep4OnDisk = ep4Output is not null && File.Exists(ep4Output);
+var ep3InTask = fetchRows.Any(r => r.Number == 3);
+
+// 再预检：用户没勾的第 3 集应该还在候选里（说明它确实没被下）
+var preview2 = await manager7.PreviewFetchNewAsync(task7);
+var preview2Pending = preview2?.Candidates.Where(c => !c.IsDownloaded).Select(c => c.Number).ToList()
+                      ?? new List<int>();
+
+// 这次补勾第 3 集
+var fetched2 = await manager7.ResumeAsync(task7, includeNewEpisodes: true,
+    preview: preview2, onlyNumbers: new HashSet<int> { 3 });
+await WaitUntilAsync(async () => await dispatcher7.InvokeAsync(() => task7.IsFinished),
+    TimeSpan.FromMinutes(2), "补下第 3 集跑完");
+await dispatcher7.InvokeAsync(() => { });
+
+var finalRows = await dispatcher7.InvokeAsync(() => task7.Episodes
+    .Select(e => (e.Number, e.StatusText)).ToList());
+var finalTotal = await dispatcher7.InvokeAsync(() => task7.TotalEpisodes);
+var preview3 = await manager7.PreviewFetchNewAsync(task7);
+
+Console.WriteLine($"  预检: 已下载置灰 {string.Join("、", preview1Grey)}；待补 " +
+                  $"{string.Join("、", preview1Pending.Select(c => $"第{c.Item1}集({(c.Item2 ? "新增" : "未下完")})"))}");
+Console.WriteLine($"  只勾第 4 集续下 → 任务 {fetchRows.Count} 行 / 总集数 {fetchTotal}：{string.Join("、", fetchRows.Select(r => $"第{r.Number}集"))}");
+Console.WriteLine($"    第 4 集产物在磁盘: {ep4OnDisk}；第 3 集被下进来了吗（应为 False）: {ep3InTask}");
+Console.WriteLine($"  页面解析次数: 预检后 {parseAfterPreview}、续下后 {parseAfterResume}（续下复用预检结果，不该再解析）");
+Console.WriteLine($"  再预检待补: {string.Join("、", preview2Pending)}（第 3 集应仍在）");
+Console.WriteLine($"  补勾第 3 集后续下 → {finalRows.Count} 行 / {finalTotal} 集，待补剩 {preview3?.PendingCount} 项");
+
+var okFetchNew = preview1?.NewCount == 2
+                 && preview1Grey.OrderBy(n => n).SequenceEqual(new[] { 1, 2 })
+                 && preview1Pending.Select(c => c.Item1).OrderBy(n => n).SequenceEqual(new[] { 3, 4 })
+                 && fetched
+                 && fetchRows.Count == 3
+                 && fetchRows.All(e => e.StatusText == "已完成")
+                 && fetchTotal == 3
+                 && fetchState == SeriesTaskState.Completed
+                 && ep4OnDisk
+                 && !ep3InTask
+                 && parseAfterPreview == 1
+                 && parseAfterResume == 1        // 复用预检结果，没有再抓页面
+                 && preview2Pending.SequenceEqual(new[] { 3 })
+                 && fetched2
+                 && finalRows.Count == 4
+                 && finalTotal == 4
+                 && finalRows.All(e => e.StatusText == "已完成")
+                 && preview3 is { PendingCount: 0 };
+Console.WriteLine($"  续下更新: {(okFetchNew ? "✔" : "✘")}");
+
+// ---------------------------------------------------------------- 阶段 O：已下载置灰（磁盘优先）
+//
+// 「续下时把已下载的置灰」—— 判据必须是**磁盘上的文件**：
+// 任务记录会被「清理已完成」清掉、重装程序会丢，视频却还躺在文件夹里。
+// 任务记录与下载历史只用来解释"为什么没有"（上次失败 / 曾下载过但文件已不在）。
+
+Console.WriteLine();
+Console.WriteLine("阶段 O：续下置灰（磁盘上的文件说了算）");
+
+// O1：扫描器本身 —— .mp4 也算、0 字节不算、集号补零与不补零都要对
+var scanDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-scan-" + Guid.NewGuid().ToString("N")[..6]);
+Directory.CreateDirectory(scanDir);
+var scanSeries = BuildSeries(4);
+File.WriteAllText(Path.Combine(scanDir, "自检剧集.01.ts"), "x");
+File.WriteAllText(Path.Combine(scanDir, "自检剧集.02.mp4"), "xx");            // 转过 MP4 的产物
+File.WriteAllBytes(Path.Combine(scanDir, "自检剧集.03.ts"), Array.Empty<byte>());  // 0 字节：不算下过
+
+var scanned = EpisodeFileScanner.ScanExisting(scanDir, "{title}.{number:00}", scanSeries, new[] { 1, 2, 3, 4 });
+var scannedNoPad = EpisodeFileScanner.ScanExisting(scanDir, "{title}.{number}", scanSeries, new[] { 1, 2 });
+Console.WriteLine($"  扫描目录命中: {string.Join("、", scanned.Keys.OrderBy(n => n))}（应 1、2：3 是 0 字节、4 不存在）");
+Console.WriteLine($"  模板 {{number}}（不补零）命中: {string.Join("、", scannedNoPad.Keys.OrderBy(n => n))}（应空：文件名是补零的）");
+
+// O2：任务把 4 集都下完之后预检 —— 站点上的集都该是「已下载」
+var previewDone = await manager7.PreviewFetchNewAsync(task7);
+Console.WriteLine($"  全部下完后预检: 候选 {previewDone?.Candidates.Count} 项，" +
+                  $"已下载 {previewDone?.DownloadedCount}、待补 {previewDone?.PendingCount}（应 4 / 0）");
+
+// O3：站点更新出第 5 集；历史里说第 5 集下过、但文件已不在 → 说法要准确
+siteEpisodeCount = 5;
+manager7.History = new MemoryHistory(new[]
+{
+    new DownloadHistoryEntry
+    {
+        PageUrl = task7.PageUrl,
+        SiteName = "本地测试站",
+        SeriesTitle = "自检剧集",
+        EpisodeNumber = 5,
+        FilePath = Path.Combine(scanDir, "自检剧集.05.ts"),
+        FileBytes = 5 * 1024 * 1024,     // 当初下出来 5 MB —— 这个大小要能显示出来
+    },
+});
+var previewHistory = await manager7.PreviewFetchNewAsync(task7);
+Console.WriteLine($"  站点多出第 5 集（历史里有记录、文件不在）后预检:");
+foreach (var c in previewHistory?.Candidates ?? new List<FetchNewCandidate>())
+    Console.WriteLine($"    第{c.Number:00}集 {c.Note}{(c.IsDownloaded ? "（置灰，不可勾）" : "")}");
+
+// O4：下载完成后必须**自动记账**（"每次下载记住下载了哪些视频"）
+var histDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-hist-" + Guid.NewGuid().ToString("N")[..6]);
+Directory.CreateDirectory(histDir);
+
+var recorded = new MemoryHistory();
+var dispatcher8 = new FakeDispatcher();
+using var manager8 = new DownloadTaskManager(null, dispatcher8.Post)
+{
+    SeriesParser = (_, _) => Task.FromResult(BuildSeries(3)),
+    History = recorded,
+};
+
+var task8 = manager8.Enqueue(BuildSeries(3), new SeriesDownloadOptions
+{
+    OutputDirectory = histDir,
+    EpisodeConcurrency = 2,
+    SegmentConcurrency = 2,
+    FfmpegPath = null,
+    WriteReport = true,
+    SeriesSubdirectory = true,
+    MaxRetries = 1,
+    RetryBaseDelayMs = 200,
+});
+await dispatcher8.InvokeAsync(() => { });
+
+var histDone = new TaskCompletionSource();
+task8.PropertyChanged += (_, e) =>
+{
+    if (e.PropertyName == nameof(SeriesTask.State) && task8.IsFinished) histDone.TrySetResult();
+};
+await WaitUntilAsync(async () => await dispatcher8.InvokeAsync(() => task8.IsRunning),
+    TimeSpan.FromSeconds(30), "任务开始下载");
+await histDone.Task.WaitAsync(TimeSpan.FromMinutes(2));
+await dispatcher8.InvokeAsync(() => { });
+
+var histEntries = recorded.All();
+Console.WriteLine($"  下载 3 集自动记账: {histEntries.Count} 条 → " +
+                  $"{string.Join("、", histEntries.OrderBy(e => e.EpisodeNumber).Select(e => $"第{e.EpisodeNumber}集({e.FileBytes}B)"))}");
+var histFilesOk = histEntries.All(e => e.FilePath is not null && File.Exists(e.FilePath));
+
+var okDiskFirst = scanned.Keys.OrderBy(n => n).SequenceEqual(new[] { 1, 2 })
+                  && scannedNoPad.Count == 0
+                  && previewDone is { DownloadedCount: 4, PendingCount: 0 }
+                  && previewDone.Candidates.All(c => c.IsDownloaded && c.Note == "已下载" && c.FilePath is not null)
+                  && previewHistory is { DownloadedCount: 4 }
+                  && previewHistory.Candidates.SingleOrDefault(c => c.Number == 5)
+                      is { IsDownloaded: false, Note: "曾下载过（5.0 MB），文件已不在" }
+                  && histEntries.Count == 3
+                  && histEntries.Select(e => e.EpisodeNumber).OrderBy(n => n).SequenceEqual(new[] { 1, 2, 3 })
+                  && histEntries.All(e => e.SeriesTitle == "自检剧集" && e.PageUrl == task8.PageUrl)
+                  && histEntries.All(e => e.FileBytes > 0)
+                  && histFilesOk;
+Console.WriteLine($"  已下载置灰 + 自动记账: {(okDiskFirst ? "✔" : "✘")}");
+
+// ---------------------------------------------------------------- 阶段 P：站点快照（续下不联网）
+//
+// 首轮入队时就把"站点上全部集"的元数据存下来（不只用户勾的那几集）：
+// 续下优先用这份快照 —— 解析器一次都不该被调用（下面故意让它抛异常来证明），
+// 所以断网、站点挂了、代理没开时照样能续下。
+// 站点解析失败时，联网预检要**降级**用快照而不是直接报错。
+
+Console.WriteLine();
+Console.WriteLine("阶段 P：站点快照（续下不必联网）");
+
+var snapDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-snapshot-" + Guid.NewGuid().ToString("N")[..6]);
+Directory.CreateDirectory(snapDir);
+
+// 只勾第 2 集：快照里仍应有全部 3 集，请求头也要一起存（下载分片要带 Referer）
+var snapshotSeries = BuildSeries(3);
+foreach (var e in snapshotSeries.AllEpisodes) e.IsSelected = e.Number == 2;
+snapshotSeries.Headers["Referer"] = "https://example.com/";
+snapshotSeries.Headers["Origin"] = "https://example.com";
+
+var snapSiteCount = 3;
+var snapParseCalls = 0;
+var snapAllowParse = false;   // 先禁止联网：走快照路径时一次都不该解析页面
+
+var snapStorePath = Path.Combine(snapDir, "tasks.json");
+var dispatcher9 = new FakeDispatcher();
+using var manager9 = new DownloadTaskManager(null, dispatcher9.Post, new TaskStore(snapStorePath))
+{
+    SeriesParser = (_, _) =>
+    {
+        Interlocked.Increment(ref snapParseCalls);
+        if (!snapAllowParse) throw new InvalidOperationException("这条路径不该联网");
+        return Task.FromResult(BuildSeries(snapSiteCount));
+    },
+};
+
+var task9 = manager9.Enqueue(snapshotSeries, new SeriesDownloadOptions
+{
+    OutputDirectory = snapDir,
+    EpisodeConcurrency = 1,
+    SegmentConcurrency = 2,
+    FfmpegPath = null,
+    WriteReport = true,
+    SeriesSubdirectory = true,
+    MaxRetries = 1,
+    RetryBaseDelayMs = 200,
+});
+await dispatcher9.InvokeAsync(() => { });
+
+var snapDone = new TaskCompletionSource();
+task9.PropertyChanged += (_, e) =>
+{
+    if (e.PropertyName == nameof(SeriesTask.State) && task9.IsFinished) snapDone.TrySetResult();
+};
+await WaitUntilAsync(async () => await dispatcher9.InvokeAsync(() => task9.IsRunning),
+    TimeSpan.FromSeconds(30), "任务开始下载");
+await snapDone.Task.WaitAsync(TimeSpan.FromMinutes(2));
+await dispatcher9.InvokeAsync(() => { });
+
+var snapEpisodes = await dispatcher9.InvokeAsync(() =>
+    task9.Snapshot?.Episodes.Select(m => m.Number).ToList() ?? new List<int>());
+var snapHeaders = await dispatcher9.InvokeAsync(() => task9.Snapshot?.Headers.Count ?? 0);
+var taskEpisodes = await dispatcher9.InvokeAsync(() => task9.Episodes.Count);
+Console.WriteLine($"  首轮只勾第 2 集 → 任务清单 {taskEpisodes} 行；快照 {snapEpisodes.Count} 集" +
+                  $"（{string.Join("、", snapEpisodes)}）、请求头 {snapHeaders} 个");
+
+// 1) 快照预检：完全不联网
+var snapPreview = await manager9.PreviewFromSnapshotAsync(task9);
+var snapGrey = snapPreview?.Candidates.Where(c => c.IsDownloaded).Select(c => c.Number).ToList() ?? new List<int>();
+var snapPending = snapPreview?.Candidates.Where(c => !c.IsDownloaded).Select(c => c.Number).ToList() ?? new List<int>();
+var snapCallsAfter = Interlocked.CompareExchange(ref snapParseCalls, 0, 0);
+Console.WriteLine($"  快照预检：共 {snapPreview?.Candidates.Count} 项，已下载置灰 " +
+                  $"{string.Join("、", snapGrey)}，待补 {string.Join("、", snapPending)}");
+Console.WriteLine($"  这一步的页面解析次数：{snapCallsAfter}（应为 0）");
+
+// 2) 站点解析不了时，联网预检要降级用快照，而不是直接报错
+FetchNewPreview? degraded = null;
+string? degradedError = null;
+try
+{
+    degraded = await manager9.PreviewFetchNewAsync(task9);
+}
+catch (Exception ex)
+{
+    degradedError = ex.Message;
+}
+Console.WriteLine($"  站点解析失败时：{(degraded is null ? "抛异常 ✘（" + degradedError + "）" : "降级用快照 ✔")}" +
+                  $"（Refreshed={degraded?.Refreshed}，原因：{degraded?.RefreshError}）");
+
+// 3) 站点更新出第 4 集 → 刷新应报告 1 个新集，并把快照扩到 4 集
+snapAllowParse = true;
+snapSiteCount = 4;
+var refreshResult = await manager9.RefreshEpisodesSnapshotAsync(task9);
+var snapAfterRefresh = await dispatcher9.InvokeAsync(() => task9.Snapshot?.Episodes.Count ?? 0);
+Console.WriteLine($"  刷新快照：站点 {refreshResult.TotalOnSite} 集，新发现 " +
+                  $"{string.Join("、", refreshResult.NewCandidates.Select(c => c.Number))}；快照现 {snapAfterRefresh} 集");
+
+// 4) 落盘 → 换一个管理器恢复：快照必须还在（否则重启后又得联网）
+await dispatcher9.InvokeAsync(() => manager9.SaveNow());
+var dispatcher10 = new FakeDispatcher();
+using var manager10 = new DownloadTaskManager(null, dispatcher10.Post, new TaskStore(snapStorePath));
+var snapRestoredCount = await manager10.RestoreAsync();
+var restoredSnapshot = await dispatcher10.InvokeAsync(() =>
+    manager10.Tasks.FirstOrDefault()?.Snapshot);
+await dispatcher10.InvokeAsync(() => { });
+Console.WriteLine($"  重启恢复 {snapRestoredCount} 个任务：快照 {restoredSnapshot?.Episodes.Count} 集、" +
+                  $"请求头 {restoredSnapshot?.Headers.Count} 个");
+
+// 5) 用快照续下时某集失败了 → 收尾应**自动重新拉取元数据**（很可能是站点改版让地址失效）
+//    这里把第 1 集的播放页换成一个连不上的地址，让这一集必然失败
+await dispatcher9.InvokeAsync(() =>
+{
+    var broken = task9.Snapshot!.Episodes.First(e => e.Number == 1);
+    broken.PageUrl = "http://127.0.0.1:1/never.html";
+});
+
+var failPreview = await manager9.PreviewFromSnapshotAsync(task9);
+var callsBeforeFail = Interlocked.CompareExchange(ref snapParseCalls, 0, 0);
+var failRoundStarted = await manager9.ResumeAsync(task9, includeNewEpisodes: true,
+    preview: failPreview, onlyNumbers: new HashSet<int> { 1 });
+await WaitUntilAsync(async () => await dispatcher9.InvokeAsync(() => task9.IsFinished),
+    TimeSpan.FromMinutes(2), "失败的那一轮跑完");
+await dispatcher9.InvokeAsync(() => { });
+var callsAfterFail = Interlocked.CompareExchange(ref snapParseCalls, 0, 0);
+var failRow = await dispatcher9.InvokeAsync(() =>
+    task9.Episodes.FirstOrDefault(e => e.Number == 1)?.StatusText ?? "");
+var failMessage = await dispatcher9.InvokeAsync(() => task9.Message ?? "");
+var refreshedAfterFail = await dispatcher9.InvokeAsync(() => task9.Snapshot?.CapturedAt);
+
+Console.WriteLine($"  用快照续下第 1 集（地址已失效）→ {failRow}；" +
+                  $"收尾刷新元数据：解析次数 {callsBeforeFail} → {callsAfterFail}");
+Console.WriteLine($"    提示：{failMessage}");
+
+var okSnapshot = snapEpisodes.Count == 3
+                 && snapEpisodes.OrderBy(n => n).SequenceEqual(new[] { 1, 2, 3 })
+                 && taskEpisodes == 1                       // 任务清单仍只有勾选的那一集
+                 && snapHeaders >= 2                        // 请求头必须存下来（否则续下会 403）
+                 && snapPreview is { Candidates.Count: 3 }
+                 && snapGrey.SequenceEqual(new[] { 2 })     // 已下好的那集置灰
+                 && snapPending.OrderBy(n => n).SequenceEqual(new[] { 1, 3 })
+                 && snapCallsAfter == 0                     // ★ 快照预检一次都没联网
+                 && degraded is { Refreshed: false }        // 解析失败时降级
+                 && !string.IsNullOrWhiteSpace(degraded.RefreshError)
+                 && degraded.Candidates.Count == 3
+                 && refreshResult.NewCandidates.Count == 1
+                 && refreshResult.NewCandidates[0].Number == 4
+                 && refreshResult.TotalOnSite == 4
+                 && snapAfterRefresh == 4
+                 && restoredSnapshot?.Episodes.Count == 4
+                 && (restoredSnapshot?.Headers.Count ?? 0) >= 2
+                 && failRoundStarted                       // 用快照续下
+                 && failRow == "失败"                       // 那一集确实失败
+                 && callsAfterFail > callsBeforeFail        // ★ 失败后自动刷新了元数据
+                 && refreshedAfterFail is not null
+                 && failMessage.Contains("已重新拉取集列表");
+Console.WriteLine($"  站点快照: {(okSnapshot ? "✔" : "✘")}");
+
 Console.WriteLine();
 var ok = okB && okC && okPaused && okStopped && okResume && okSettled && okRetry
          && okResumeSubset && okFallback && okDuration && encOk && okSingle
          && okRegistry && okNnyy && okNnyyMovie && okGeneric && okEmpty && okWakuredo
-         && okNoSystemProxy && okInserted && okInsertedGuard && okVersionCompare;
+         && okNoSystemProxy && okInserted && okInsertedGuard && okVersionCompare
+         && okFetchNew && okDiskFirst && okSnapshot;
 Console.WriteLine(ok
     ? "自检结果       : ✔ 通过"
     : $"自检结果       : ✘ 失败（阶段B {okB} / 阶段C {okC} / 暂停 {okPaused} / 暂停后静止 {okStopped}" +
@@ -1732,7 +2119,8 @@ Console.WriteLine(ok
       $" / 密文首字节 0x3C {encOk} / 单文件服务 {okSingle}" +
       $" / 适配器登记 {okRegistry} / 努努影院 {okNnyy} / 努努电影页 {okNnyyMovie} / 通用兜底 {okGeneric}" +
       $" / 空页面报错 {okEmpty} / 影迷界影院 {okWakuredo} / 直连不走代理 {okNoSystemProxy}" +
-      $" / 插播广告识别 {okInserted}(反例 {okInsertedGuard}) / 版本比较 {okVersionCompare}）");
+      $" / 插播广告识别 {okInserted}(反例 {okInsertedGuard}) / 版本比较 {okVersionCompare}" +
+      $" / 续下更新 {okFetchNew} / 已下载置灰 {okDiskFirst} / 站点快照 {okSnapshot}）");
 
 listener.Stop();
 return ok ? 0 : 1;
@@ -1827,10 +2215,29 @@ static byte[]? AesDecryptPkcs7(byte[] cipher, byte[] key)
     catch { return null; }
 }
 
+/// <summary>
+/// 内存版下载历史（自检用）。
+/// 真实实现是界面层的 SQLite（<c>SqliteDownloadHistory</c>）—— Core 不引第三方包，
+/// 所以自检只能测到接口这一层；SQL 本身由界面层单独验证。
+/// </summary>
+internal sealed class MemoryHistory : IDownloadHistoryStore
+{
+    private readonly List<DownloadHistoryEntry> _entries;
+
+    public MemoryHistory(IEnumerable<DownloadHistoryEntry>? entries = null) =>
+        _entries = entries?.ToList() ?? new List<DownloadHistoryEntry>();
+
+    public void Record(DownloadHistoryEntry entry) => _entries.Add(entry);
+
+    public IReadOnlyList<DownloadHistoryEntry> FindBySeries(string pageUrl) =>
+        _entries.Where(e => e.PageUrl == pageUrl).OrderBy(e => e.EpisodeNumber).ToList();
+
+    public IReadOnlyList<DownloadHistoryEntry> All() => _entries;
+}
+
 /// <summary>单线程假 Dispatcher：模拟 WinUI 的 DispatcherQueue.TryEnqueue（异步封送）</summary>
 internal sealed class FakeDispatcher
-{
-    private readonly BlockingCollection<Action> _queue = new();
+{    private readonly BlockingCollection<Action> _queue = new();
     private int _executed;
 
     public FakeDispatcher()

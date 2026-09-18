@@ -131,6 +131,72 @@ public sealed record Mp4RemuxOutcome(int Converted, int Skipped, int Failed, Lis
     public bool HasProblem => Failed > 0 || Messages.Count > 0;
 }
 
+/// <summary>「续下更新」勾选列表里的一项</summary>
+/// <param name="Number">集号</param>
+/// <param name="Title">显示名</param>
+/// <param name="IsNew">true = 站点上刚更新出来、任务里还没有的集</param>
+/// <param name="Note">给用户看的短标签，如「已下载」「新增」「上次失败」</param>
+/// <param name="IsDownloaded">
+/// 产物文件已经在磁盘上 —— 界面据此把这一项置灰、不许勾。
+/// 判据是**磁盘上的文件**而不是任务记录：记录会被清理，文件不会。
+/// </param>
+/// <param name="FilePath">已下载时的产物路径</param>
+public sealed record FetchNewCandidate(
+    int Number, string Title, bool IsNew, string Note, bool IsDownloaded, string? FilePath);
+
+/// <summary>
+/// 「续下更新」的预检结果。
+///
+/// 存在的理由：站点更新了几集、用户想补哪几集，只有用户自己知道 ——
+/// 一路全下会把用户没要的集也拖下来。所以先预检、把**全部集**列出来给用户看，
+/// 已经下过的置灰，剩下的由他勾（选中的集号再交给
+/// <see cref="DownloadTaskManager.ResumeAsync"/>）。
+///
+/// <see cref="Parsed"/> 一并带回来是为了省掉第二次页面请求。
+/// </summary>
+public sealed class FetchNewPreview
+{
+    /// <summary>这次预检重新解析出来的站点数据（挑集的几秒里站点不会变，可直接复用）</summary>
+    public required SiteSeries Parsed { get; init; }
+
+    /// <summary>选定的播放源 id</summary>
+    public required int? SourceId { get; init; }
+
+    /// <summary>产物目录（用来扫「哪几集已经在磁盘上」的那个目录）</summary>
+    public required string Directory { get; init; }
+
+    /// <summary>站点上该源的全部集：已下载的 + 待补的，按集号升序</summary>
+    public required List<FetchNewCandidate> Candidates { get; init; }
+
+    /// <summary>磁盘上已经有文件的集数（界面里置灰的那些）</summary>
+    public int DownloadedCount => Candidates.Count(c => c.IsDownloaded);
+
+    /// <summary>还需要补下的集数</summary>
+    public int PendingCount => Candidates.Count(c => !c.IsDownloaded);
+
+    /// <summary>其中站点上新更新、且还没下载的集数</summary>
+    public int NewCount => Candidates.Count(c => c.IsNew && !c.IsDownloaded);
+
+    /// <summary>
+    /// 这份清单是不是刚从站点抓回来的。
+    /// false = 用的任务里保存的**本地快照**（站点解析不了时的降级路径）。
+    /// </summary>
+    public bool Refreshed { get; init; } = true;
+
+    /// <summary>没能刷新成功时的原因（界面据此说明"列表可能不是最新的"）</summary>
+    public string? RefreshError { get; init; }
+
+    /// <summary>这份清单依据的快照时间</summary>
+    public DateTimeOffset? SnapshotAt { get; init; }
+}
+
+/// <summary>刷新集快照的结果：新发现的集（界面增量补进勾选框）+ 站点现在的总集数</summary>
+/// <param name="NewCandidates">快照里原来没有的集（已核对过磁盘）</param>
+/// <param name="TotalOnSite">站点上该播放源现在的总集数</param>
+/// <param name="RefreshedAt">刷新时间</param>
+public sealed record SnapshotRefreshResult(
+    List<FetchNewCandidate> NewCandidates, int TotalOnSite, DateTimeOffset RefreshedAt);
+
 /// <summary>
 /// 一个「整部剧」下载任务。
 /// 实现 INotifyPropertyChanged，界面可以直接绑定，不必再包一层。
@@ -165,8 +231,27 @@ public sealed class SeriesTask : INotifyPropertyChanged
     /// <summary>界面显示用的目录（还没算出来时退回用户填的根目录）</summary>
     public string DisplayDirectory =>
         string.IsNullOrWhiteSpace(_resolvedDirectory) ? OutputDirectory : _resolvedDirectory!;
-    public int TotalEpisodes { get; init; }
     public int FirstEpisodeNumber { get; init; } = 1;
+
+    private int _totalEpisodes;
+
+    /// <summary>
+    /// 任务包含的集数。
+    /// 可写：「续下更新」往任务里追加了新集之后要跟着涨，
+    /// 否则界面会出现「26/24 集」、进度分母也还是旧数。
+    /// 不落盘 —— 恢复时按 Episodes 数量重算（见 <see cref="FromRecord"/>）。
+    /// </summary>
+    public int TotalEpisodes
+    {
+        get => _totalEpisodes;
+        set
+        {
+            if (!Set(ref _totalEpisodes, value)) return;
+            OnPropertyChanged(nameof(ProgressText));
+            OnPropertyChanged(nameof(EpisodeCountText));
+            OnPropertyChanged(nameof(EpisodeHeaderText));
+        }
+    }
 
     /// <summary>使用的播放源名称</summary>
     public string? SourceName { get; init; }
@@ -179,6 +264,22 @@ public sealed class SeriesTask : INotifyPropertyChanged
 
     /// <summary>分集清单（实时更新每一集的进度）</summary>
     public ObservableCollection<TaskEpisodeItem> Episodes { get; } = new();
+
+    /// <summary>
+    /// 站点快照：播放源信息 + 站点上**全部集**的元数据（不只本任务要下的那些）。
+    ///
+    /// 首轮入队时就填好；「续下」优先用它 —— 不必联网就能列出全部集、
+    /// 判断哪些已经在磁盘上，站点解析失败时照样能续下。
+    /// <see cref="DownloadTaskManager.RefreshEpisodesSnapshotAsync"/> 会把它刷成最新的。
+    /// </summary>
+    public SeriesSnapshot? Snapshot { get; internal set; }
+
+    /// <summary>
+    /// 这一轮的集数据是不是来自本地快照。
+    /// 是的话，收尾时若有集失败就顺手刷新一次快照 —— 很可能是站点改版让播放页
+    /// 地址失效了，刷完用户点「重试失败集」就能用上新地址（不落盘）。
+    /// </summary>
+    internal bool RoundUsedSnapshot { get; set; }
 
     // ---------------- 可变状态 ----------------
 
@@ -194,8 +295,10 @@ public sealed class SeriesTask : INotifyPropertyChanged
             OnPropertyChanged(nameof(CanCancel));
             OnPropertyChanged(nameof(CanPause));
             OnPropertyChanged(nameof(IsFinished));
+            OnPropertyChanged(nameof(IsRoundFinished));
             OnPropertyChanged(nameof(NeedsRetry));
             OnPropertyChanged(nameof(CanResume));
+            OnPropertyChanged(nameof(CanFetchNewEpisodes));
         }
     }
 
@@ -346,6 +449,16 @@ public sealed class SeriesTask : INotifyPropertyChanged
     public bool IsRunning => _state == SeriesTaskState.Running;
     public bool IsFinished => _state is SeriesTaskState.Completed or SeriesTaskState.PartiallyCompleted
         or SeriesTaskState.Failed or SeriesTaskState.Canceled or SeriesTaskState.Paused;
+
+    /// <summary>
+    /// 这一轮是不是**真的跑完了**：完成 / 部分完成 / 失败。
+    ///
+    /// 与 <see cref="IsFinished"/> 的区别：**暂停与取消是用户主动打断，不算跑完**。
+    /// 「已自动过滤 N 个广告」这类完成提示必须用这个判据 —— 用 IsFinished 的话，
+    /// 用户一点暂停就弹窗，像是程序在催他什么（实机反馈过这个问题）。
+    /// </summary>
+    public bool IsRoundFinished => _state is SeriesTaskState.Completed
+        or SeriesTaskState.PartiallyCompleted or SeriesTaskState.Failed;
     public bool CanCancel => _state is SeriesTaskState.Queued or SeriesTaskState.Running;
 
     /// <summary>可以「暂停」：任务正在跑（或还在排队）</summary>
@@ -365,6 +478,13 @@ public sealed class SeriesTask : INotifyPropertyChanged
     /// 关掉程序再打开时会用到它 —— 恢复出来的任务就停在这一档上。
     /// </summary>
     public bool CanResume => IsFinished && Episodes.Any(e => e.State != EpisodeDownloadStatus.Completed);
+
+    /// <summary>
+    /// 是否值得提供「续下更新」：任务已停下就可以 —— 哪怕上次的集全下完了，
+    /// 站点也可能刚更新出新的一集（热播剧每天补更的场景）。
+    /// 与 <see cref="CanResume"/> 互不包含：全下完时 CanResume=false，这里仍然 true。
+    /// </summary>
+    public bool CanFetchNewEpisodes => IsFinished;
 
     public string StateText => _state switch
     {
@@ -664,6 +784,15 @@ public sealed class DownloadTaskManager : IDisposable
     /// <summary>全部任务（最新的在最前）</summary>
     public ObservableCollection<SeriesTask> Tasks { get; } = new();
 
+    /// <summary>
+    /// 下载历史（哪部剧的哪一集下过）。默认不记账；图形界面启动时注入 SQLite 实现。
+    ///
+    /// 它是"下过没有"的**辅助**依据 —— 权威依据始终是磁盘上的文件
+    /// （见 <see cref="EpisodeFileScanner"/>）。历史的价值在于文件被改名/搬走后
+    /// 还能说清"这集当初下过"，以及任务列表被清理后仍留有账。
+    /// </summary>
+    public IDownloadHistoryStore History { get; set; } = NullDownloadHistoryStore.Instance;
+
     /// <summary>任务状态有任何变化时触发（供存盘/通知使用）</summary>
     public event EventHandler? Changed;
 
@@ -920,6 +1049,9 @@ public sealed class DownloadTaskManager : IDisposable
             FfmpegPath = t.FfmpegPath,
             FileNamePattern = t.FileNamePattern,
             SeriesSubdirectory = t.SeriesSubdirectory,
+
+            // 站点快照：续下不必联网的依据（老记录里没有这个字段，读到就是 null）
+            Snapshot = t.Snapshot,
         };
 
         foreach (var e in t.Episodes)
@@ -983,6 +1115,9 @@ public sealed class DownloadTaskManager : IDisposable
                 Error = e.Error,
             });
         }
+
+        // 站点快照（老记录里没有 → null，第一次续下会联网解析并补上）
+        task.Snapshot = r.Snapshot;
 
         // 上次正在下载/排队的任务，恢复后先停在「可继续」的状态上，
         // 由 RestoreAsync 决定是否自动接着下。
@@ -1095,12 +1230,430 @@ public sealed class DownloadTaskManager : IDisposable
     }
 
     /// <summary>
+    /// 「续下更新」的预检：重新解析站点，列出该源的**全部集**并标出哪些已经下过，
+    /// 供界面弹勾选框（已下载的置灰）。
+    ///
+    /// 这个方法**不改动任何状态**（不追加集、不入队、不写任务消息）。
+    ///
+    /// 「下过没有」的判据是**磁盘上的文件**，按任务的产物目录 + 文件名模板正向算出来核对，
+    /// 而不是只信任务记录 —— 记录会被「清理已完成」、重装、换机器清掉，文件却还在。
+    /// 任务记录与下载历史只用来解释"为什么没有"（上次失败 / 曾下载过但文件已不在）。
+    ///
+    /// 用户勾完把选中的集号与这里返回的 <see cref="FetchNewPreview"/> 一起交给
+    /// <see cref="ResumeAsync"/>，既省掉一次页面请求，也保证"下什么"由用户决定。
+    /// </summary>
+    public async Task<FetchNewPreview?> PreviewFetchNewAsync(SeriesTask task, CancellationToken ct = default)
+    {
+        if (_disposed) return null;
+        if (task.State == SeriesTaskState.Running) return null;
+
+        SiteSeries parsed;
+        try
+        {
+            parsed = await ParseSeriesAsync(task.PageUrl, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // 站点解析不了（断网 / 站点挂了 / 代理没开）→ 退回本地快照：
+            // 至少让用户把没下完的集补上，而不是一集都下不了
+            var fallback = await PreviewFromSnapshotAsync(task, ct).ConfigureAwait(false);
+            if (fallback is null) throw;   // 连快照都没有：照实报错，不假装成功
+
+            Diagnostics.Write($"{Diagnostics.Tag(task.Id, task.Title)} 站点解析失败，改用本地快照：" +
+                              $"{ex.Message}");
+            return new FetchNewPreview
+            {
+                Parsed = fallback.Parsed,
+                SourceId = fallback.SourceId,
+                Directory = fallback.Directory,
+                Candidates = fallback.Candidates,
+                Refreshed = false,
+                RefreshError = ex.Message,
+                SnapshotAt = fallback.SnapshotAt,
+            };
+        }
+
+        var sourceId = task.PreferredSourceId
+                       ?? parsed.Sources.FirstOrDefault(s => s.Name == task.SourceName)?.Id
+                       ?? parsed.Sources.FirstOrDefault()?.Id;
+
+        // 站点上这一源的全部集（同一集号挂在多个源上时只取一个）
+        var siteEpisodes = parsed.AllEpisodes
+            .Where(e => e.SourceId == sourceId)
+            .GroupBy(e => e.Number)
+            .Select(g => g.First())
+            .OrderBy(e => e.Number)
+            .ToList();
+
+        var candidates = await BuildCandidatesAsync(task, parsed, siteEpisodes, ct).ConfigureAwait(false);
+
+        var preview = new FetchNewPreview
+        {
+            Parsed = parsed,
+            SourceId = sourceId,
+            Directory = ResolveProductDirectory(task, parsed),
+            Candidates = candidates,
+            Refreshed = true,
+            SnapshotAt = DateTimeOffset.Now,
+        };
+
+        // 顺手把快照刷新成最新的（这样下次续下可以直接用本地数据）。
+        // 带上旧快照：请求头要合并，别把原来存好的 Referer 冲掉。
+        SeriesSnapshot? previousSnapshot = null;
+        await RunOnUiAsync(() => previousSnapshot = task.Snapshot).ConfigureAwait(false);
+        await SaveEpisodesSnapshotAsync(task, parsed, sourceId, siteEpisodes, previousSnapshot)
+            .ConfigureAwait(false);
+
+        Diagnostics.Write($"{Diagnostics.Tag(task.Id, task.Title)} 续下预检（联网）：" +
+                          $"目录 {preview.Directory}；磁盘已有 " +
+                          $"{DescribeNumbers(candidates.Where(c => c.IsDownloaded).Select(c => c.Number))}；" +
+                          $"待补 {DescribeNumbers(candidates.Where(c => !c.IsDownloaded).Select(c => c.Number))}");
+
+        return preview;
+    }
+
+    /// <summary>
+    /// 用任务里保存的站点快照算一份续下预检 —— **完全不联网**。
+    ///
+    /// 这是「续下」的首选路径：快照在首轮入队时就存好了（站点上全部集的集号、
+    /// 标题、播放页地址、集标识，外加站点请求头），所以点一下就能立刻列出全部集。
+    /// 界面拿到它先弹窗，同时在后台跑 <see cref="RefreshEpisodesSnapshotAsync"/>
+    /// 把站点新更新的集补进来。
+    ///
+    /// 返回 null = 没有快照（老任务）或任务没停下，调用方退回联网解析。
+    /// </summary>
+    public async Task<FetchNewPreview?> PreviewFromSnapshotAsync(SeriesTask task, CancellationToken ct = default)
+    {
+        if (_disposed) return null;
+        if (task.State == SeriesTaskState.Running) return null;
+
+        SeriesSnapshot? snapshot = null;
+        await RunOnUiAsync(() => snapshot = task.Snapshot).ConfigureAwait(false);
+
+        if (snapshot is null || snapshot.Episodes.Count == 0) return null;
+
+        var sourceId = snapshot.SourceId ?? snapshot.Episodes.FirstOrDefault()?.SourceId;
+
+        // 从快照重建一份可用的 SiteSeries（含请求头）：下载流程要拿它取 Referer
+        var siteEpisodes = snapshot.Episodes
+            .GroupBy(m => m.Number)
+            .Select(g => ToSiteEpisode(g.First()))
+            .OrderBy(e => e.Number)
+            .ToList();
+        var series = BuildSeriesFromSnapshot(task, snapshot, siteEpisodes);
+
+        var candidates = await BuildCandidatesAsync(task, series, siteEpisodes, ct).ConfigureAwait(false);
+
+        var preview = new FetchNewPreview
+        {
+            Parsed = series,
+            SourceId = sourceId,
+            Directory = ResolveProductDirectory(task, series),
+            Candidates = candidates,
+            Refreshed = false,       // 数据来自本地快照
+            SnapshotAt = snapshot.CapturedAt,
+        };
+
+        Diagnostics.Write($"{Diagnostics.Tag(task.Id, task.Title)} 续下预检（本地快照，" +
+                          $"{snapshot.CapturedAt:MM-dd HH:mm}）：" +
+                          $"待补 {DescribeNumbers(candidates.Where(c => !c.IsDownloaded).Select(c => c.Number))}");
+
+        return preview;
+    }
+
+    /// <summary>
+    /// 重新抓页面、刷新任务的站点快照，并返回**快照里原来没有的集**（新更新的）。
+    ///
+    /// 由界面在弹窗的同时后台调用：成功就把新集补进勾选框；失败会抛异常，
+    /// 由调用方降级（继续用快照，不影响已列出的集下载）。
+    /// </summary>
+    public async Task<SnapshotRefreshResult> RefreshEpisodesSnapshotAsync(SeriesTask task,
+        CancellationToken ct = default)
+    {
+        var parsed = await ParseSeriesAsync(task.PageUrl, ct).ConfigureAwait(false);
+
+        var sourceId = task.PreferredSourceId
+                       ?? parsed.Sources.FirstOrDefault(s => s.Name == task.SourceName)?.Id
+                       ?? parsed.Sources.FirstOrDefault()?.Id;
+
+        var siteEpisodes = parsed.AllEpisodes
+            .Where(e => e.SourceId == sourceId)
+            .GroupBy(e => e.Number)
+            .Select(g => g.First())
+            .OrderBy(e => e.Number)
+            .ToList();
+
+        HashSet<int> known = new();
+        SeriesSnapshot? previous = null;
+        await RunOnUiAsync(() =>
+        {
+            previous = task.Snapshot;
+            known = previous?.Episodes.Select(m => m.Number).ToHashSet() ?? new HashSet<int>();
+        }).ConfigureAwait(false);
+
+        var fresh = siteEpisodes.Where(e => !known.Contains(e.Number)).ToList();
+
+        await SaveEpisodesSnapshotAsync(task, parsed, sourceId, siteEpisodes, previous).ConfigureAwait(false);
+
+        // 新集也可能已经在磁盘上（用户自己下过/别的任务下过）—— 逐集核一下再交给界面
+        var directory = ResolveProductDirectory(task, parsed);
+        var candidates = new List<FetchNewCandidate>();
+        foreach (var ep in fresh)
+        {
+            var path = await Task.Run(() =>
+                    EpisodeFileScanner.FindEpisodeFile(directory, task.FileNamePattern, parsed, ep.Number), ct)
+                .ConfigureAwait(false);
+
+            candidates.Add(path is not null
+                ? new FetchNewCandidate(ep.Number, ep.DisplayTitle, IsNew: true, Note: "已下载",
+                    IsDownloaded: true, FilePath: path)
+                : new FetchNewCandidate(ep.Number, ep.DisplayTitle, IsNew: true, Note: "新增",
+                    IsDownloaded: false, FilePath: null));
+        }
+
+        Diagnostics.Write($"{Diagnostics.Tag(task.Id, task.Title)} 刷新集快照：" +
+                          $"站点共 {siteEpisodes.Count} 集，新发现 {DescribeNumbers(fresh.Select(e => e.Number))}");
+
+        return new SnapshotRefreshResult(candidates, siteEpisodes.Count, DateTimeOffset.Now);
+    }
+
+    /// <summary>
+    /// 从"站点上的集 + 任务现状 + 磁盘 + 下载历史"算出续下候选。
+    /// 联网预检与本地快照预检共用这一段 —— 两条路径的判定必须完全一致。
+    /// </summary>
+    private async Task<List<FetchNewCandidate>> BuildCandidatesAsync(SeriesTask task, SiteSeries series,
+        IReadOnlyList<SiteEpisode> siteEpisodes, CancellationToken ct)
+    {
+        // 任务里每一集的现状。绑定用的集合只能在 UI 线程上读（pitfalls 第 14 条），
+        // 先快照一份再在后台算。
+        TaskEpisodeItem[] known = Array.Empty<TaskEpisodeItem>();
+        await RunOnUiAsync(() => known = task.Episodes.ToArray()).ConfigureAwait(false);
+
+        var directory = ResolveProductDirectory(task, series);
+
+        // 扫目录是纯磁盘 IO，扔到后台别堵着调用方（界面正等这个结果弹窗）
+        var onDisk = await Task.Run(() => EpisodeFileScanner.ScanExisting(
+                directory, task.FileNamePattern, series, siteEpisodes.Select(e => e.Number)), ct)
+            .ConfigureAwait(false);
+
+        // 下载历史：文件被改名/搬走时，还能提醒用户"这集记录里下过"（带上当时的大小）
+        Dictionary<int, DownloadHistoryEntry> history;
+        try
+        {
+            history = History.FindBySeries(task.PageUrl)
+                .GroupBy(h => h.EpisodeNumber)
+                .ToDictionary(g => g.Key, g => g.First());
+        }
+        catch
+        {
+            history = new Dictionary<int, DownloadHistoryEntry>();
+        }
+
+        var candidates = new List<FetchNewCandidate>();
+        foreach (var ep in siteEpisodes)
+        {
+            // 磁盘上就有文件 —— 这就是"下过了"，置灰不让重下
+            if (onDisk.TryGetValue(ep.Number, out var path))
+            {
+                candidates.Add(new FetchNewCandidate(ep.Number, ep.DisplayTitle,
+                    IsNew: false, Note: "已下载", IsDownloaded: true, FilePath: path));
+                continue;
+            }
+
+            var item = known.FirstOrDefault(x => x.Number == ep.Number);
+            var isNew = item is null;
+            var note = item?.State switch
+            {
+                EpisodeDownloadStatus.Failed => "上次失败",
+                EpisodeDownloadStatus.Canceled => "上次取消",
+                EpisodeDownloadStatus.Completed => "产物已丢失",
+                null => "新增",
+                _ => "未下完",
+            };
+
+            // 任务里没有（被清理了/换了机器）但历史里下过 —— 说法要准确，免得用户以为是新的，
+            // 顺带报一下当初下出来多大（历史里存着，此时正是它派用场的地方）
+            if (history.TryGetValue(ep.Number, out var past) && note is "新增" or "产物已丢失")
+            {
+                note = past.FileBytes > 0
+                    ? $"曾下载过（{past.FileBytes / 1024.0 / 1024.0:0.0} MB），文件已不在"
+                    : "曾下载过，文件已不在";
+            }
+
+            candidates.Add(new FetchNewCandidate(ep.Number, ep.DisplayTitle,
+                isNew, note, IsDownloaded: false, FilePath: null));
+        }
+
+        return candidates;
+    }
+
+    /// <summary>产物目录：任务跑过就用它记下来的；没跑成过就按参数算一遍</summary>
+    private static string ResolveProductDirectory(SeriesTask task, SiteSeries series)
+    {
+        var directory = task.ResolvedDirectory;
+        if (!string.IsNullOrWhiteSpace(directory)) return directory;
+
+        try
+        {
+            return SeriesDownloader.ResolveSeriesDirectory(series, BuildOptions(task));
+        }
+        catch
+        {
+            return task.OutputDirectory;
+        }
+    }
+
+    /// <summary>把站点上的全部集记进任务（首轮快照）</summary>
+    private void CaptureEpisodesSnapshot(SeriesTask task, SiteSeries series)
+    {
+        var sourceId = task.PreferredSourceId
+                       ?? series.Sources.FirstOrDefault(s => s.Episodes.Any(e => e.IsSelected))?.Id
+                       ?? series.Sources.FirstOrDefault()?.Id;
+
+        CaptureEpisodesSnapshot(task, series, sourceId);
+    }
+
+    /// <summary>把站点上的全部集记进任务（首轮快照，指定播放源）</summary>
+    private void CaptureEpisodesSnapshot(SeriesTask task, SiteSeries series, int? sourceId)
+    {
+        var episodes = series.AllEpisodes
+            .Where(e => sourceId is null || e.SourceId == sourceId)
+            .GroupBy(e => e.Number)
+            .Select(g => g.First())
+            .OrderBy(e => e.Number)
+            .ToList();
+
+        if (episodes.Count == 0) return;
+
+        var snapshot = BuildSnapshot(series, sourceId, episodes);
+        RunOnUi(() =>
+        {
+            task.Snapshot = snapshot;
+            ScheduleSave();
+        });
+    }
+
+    /// <summary>刷新快照（用已经解析好的站点数据），并落盘</summary>
+    private async Task SaveEpisodesSnapshotAsync(SeriesTask task, SiteSeries series, int? sourceId,
+        IReadOnlyList<SiteEpisode> siteEpisodes, SeriesSnapshot? previous = null)
+    {
+        var snapshot = BuildSnapshot(series, sourceId, siteEpisodes, previous);
+
+        await RunOnUiAsync(() =>
+        {
+            task.Snapshot = snapshot;
+            ScheduleSave();
+            RaiseChanged();
+        }).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 造一份站点快照。
+    ///
+    /// 请求头要**合并**而不是照抄新解析的结果：有些解析路径（通用兜底）拿不到
+    /// Referer/Origin，直接覆盖就把原来存好的头冲掉了 —— 下次用快照续下时
+    /// 分片请求没了 Referer，站点直接 403。所以旧头先铺底，新头再覆盖。
+    /// </summary>
+    private static SeriesSnapshot BuildSnapshot(SiteSeries series, int? sourceId,
+        IReadOnlyList<SiteEpisode> episodes, SeriesSnapshot? previous = null)
+    {
+        var snapshot = new SeriesSnapshot
+        {
+            Kind = series.Kind.ToString(),
+            SiteName = series.SiteName,
+            PageUrl = series.PageUrl,
+            SeriesId = series.SeriesId,
+            Title = series.Title,
+            SourceId = sourceId,
+            CapturedAt = DateTimeOffset.Now,
+            Episodes = episodes.Select(ToMetadata).ToList(),
+        };
+
+        if (previous is not null)
+            foreach (var kv in previous.Headers) snapshot.Headers[kv.Key] = kv.Value;
+        foreach (var kv in series.Headers) snapshot.Headers[kv.Key] = kv.Value;
+
+        return snapshot;
+    }
+
+    private static EpisodeMetadata ToMetadata(SiteEpisode ep) => new()
+    {
+        Number = ep.Number,
+        Title = string.IsNullOrWhiteSpace(ep.Title) ? ep.DisplayTitle : ep.Title,
+        PageUrl = ep.PageUrl,
+        Key = ep.Key,
+        SourceId = ep.SourceId,
+    };
+
+    private static SiteEpisode ToSiteEpisode(EpisodeMetadata m) => new()
+    {
+        Number = m.Number,
+        SourceId = m.SourceId,
+        PageUrl = m.PageUrl,
+        Title = m.Title,
+        Key = m.Key,
+    };
+
+    /// <summary>
+    /// 从站点快照重建一份可用的 <see cref="SiteSeries"/>。
+    ///
+    /// 两点必须照原样带回来：
+    /// - **请求头**（Referer / Origin / UA）—— 下载分片与清单时要带，缺了会被站点 403；
+    /// - 播放源与每集的 <c>PageUrl</c> / <c>Key</c> —— 适配器是按 PageUrl 的 host 挑的，
+    ///   直链在每集下载前现解析（<c>SiteResolver.ResolvePlaylistUrlAsync</c>）。
+    /// </summary>
+    private static SiteSeries BuildSeriesFromSnapshot(SeriesTask task, SeriesSnapshot snapshot,
+        IReadOnlyList<SiteEpisode> episodes)
+    {
+        var series = new SiteSeries
+        {
+            Kind = Enum.TryParse<SiteKind>(snapshot.Kind, ignoreCase: true, out var kind)
+                ? kind
+                : SiteKind.Generic,
+            SiteName = string.IsNullOrWhiteSpace(snapshot.SiteName) ? task.SiteName : snapshot.SiteName,
+            PageUrl = string.IsNullOrWhiteSpace(snapshot.PageUrl) ? task.PageUrl : snapshot.PageUrl,
+            SeriesId = snapshot.SeriesId,
+            Title = string.IsNullOrWhiteSpace(snapshot.Title) ? task.Title : snapshot.Title,
+            PreferredSourceId = snapshot.SourceId,
+        };
+
+        foreach (var kv in snapshot.Headers) series.Headers[kv.Key] = kv.Value;
+
+        var source = new SitePlaySource
+        {
+            Id = snapshot.SourceId ?? episodes.FirstOrDefault()?.SourceId ?? 0,
+            Name = task.SourceName ?? "",
+        };
+        foreach (var ep in episodes) source.Episodes.Add(ep);
+        series.Sources.Add(source);
+
+        return series;
+    }
+
+    /// <summary>
     /// 继续下载：重新解析站点，只把「还没下完的集」排进队列。
     ///
     /// 已完成的集不会重复下载（还要确认产物文件确实还在）；
     /// 没下完的集会复用原来的暂存目录，引擎按清单指纹校验后从断点继续。
     /// </summary>
-    public async Task<bool> ResumeAsync(SeriesTask task, CancellationToken ct = default)
+    /// <param name="task">目标任务</param>
+    /// <param name="ct">取消标记</param>
+    /// <param name="includeNewEpisodes">
+    /// 「续下更新」：站点上比任务多出来的集（热播剧隔天补更）也一并下。
+    /// 新集会先追加进 <see cref="SeriesTask.Episodes"/>（界面立刻能看到），
+    /// 未完成的旧集照样续传 —— 上次下失败的那几集不会被丢掉。
+    /// </param>
+    /// <param name="preview">
+    /// 「续下更新」预检的结果（见 <see cref="PreviewFetchNewAsync"/>）。
+    /// 传进来就省掉一次页面请求；为 null 时按老路子重新解析站点。
+    /// </param>
+    /// <param name="onlyNumbers">
+    /// 只下这些集号（用户在勾选框里挑出来的）。为 null 表示照任务里原有的集走。
+    /// 续下场景下它是**必须**的：站点更新了几集、用户想补哪几集，只有用户知道。
+    /// </param>
+    public async Task<bool> ResumeAsync(SeriesTask task, CancellationToken ct = default,
+        bool includeNewEpisodes = false, FetchNewPreview? preview = null,
+        IReadOnlySet<int>? onlyNumbers = null)
     {
         if (_disposed) return false;
         if (task.State == SeriesTaskState.Running) return false;
@@ -1117,25 +1670,36 @@ public sealed class DownloadTaskManager : IDisposable
         ResetStopSignal(task);
         Diagnostics.Write($"{Diagnostics.Tag(task.Id, task.Title)} 用户点了继续下载");
 
-        var numbers = task.Episodes.Select(e => e.Number).ToHashSet();
+        // 用户勾了哪几集就下哪几集；没勾（onlyNumbers 为 null）时按任务里原有的集走
+        var numbers = onlyNumbers is not null
+            ? onlyNumbers.ToHashSet()
+            : task.Episodes.Select(e => e.Number).ToHashSet();
         if (numbers.Count == 0) return false;
 
         RunOnUi(() => { task.Message = "正在解析站点…"; RaiseChanged(); });
 
         // 1. 重新解析整部剧：m3u8 直链有效期很短，上次存下来的多半已经失效
         SiteSeries parsed;
-        try
+        if (preview is not null)
         {
-            parsed = await ParseSeriesAsync(task.PageUrl, ct).ConfigureAwait(false);
+            // 预检刚抓过一遍页面，直接复用 —— 用户挑集的那几秒里站点不会变
+            parsed = preview.Parsed;
         }
-        catch (Exception ex)
+        else
         {
-            RunOnUi(() =>
+            try
             {
-                task.Message = $"继续下载失败（{ex.Message}），可稍后重试";
-                RaiseChanged();
-            });
-            return false;
+                parsed = await ParseSeriesAsync(task.PageUrl, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                RunOnUi(() =>
+                {
+                    task.Message = $"继续下载失败（{ex.Message}），可稍后重试";
+                    RaiseChanged();
+                });
+                return false;
+            }
         }
 
         // 2. 选回同一个播放源上的同一批集
@@ -1144,6 +1708,47 @@ public sealed class DownloadTaskManager : IDisposable
         var sourceId = task.PreferredSourceId
                        ?? parsed.Sources.FirstOrDefault(s => s.Name == task.SourceName)?.Id
                        ?? parsed.Sources.FirstOrDefault()?.Id;
+
+        // 自己联网解析的这条路（「继续下载」、或老任务第一次续下）顺手把集快照补上：
+        // 否则用户只点「继续下载」的话，快照永远补不上，下次续下还是得联网。
+        if (preview is null)
+        {
+            var snapshotEpisodes = parsed.AllEpisodes
+                .Where(e => e.SourceId == sourceId)
+                .GroupBy(e => e.Number)
+                .Select(g => g.First())
+                .OrderBy(e => e.Number)
+                .ToList();
+
+            SeriesSnapshot? before = null;
+            await RunOnUiAsync(() => before = task.Snapshot).ConfigureAwait(false);
+            await SaveEpisodesSnapshotAsync(task, parsed, sourceId, snapshotEpisodes, before)
+                .ConfigureAwait(false);
+        }
+
+        // 「续下更新」：找出站点上**新出现**、任务里还没有的集（限定同一播放源）。
+        // 热播剧每天补更几集 —— 用户昨天下过、今天只想补新的那几集。
+        // 必须并入 numbers 之后再选集，下面的筛选/去重/分拨逻辑就全都复用，
+        // 不用另起一条下载路径。只勾了一部分时，没勾的集**不追加**（用户选择优先）。
+        var newOnSite = new List<SiteEpisode>();
+        if (includeNewEpisodes)
+        {
+            var known = task.Episodes.Select(e => e.Number).ToHashSet();
+            newOnSite = parsed.AllEpisodes
+                .Where(e => e.SourceId == sourceId
+                            && !known.Contains(e.Number)
+                            && (onlyNumbers is null || onlyNumbers.Contains(e.Number)))
+                .GroupBy(e => e.Number)
+                .Select(g => g.First())
+                .ToList();
+
+            if (newOnSite.Count > 0)
+            {
+                numbers.UnionWith(newOnSite.Select(e => e.Number));
+                Diagnostics.Write($"{Diagnostics.Tag(task.Id, task.Title)} " +
+                                  $"续下发现新集：{DescribeNumbers(newOnSite.Select(e => e.Number))}");
+            }
+        }
 
         var wanted = parsed.AllEpisodes
             .Where(e => e.SourceId == sourceId && numbers.Contains(e.Number))
@@ -1252,6 +1857,32 @@ public sealed class DownloadTaskManager : IDisposable
             });
         }
 
+        // 「续下更新」：把新集插进分集清单（必须在 UI 线程 —— 绑定的
+        // ObservableCollection，见 pitfalls 第 14 条），并等它真正执行完：
+        // worker 回填进度按集号在 Episodes 里找行，插晚了就丢进度。
+        if (newOnSite.Count > 0)
+        {
+            var added = newOnSite.ToList();
+            await RunOnUiAsync(() =>
+            {
+                foreach (var ep in added)
+                {
+                    task.Episodes.Add(new TaskEpisodeItem
+                    {
+                        Number = ep.Number,
+                        Title = string.IsNullOrWhiteSpace(ep.Title)
+                            ? $"第{ep.Number:00}集"
+                            : ep.Title,
+                    });
+                }
+                task.TotalEpisodes = task.Episodes.Count;
+                task.Message = $"发现新更新的 {added.Count} 集：" +
+                               $"{DescribeNumbers(added.Select(e => e.Number))}，开始续下";
+                task.RaiseTexts();
+                RaiseChanged();
+            }).ConfigureAwait(false);
+        }
+
         if (unfinished.Count == 0)
         {
             RunOnUi(() =>
@@ -1262,7 +1893,9 @@ public sealed class DownloadTaskManager : IDisposable
                 task.SucceededEpisodes = task.Episodes.Count;
                 task.FailedEpisodes = 0;
                 task.FinishedAt = DateTimeOffset.Now;
-                task.Message = $"全部 {task.Episodes.Count} 集都已在磁盘上，无需续传。";
+                task.Message = includeNewEpisodes
+                    ? $"没有发现新更新的集，已有的 {task.Episodes.Count} 集都已在磁盘上。"
+                    : $"全部 {task.Episodes.Count} 集都已在磁盘上，无需续传。";
                 task.RaiseTexts();
                 RaiseChanged();
             });
@@ -1276,10 +1909,20 @@ public sealed class DownloadTaskManager : IDisposable
         var options = BuildOptions(task);
         options.PreviousEpisodes = previous;
 
-        await StartRoundAsync(task, resumeSeries, options,
-            previous.Count > 0
-                ? $"续传 {unfinished.Count} 集（跳过已完成的 {previous.Count} 集）"
-                : $"续传 {unfinished.Count} 集").ConfigureAwait(false);
+        // 有新集时把「新增了几集」显式说出来 —— 用户只会看到进度在动，
+        // 不说"这几集是新发现的"就不知道续下到底做了什么（AGENTS：显式说出价值）。
+        var newDesc = newOnSite.Count > 0
+            ? $"（新增 {newOnSite.Count} 集：{DescribeNumbers(newOnSite.Select(e => e.Number))}）"
+            : "";
+        var startMessage = previous.Count > 0
+            ? $"续传 {unfinished.Count} 集{newDesc}，跳过已完成的 {previous.Count} 集"
+            : $"续传 {unfinished.Count} 集{newDesc}";
+
+        // 记下这一轮的集数据来源：来自本地快照时，收尾若有集失败会顺手刷新元数据
+        var usedSnapshot = preview is { Refreshed: false };
+        await RunOnUiAsync(() => task.RoundUsedSnapshot = usedSnapshot).ConfigureAwait(false);
+
+        await StartRoundAsync(task, resumeSeries, options, startMessage).ConfigureAwait(false);
         return true;
     }
 
@@ -1404,6 +2047,10 @@ public sealed class DownloadTaskManager : IDisposable
         // 入队时就把分集清单建好，用户不用等开始下载才看得到
         foreach (var ep in episodes.OrderBy(e => e.Number))
             task.Episodes.Add(new TaskEpisodeItem { Number = ep.Number, Title = ep.DisplayTitle });
+
+        // 顺手把该源上**全部集**的元数据存下来（不只是勾选的）：
+        // 以后点「续下」不必联网就能列出全部集，站点解析不了也能续下。
+        CaptureEpisodesSnapshot(task, series);
 
         task.RaiseTexts();
 
@@ -1695,6 +2342,7 @@ public sealed class DownloadTaskManager : IDisposable
                 {
                     item.State = EpisodeDownloadStatus.Completed;
                     item.StatusText = "已完成";
+                    if (!string.IsNullOrWhiteSpace(s.OutputPath)) item.OutputPath = s.OutputPath;
                 }
                 else if (s.Status == EpisodeDownloadStatus.Canceled
                          || item.State is EpisodeDownloadStatus.Downloading or EpisodeDownloadStatus.Resolving)
@@ -1739,6 +2387,12 @@ public sealed class DownloadTaskManager : IDisposable
                     continue;
                 }
 
+                // 状态、产物路径必须在这里写死，不能等引擎的最后一批进度快照：
+                // 快照走 Progress<T> 异步到达，很可能落在收尾闸门（roundFinished）
+                // 之后被整批拦掉 —— 那样行上写着「已完成」，State 却还停在
+                // Downloading、OutputPath 也是空，「继续下载/续下」就会把这集
+                // 当成没下过的再下一遍（阶段 N 自检抓到的就是这个）。
+                item.State = ep.Status;
                 item.StatusText = ep.Status switch
                 {
                     EpisodeDownloadStatus.Completed => "已完成",
@@ -1749,6 +2403,7 @@ public sealed class DownloadTaskManager : IDisposable
                 if (ep.Status == EpisodeDownloadStatus.Completed) item.Percent = 100;
                 item.Bytes = ep.OutputBytes;
                 item.Error = ep.Error;
+                if (!string.IsNullOrWhiteSpace(ep.OutputPath)) item.OutputPath = ep.OutputPath;
             }
 
             task.Report = report;
@@ -1811,6 +2466,69 @@ public sealed class DownloadTaskManager : IDisposable
                                   .Where(e => e.Status == EpisodeDownloadStatus.Failed)
                                   .Select(e => e.Episode.Number))}");
         });
+
+        // 把这一轮下好的集记进下载历史。放在 UI 回填之后、worker 线程上做：
+        // 写库是 IO，不该占用 UI 线程；而且历史记不上也不能影响下载结果。
+        RecordHistory(task, report);
+
+        // 这一轮用的是本地快照、又有集没下成 —— 很可能站点改版了（播放页地址失效），
+        // 顺手重新拉一次集元数据：用户点「重试失败集」时就能用上新地址。
+        // 拉不到就算了：原来的失败原因照实显示，不覆盖成"刷新失败"。
+        if (task.RoundUsedSnapshot && report.SucceededCount < report.Episodes.Count)
+        {
+            try
+            {
+                var refreshed = await RefreshEpisodesSnapshotAsync(task, ct).ConfigureAwait(false);
+                RunOnUi(() =>
+                {
+                    task.RoundUsedSnapshot = false;
+                    task.Message = $"{task.Message}；已重新拉取集列表（站点 {refreshed.TotalOnSite} 集），可重试失败集";
+                    RaiseChanged();
+                });
+            }
+            catch
+            {
+                // 刷新不了就保持原样
+            }
+        }
+    }
+
+    /// <summary>
+    /// 把报告里"这一轮下好了"的集记进下载历史。
+    ///
+    /// 只记 Completed 且产物路径非空的：失败/取消的集不该进历史 ——
+    /// 历史是"下过"的账，掺进没下成的集，下次补更时就会误报"曾下载过"。
+    /// </summary>
+    private void RecordHistory(SeriesTask task, SeriesDownloadReport report)
+    {
+        var history = History;
+        if (history is null or NullDownloadHistoryStore) return;
+
+        foreach (var ep in report.Episodes)
+        {
+            if (ep.Status != EpisodeDownloadStatus.Completed) continue;
+            if (string.IsNullOrWhiteSpace(ep.OutputPath)) continue;
+
+            long bytes = 0;
+            try { bytes = new FileInfo(ep.OutputPath).Length; } catch { /* 文件没了就记 0 */ }
+
+            try
+            {
+                history.Record(new DownloadHistoryEntry
+                {
+                    PageUrl = task.PageUrl,
+                    SiteName = task.SiteName,
+                    SeriesTitle = task.Title,
+                    EpisodeNumber = ep.Episode.Number,
+                    FilePath = ep.OutputPath,
+                    FileBytes = bytes,
+                });
+            }
+            catch
+            {
+                // 历史是辅助，记不上就算了（比如数据库被别的进程锁着）
+            }
+        }
     }
 
     /// <summary>
