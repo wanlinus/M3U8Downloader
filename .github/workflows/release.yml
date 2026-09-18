@@ -124,12 +124,24 @@ jobs:
           Write-Host '----- release-notes.md -----'
           Get-Content release-notes.md
 
+      # 用 runner 自带的 gh 上传（Go 客户端），不用 softprops/action-gh-release ——
+      # 后者的 HTTP 客户端等响应头有 300 秒超时，87 MB 的主包在网络稍慢时就报
+      # "Headers Timeout Error"（v1.4.2 首发就是这么失败的）。
+      # 幂等：release 已存在就补传 asset、改说明；不存在才创建。
       - name: 发布到 Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.ver.outputs.tag }}
-          name: M3U8 视频下载器 ${{ steps.ver.outputs.tag }}
-          files: dist/*.zip
-          # 说明由上一步生成；不用 generate_release_notes（它只认 PR，
-          # 而本仓库是直接往 master 提交的，生成出来是空的）
-          body_path: release-notes.md
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ steps.ver.outputs.tag }}'
+          $repo = $env:GITHUB_REPOSITORY
+          $title = "M3U8 视频下载器 $tag"
+          $assets = (Get-ChildItem dist/*.zip).FullName
+
+          gh release view "$tag" -R $repo *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload "$tag" $assets --clobber -R $repo
+            gh release edit "$tag" --title "$title" --notes-file release-notes.md -R $repo
+          } else {
+            gh release create "$tag" $assets --title "$title" --notes-file release-notes.md -R $repo
+          }

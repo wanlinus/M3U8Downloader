@@ -55,5 +55,7 @@
 
 26. **苹果 CMS 不止一种 URL 形态，详情页 ID 也未必等于播放页 ID**：`MacCmsAdapter` 起初只认 `/vodplay/{id}-{sid}-{nid}.html`（伪静态）。实测至少还有两种：原生形态 `/index.php/vod/play/id/{id}/sid/{sid}/nid/{nid}.html`（欧乐影院），以及斜杠形态 `/play/{id}/{sid}/{nid}.html`（影迷界影院）。更麻烦的是**斜杠形态的站点常常有两套编号** —— 详情页 `/t/62329.html` 是 62329，播放页却是 `/play/2337178967/…`。原先"按详情页 ID 过滤剧集链接"的写法会把本剧链接全部滤掉，最后误报"页面里既没有 player_aaaa 也没有剧集链接"。正确做法是**先收集、再投票**：优先取与详情页 ID 相同的那个，取不到就取页内出现次数最多的那个（要求至少 2 次，免得把日期型误匹配当成剧集）。
 
+27. **CI 发 Release 用 `softprops/action-gh-release` 传大包会超时**：它底层 HTTP 客户端等响应头有 300 秒上限，上传 87 MB 主包时 GitHub 端没回响应头就直接报 `Headers Timeout Error`，整个 Release 步骤失败且什么都不留。v1.4.2 首发就是这么挂的（构建、自检全绿，只挂在最后一步）。改用 runner 预装的 **`gh` CLI**（Go 客户端，无此限制），并写成幂等：release 已存在就 `upload --clobber` + `edit`，不存在才 `create` —— 重跑 CI 也不会撞出"release 已存在"的错误。
+
 ---
 
