@@ -156,7 +156,7 @@ public sealed class TaskStore {
     /// <summary>指定库文件路径 —— 自检与一次性诊断用</summary>
     public TaskStore(string filePath) : this(new SqliteDatabase(filePath)) { }
 
-    /// <summary>指定库实例（要用非默认的迁移来源时走这个）</summary>
+    /// <summary>指定库实例</summary>
     public TaskStore(SqliteDatabase database) => _store = new SqliteTaskStore(database);
 
     /// <summary>存放任务列表的目录（= 数据目录）</summary>

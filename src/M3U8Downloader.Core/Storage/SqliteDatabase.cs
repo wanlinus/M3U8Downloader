@@ -1,8 +1,4 @@
-using System.Text;
-using System.Text.Json;
 using Microsoft.Data.Sqlite;
-using M3U8Downloader.Core.Settings;
-using M3U8Downloader.Core.Tasks;
 
 namespace M3U8Downloader.Core.Storage;
 
@@ -18,7 +14,7 @@ namespace M3U8Downloader.Core.Storage;
 /// <c>e_sqlite3.dll</c>（1.9 MB）。以自包含发布的体量衡量可以接受，换来的好处是
 /// **存储实现只此一份** —— 自检能直接测到真货，而不是只测得到一个替身。
 ///
-/// 库里除业务表外还有一张 <c>meta</c>（schema 版本、迁移标记）。
+/// 库里除业务表外还有一张 <c>meta</c>（目前只存 schema 版本）。
 ///
 /// 所有方法都吞异常：存储坏了不该让程序起不来 —— 设置读不出就用默认值、
 /// 历史记不上就少一条账、任务读不回就是空列表，程序照常跑。
@@ -34,21 +30,9 @@ public sealed class SqliteDatabase {
     public static SqliteDatabase Default => Cached.Value;
 
     private readonly string _connectionString;
-    private readonly LegacySources _legacy;
 
-    /// <summary>
-    /// 旧版三个文件的来源。默认就是数据目录里那三个；
-    /// 自检会传临时目录的路径，免得验证"迁移"时把用户真实的数据搬走。
-    /// （构造参数而不是属性：建表之后就紧跟着迁移，属性初始化器赋值太晚了。）
-    /// </summary>
-    public sealed record LegacySources(string HistoryFile, string SettingsFile, string TasksFile) {
-        public static LegacySources FromAppPaths() =>
-            new(AppPaths.LegacyHistoryFile, AppPaths.SettingsFile, AppPaths.TasksFile);
-    }
-
-    public SqliteDatabase(string filePath, LegacySources? legacy = null) {
+    public SqliteDatabase(string filePath) {
         FilePath = filePath;
-        _legacy = legacy ?? LegacySources.FromAppPaths();
 
         // 目录建不出来也别抛：每个操作自己都会吞异常，退化成"存不上"而已
         try {
@@ -141,105 +125,6 @@ public sealed class SqliteDatabase {
             cmd.ExecuteNonQuery();
         } catch {
             // 库建不起来（磁盘满、目录无权限）就退化成"什么都存不上"，程序照常跑
-        }
-
-        MigrateLegacyFiles();
-    }
-
-    /// <summary>
-    /// 从旧版本的三个文件把数据搬进库里，**只在库里还没有对应数据时搬**。
-    ///
-    /// 搬完把旧文件改名成 <c>*.migrated</c> 而不是删掉：万一搬漏了、搬错了，
-    /// 用户手上还有原件（他自己看懂了就能删）。搬失败则原样留着，下次启动还会再试。
-    /// </summary>
-    private void MigrateLegacyFiles() {
-        MigrateLegacyHistory();
-        MigrateLegacySettings();
-        MigrateLegacyTasks();
-    }
-
-    /// <summary>旧版 tasks.json → 库里的四张任务表</summary>
-    private void MigrateLegacyTasks() {
-        var legacy = _legacy.TasksFile;
-        if (!File.Exists(legacy)) return;
-        if (Count("tasks") > 0) return;          // 库里已经有任务了，别覆盖
-
-        try {
-            var json = File.ReadAllText(legacy, Encoding.UTF8);
-            var records = string.IsNullOrWhiteSpace(json)
-                ? new List<SeriesTaskRecord>()
-                : JsonSerializer.Deserialize<List<SeriesTaskRecord>>(json);
-
-            // 空列表也算"迁移完了"（用户本来就没有任务），直接把文件留档
-            if (records is { Count: > 0 } && !new SqliteTaskStore(this).Save(records)) return;
-
-            File.Move(legacy, legacy + ".migrated", overwrite: true);
-        } catch {
-            // JSON 坏了：原样留着，下次启动再试
-        }
-    }
-
-    /// <summary>旧版 settings.json → 库里的 settings 表</summary>
-    private void MigrateLegacySettings() {
-        var legacy = _legacy.SettingsFile;
-        if (!File.Exists(legacy)) return;
-        if (Count("settings") > 0) return;       // 库里已经有设置了，别覆盖
-
-        try {
-            var json = File.ReadAllText(legacy, Encoding.UTF8);
-            var settings = string.IsNullOrWhiteSpace(json)
-                ? new AppSettings()
-                : JsonSerializer.Deserialize<AppSettings>(json);
-
-            // 存不上就别改名，下次启动再来过
-            if (settings is not null && !new SqliteSettingsStore(this).Save(settings)) return;
-
-            File.Move(legacy, legacy + ".migrated", overwrite: true);
-        } catch {
-            // 文件读不了 / JSON 坏了：原样留着，下次启动再试
-        }
-    }
-
-    /// <summary>旧版独立历史库（downloads.db）→ 库里的 downloads 表</summary>
-    private void MigrateLegacyHistory() {
-        var legacy = _legacy.HistoryFile;
-        if (!File.Exists(legacy)) return;
-        if (Count("downloads") > 0) return;      // 已经有记录了，别覆盖
-
-        try {
-            using (var connection = Open()) {
-                using var cmd = connection.CreateCommand();
-
-                // 直接让 SQLite 自己搬：ATTACH 旧库再 INSERT ... SELECT，不经过 C# 内存
-                cmd.CommandText = """
-                    ATTACH DATABASE $legacy AS legacy;
-                    INSERT OR IGNORE INTO downloads
-                        (page_url, episode_number, site_name, series_title, file_path, file_bytes, downloaded_at)
-                    SELECT page_url, episode_number, site_name, series_title, file_path, file_bytes, downloaded_at
-                    FROM legacy.downloads;
-                    DETACH DATABASE legacy;
-                    """;
-                cmd.Parameters.AddWithValue("$legacy", legacy);
-                cmd.ExecuteNonQuery();
-            }
-
-            // 改名必须在**连接释放之后**：还在 using 里的话，ATTACH 过的库文件仍被占着，
-            // File.Move 会抛 IOException 被下面的 catch 吞掉 —— 数据搬进来了、旧文件却没走，
-            // 下次启动还会再搬一遍（自检阶段 Q 抓到过这个）。
-            File.Move(legacy, legacy + ".migrated", overwrite: true);
-        } catch {
-            // 旧库损坏 / 没有 downloads 表：原样留着，下次启动再试
-        }
-    }
-
-    private long Count(string table) {
-        try {
-            using var connection = Open();
-            using var cmd = connection.CreateCommand();
-            cmd.CommandText = $"SELECT COUNT(*) FROM {table};";
-            return Convert.ToInt64(cmd.ExecuteScalar() ?? 0L);
-        } catch {
-            return 0;
         }
     }
 

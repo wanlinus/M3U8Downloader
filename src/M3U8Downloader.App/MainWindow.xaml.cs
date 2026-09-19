@@ -23,9 +23,6 @@ public sealed partial class MainWindow : Window {
     private readonly DownloadTaskManager _taskManager;
     private readonly TaskListViewModel _tasks;
 
-    /// <summary>启动时从旧数据目录搬过来的文件（非空时给用户一句提示）</summary>
-    private readonly string? _migratedData;
-
     /// <summary>
     /// 点窗口右上角的关闭时是否只是隐藏到托盘（来自设置）。
     /// 托盘图标起不来时 App 会把它置成 false —— 免得窗口藏起来又找不回来。
@@ -33,17 +30,8 @@ public sealed partial class MainWindow : Window {
     public bool MinimizeToTrayOnClose { get; set; } = true;
 
     public MainWindow() {
-        // 数据目录（程序目录\data\，不可写时退回 %APPDATA%）要在**任何东西读盘之前**定下来：
-        // 并把旧位置的设置/任务/历史搬过来 —— 老用户升级后不会因为换了目录就"全丢了"。
+        // 数据目录（程序目录\data\，不可写时退回 %APPDATA%）要在**任何东西读盘之前**定下来。
         // 必须在 InitializeComponent 之前：界面构造里就会读设置。
-        try {
-            var moved = AppPaths.MigrateLegacyData();
-            if (moved.Count > 0)
-                _migratedData = string.Join("、", moved);
-        } catch {
-            // 迁移失败不影响启动，只是旧数据留在原处
-        }
-
         InitializeComponent();
 
         // 标题栏和界面顶部都带上版本号：反馈问题时用户一眼就能报出用的是哪一版
@@ -55,8 +43,8 @@ public sealed partial class MainWindow : Window {
         try { AppWindow.Resize(new SizeInt32(1180, 840)); } catch { }
 
         // 任务状态是从后台线程改的，必须封送回 UI 线程，否则界面不会刷新（表现为「卡在下载中」）
-        // store：任务列表落盘到 %APPDATA%\M3U8Downloader\tasks.json，重开程序能接着下
-        // 诊断日志：把「哪一轮领到了哪几集、何时结束」写进 %APPDATA%\M3U8Downloader\logs\，
+        // store：任务列表落进数据目录里的统一库 m3u8.db，重开程序能接着下
+        // 诊断日志：把「哪一轮领到了哪几集、何时结束」写进数据目录下的 logs\，
         //           排查「暂停了还在下」「继续下载停不下来」这类问题时就靠它
         _taskManager = new DownloadTaskManager(null, a => DispatcherQueue.TryEnqueue(() => a()), new TaskStore()) {
             Diagnostics = TaskDiagnostics.Create("tasks"),
@@ -109,19 +97,11 @@ public sealed partial class MainWindow : Window {
     /// 已完成的任务只恢复显示，不会重新下载。
     /// </summary>
     private async void RestorePreviousTasks() {
-        // 数据是从旧位置搬过来的 —— 一并说出来，免得用户以为数据丢了
-        var migration = _migratedData is { Length: > 0 }
-            ? $"；数据目录已改到程序目录下的 data\\（从旧位置搬来了 {_migratedData}）"
-            : "";
-
         try {
             var count = await _taskManager.RestoreAsync();
-            if (count == 0) {
-                if (migration.Length > 0) _tasks.SetNotice(migration.TrimStart('；'));
-                return;
-            }
+            if (count == 0) return;
 
-            _tasks.SetNotice($"已恢复上次的 {count} 个任务；没下完的会接着下（已完成的集不会重下）{migration}");
+            _tasks.SetNotice($"已恢复上次的 {count} 个任务；没下完的会接着下（已完成的集不会重下）");
             ShowTasksPanel();
         } catch (Exception ex) {
             _tasks.SetNotice("恢复上次任务失败：" + ex.Message);

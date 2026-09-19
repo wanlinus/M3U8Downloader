@@ -53,7 +53,7 @@ M3U8Downloader.Core              内核 + 存储（唯一第三方依赖：Micro
 ## 存储（统一库）
 
 **设置、任务列表、下载历史全在一个 SQLite 库里：`data\m3u8.db`**（路径见 `AppPaths.DatabaseFile`）。
-实现在 `Core/Storage/`：`SqliteDatabase`（连接 + 建表 + 迁移）、`SqliteSettingsStore`、
+实现在 `Core/Storage/`：`SqliteDatabase`（连接 + 建表）、`SqliteSettingsStore`、
 `SqliteTaskStore`、`SqliteDownloadHistory`。
 
 ```
@@ -63,7 +63,7 @@ tasks               任务本体，一个任务一行
 task_episodes       任务里每一集一行
 task_snapshots      站点快照，一个任务一行
 snapshot_episodes   快照里每一集一行（站点上全部集）
-meta                schema 版本、迁移标记
+meta                schema 版本
 ```
 
 **为什么允许 Core 引 SQLite（这条约定是改过的，别照旧文档写）**：
@@ -87,17 +87,10 @@ meta                schema 版本、迁移标记
 - 动态 key 的小字典（快照里的请求头）直接存一列 JSON，不单独建表。
 - 需要顺序的东西（任务列表）存 `sort_order`，读回来按它排。
 
-**旧文件迁移**（`SqliteDatabase.MigrateLegacyFiles`，构造库的时候就地跑）：
-
-- 只在**库里还没有对应数据**时搬；搬完把旧文件改名成 `*.migrated` 留档，**绝不删除**；
-- 搬失败（旧库损坏、JSON 坏了、写不进去）就原样留着，下次启动再试；
-- 迁移来源是可以注入的（`SqliteDatabase.LegacySources`）—— **自检必须传临时目录**，
-  否则验证"迁移"会把用户真实的数据搬走；
-- `AppPaths.MigrateLegacyData()`（`%APPDATA%` → `data\`）在**库已存在时跳过那三个文件**：
-  库是权威，而旧文件在迁移后本来就不在 data\ 里了，不判断就会每次启动都抄一份废文件回来。
-
-自检的**阶段 Q** 覆盖这一整块（历史 upsert/销账、设置往返、任务往返含快照、
-三种旧文件的迁移与"非空不搬"），改存储一定要跑它。
+**没有旧文件迁移**：早先版本把三个文件合并进这个库时写过迁移逻辑，后来删掉了
+（个人项目，没有别的用户要照顾，也省得每次改 schema 都要照顾旧文件格式）。
+所以库不存在时就是一个全新的空库；数据目录里如果还留着
+`settings.json` / `tasks.json` / `downloads.db`，程序**不会读它们**。
 
 ## 常用命令
 
@@ -171,9 +164,9 @@ dotnet format whitespace <项目或解决方案>
 - **数据路径一律走 `AppPaths`，不要自己拼 `%APPDATA%`**。数据目录优先程序目录下的
   `data\`（便携：拷走整个文件夹即带走全部数据），不可写时退回 `%APPDATA%\M3U8Downloader\`。
   散着拼路径的后果是数据被劈成两半：便携版在程序目录、回退时又在用户目录，
-  用户拷走文件夹却发现任务没跟过去。新增任何需要落盘的东西，都在 `AppPaths` 里加一个属性；
-  只有 `m3u8.db` 一个文件是常态，另几个 `*.json` / `downloads.db` 是**旧版本遗留**
-  （迁移来源，见「存储」一节）。
+  用户拷走文件夹却发现任务没跟过去。新增任何需要落盘的东西，都在 `AppPaths` 里加一个属性。
+  数据目录里只有 `m3u8.db` 与 `logs\` 是程序在用的；如果还看到
+  `settings.json` / `tasks.json` / `downloads.db`，那是旧版本遗留，程序不读。
 - **广告识别宁可不跳也不能误删正片**。判断规则的门槛设得保守，
   任何一条不满足就整条放弃；新增规则时同样要留"反例"自检。
 - **做了对用户有价值的事就要显式说出来**。比如过滤掉广告后，任务卡片与完成弹窗

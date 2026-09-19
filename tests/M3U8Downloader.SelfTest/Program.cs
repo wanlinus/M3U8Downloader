@@ -2,7 +2,6 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
-using Microsoft.Data.Sqlite;
 using M3U8Downloader.Core;
 using M3U8Downloader.Core.Downloads;
 using M3U8Downloader.Core.Settings;
@@ -2012,10 +2011,9 @@ Console.WriteLine($"  站点快照: {(okSnapshot ? "✔" : "✘")}");
 //
 // 存储实现搬进 Core 之后，自检终于能直接测真货 —— 以前它住在界面层，
 // 自检只碰得到 MemoryHistory，SQL 语句得靠一个一次性的 _diag 项目单独兜。
-// 这里连"旧 downloads.db 搬进新库"这条迁移路径一起守。
 
 Console.WriteLine();
-Console.WriteLine("阶段 Q：统一库（真 SQLite：下载历史 + 旧库迁移）");
+Console.WriteLine("阶段 Q：统一库（真 SQLite：下载历史 + 设置 + 任务）");
 
 var dbDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-db-" + Guid.NewGuid().ToString("N")[..6]);
 Directory.CreateDirectory(dbDir);
@@ -2023,12 +2021,8 @@ Directory.CreateDirectory(dbDir);
 const string urlQ = "https://example.com/vodplay/9-1-1.html";
 const string urlR = "https://example.com/vodplay/8-1-1.html";
 
-// 迁移来源全指到临时目录：自检绝不能碰用户真实的 data\
-SqliteDatabase.LegacySources Legacy(string dir, string historyName = "downloads.db") =>
-    new(Path.Combine(dir, historyName), Path.Combine(dir, "settings.json"), Path.Combine(dir, "tasks.json"));
-
 var dbPath = Path.Combine(dbDir, "m3u8.db");
-var historyQ = new SqliteDownloadHistory(new SqliteDatabase(dbPath, Legacy(dbDir)));
+var historyQ = new SqliteDownloadHistory(new SqliteDatabase(dbPath));
 
 for (var n = 1; n <= 3; n++) {
     historyQ.Record(new DownloadHistoryEntry {
@@ -2078,45 +2072,9 @@ Console.WriteLine($"  销账: 本剧 {qForget} 条（应 0）、另一部剧 {qO
 var qReopened = new SqliteDownloadHistory(dbPath).FindBySeries(urlR).Count;
 Console.WriteLine($"  重开实例后另一部剧仍 {qReopened} 条（应 1）");
 
-// 造一个旧版 downloads.db（旧 schema、只有 downloads 一张表）
-var legacyPath = Path.Combine(dbDir, "downloads.db");
-WriteLegacyDatabase(legacyPath);
-
-// 空库 + 存在旧库 → 应当自动搬进来，并把旧文件改名留档
-var migratePath = Path.Combine(dbDir, "migrate.db");
-var migrated = new SqliteDownloadHistory(new SqliteDatabase(migratePath, Legacy(dbDir)))
-    .FindBySeries("https://legacy.example.com/vodplay/1-1-1.html");
-var legacyRenamed = File.Exists(legacyPath + ".migrated") && !File.Exists(legacyPath);
-var legacyRow = migrated.SingleOrDefault();
-Console.WriteLine($"  旧库迁移: 搬进 {migrated.Count} 条（应 1）→ " +
-                  $"{legacyRow?.SeriesTitle} 第{legacyRow?.EpisodeNumber}集 {legacyRow?.FileBytes}B；" +
-                  $"旧文件已改名留档 {legacyRenamed}");
-
-// 库里已经有记录时不再搬：否则会把用户正在用的数据冲掉。
-// 顺序要这样摆 —— 先建库并写进记录（此刻还没有旧文件，不会触发迁移），
-// 再放一个旧文件进去，然后重开：库里非空，那个旧文件就该原样留着。
-var busyPath = Path.Combine(dbDir, "busy.db");
-var busy = new SqliteDownloadHistory(new SqliteDatabase(busyPath, Legacy(dbDir, "downloads2.db")));
-busy.Record(new DownloadHistoryEntry {
-    PageUrl = "https://fresh.example.com/vodplay/2-1-1.html",
-    SiteName = "新站",
-    SeriesTitle = "新剧",
-    EpisodeNumber = 1,
-    FileBytes = 7,
-});
-
-var secondLegacy = Path.Combine(dbDir, "downloads2.db");
-WriteLegacyDatabase(secondLegacy);
-
-// 再开一次（模拟下次启动）：库里已有记录 → 不搬，旧文件也原样留着
-var busyAgain = new SqliteDownloadHistory(new SqliteDatabase(busyPath, Legacy(dbDir, "downloads2.db")));
-var busyCount = busyAgain.All().Count;
-var busyLegacyKept = File.Exists(secondLegacy);
-Console.WriteLine($"  库里有记录时不再搬: All {busyCount} 条（应 1）、旧文件原样留着 {busyLegacyKept}");
-
 // 设置：写一轮非默认值再读回来（一行一列一项，缺项/空值退回默认值）
 var settingsPath = Path.Combine(dbDir, "settings.db");
-var qDefaults = new SqliteSettingsStore(new SqliteDatabase(settingsPath, Legacy(dbDir))).Load();
+var qDefaults = new SqliteSettingsStore(new SqliteDatabase(settingsPath)).Load();
 var qWritten = new AppSettings {
     FfmpegPath = @"D:\tools\ffmpeg.exe",
     DefaultOutputDirectory = @"D:\视频",
@@ -2131,9 +2089,9 @@ var qWritten = new AppSettings {
     ProxyUrl = "http://127.0.0.1:7897",
     CheckUpdateOnStartup = true,
 };
-var qSaved = new SqliteSettingsStore(new SqliteDatabase(settingsPath, Legacy(dbDir))).Save(qWritten);
+var qSaved = new SqliteSettingsStore(new SqliteDatabase(settingsPath)).Save(qWritten);
 // 重开实例再读：走的是真库不是内存
-var qReadBack = new SqliteSettingsStore(new SqliteDatabase(settingsPath, Legacy(dbDir))).Load();
+var qReadBack = new SqliteSettingsStore(new SqliteDatabase(settingsPath)).Load();
 
 var qDefaultsOk = qDefaults.EpisodeConcurrency == 2 && qDefaults.SegmentConcurrency == 16
                   && qDefaults.AutoSkipInvalidSegments && qDefaults.SeriesSubdirectory
@@ -2151,27 +2109,6 @@ var qRoundTrip = qSaved
                  && qReadBack.ProxyEnabled && qReadBack.ProxyUrl == "http://127.0.0.1:7897"
                  && qReadBack.CheckUpdateOnStartup;
 Console.WriteLine($"  设置写读往返: 空库读回默认值 {qDefaultsOk}；写 12 项后读回一致 {qRoundTrip}");
-
-// 旧 settings.json 迁移
-var settingsMigDir = Path.Combine(dbDir, "settingsmig");
-Directory.CreateDirectory(settingsMigDir);
-var legacySettings = Path.Combine(settingsMigDir, "settings.json");
-File.WriteAllText(legacySettings,
-    """{"FfmpegPath":"D:\\old\\ffmpeg.exe","EpisodeConcurrency":7,"ProxyUrl":"http://127.0.0.1:1080","ProxyEnabled":true}""",
-    new UTF8Encoding(false));
-
-var qMigratedSettings = new SqliteSettingsStore(
-    new SqliteDatabase(Path.Combine(settingsMigDir, "m3u8.db"), Legacy(settingsMigDir))).Load();
-var qSettingsRenamed = File.Exists(legacySettings + ".migrated") && !File.Exists(legacySettings);
-var qSettingsMigrated = qMigratedSettings.FfmpegPath == @"D:\old\ffmpeg.exe"
-                        && qMigratedSettings.EpisodeConcurrency == 7
-                        && qMigratedSettings.ProxyEnabled
-                        && qMigratedSettings.ProxyUrl == "http://127.0.0.1:1080"
-                        && qMigratedSettings.SegmentConcurrency == 16    // 文件里没写的项 → 默认值
-                        && qSettingsRenamed;
-Console.WriteLine($"  旧 settings.json 迁移: ffmpeg={qMigratedSettings.FfmpegPath}、" +
-                  $"并发={qMigratedSettings.EpisodeConcurrency}、代理={qMigratedSettings.ProxyUrl}、" +
-                  $"旧文件已改名 {qSettingsRenamed}");
 
 // 任务列表：带快照的和不带快照的各一个，存进去再读回来（四张表拆开存、组装回来）
 var taskDbPath = Path.Combine(dbDir, "tasks.db");
@@ -2228,8 +2165,8 @@ var qTaskIn = new List<SeriesTaskRecord>
     },
 };
 
-var qTaskSaved = new SqliteTaskStore(new SqliteDatabase(taskDbPath, Legacy(dbDir))).Save(qTaskIn);
-var qTaskOut = new SqliteTaskStore(new SqliteDatabase(taskDbPath, Legacy(dbDir))).Load();
+var qTaskSaved = new SqliteTaskStore(new SqliteDatabase(taskDbPath)).Save(qTaskIn);
+var qTaskOut = new SqliteTaskStore(new SqliteDatabase(taskDbPath)).Load();
 var qT1 = qTaskOut.FirstOrDefault(r => r.Id == "t1");
 var qT2 = qTaskOut.FirstOrDefault(r => r.Id == "t2");
 
@@ -2254,43 +2191,10 @@ var qTasksRoundTrip = qTaskSaved
 Console.WriteLine($"  任务存取往返: 存 2 个（1 个带 3 集快照）读回 {qTaskOut.Count} 个、" +
                   $"第一个 {qT1?.Episodes.Count} 集/快照 {qT1?.Snapshot?.Episodes.Count} 集 → {qTasksRoundTrip}");
 
-// 旧 tasks.json 迁移
-var tasksMigDir = Path.Combine(dbDir, "tasksmig");
-Directory.CreateDirectory(tasksMigDir);
-var legacyTasks = Path.Combine(tasksMigDir, "tasks.json");
-File.WriteAllText(legacyTasks, """
-    [{"Id":"m1","Title":"老任务","SiteName":"老站","PageUrl":"https://old.example.com/1-1-1.html",
-      "OutputDirectory":"D:\\视频","State":"Paused","Percent":42.5,"SkippedAdSegments":2,
-      "CreatedAt":"2026-01-02T03:04:05+08:00",
-      "Episodes":[{"Number":1,"Title":"第01集","Status":"Completed","Percent":100,"Bytes":999,
-                   "OutputPath":"D:\\视频\\老任务.01.mp4"}],
-      "Snapshot":{"Kind":"Generic","SiteName":"老站","PageUrl":"https://old.example.com/1-1-1.html",
-                  "SeriesId":"9","Title":"老任务","Headers":{"Referer":"https://old.example.com/"},
-                  "SourceId":1,"CapturedAt":"2026-01-02T03:04:05+08:00",
-                  "Episodes":[{"Number":1,"Title":"第01集","PageUrl":"https://old.example.com/1-1-1.html",
-                               "Key":"k1","SourceId":1}]}}]
-    """, new UTF8Encoding(false));
-
-var qMigratedTasks = new SqliteTaskStore(
-    new SqliteDatabase(Path.Combine(tasksMigDir, "m3u8.db"), Legacy(tasksMigDir))).Load();
-var qTasksRenamed = File.Exists(legacyTasks + ".migrated") && !File.Exists(legacyTasks);
-var qOldTask = qMigratedTasks.FirstOrDefault();
-var qTasksMigrated = qMigratedTasks.Count == 1
-                     && qOldTask is { Title: "老任务", State: "Paused", Percent: 42.5, SkippedAdSegments: 2 }
-                     && qOldTask.Episodes.Count == 1
-                     && qOldTask.Episodes[0].OutputPath is not null
-                     && qOldTask.Snapshot is { SeriesId: "9", SourceId: 1 }
-                     && qOldTask.Snapshot.Headers["Referer"] == "https://old.example.com/"
-                     && qOldTask.Snapshot.Episodes.Count == 1
-                     && qTasksRenamed;
-Console.WriteLine($"  旧 tasks.json 迁移: 读回 {qMigratedTasks.Count} 个任务（{qOldTask?.Title}、" +
-                  $"{qOldTask?.Episodes.Count} 集、快照 {qOldTask?.Snapshot?.Episodes.Count} 集）、" +
-                  $"旧文件已改名 {qTasksRenamed}");
-
 // 记账规则（DownloadHistoryRecorder：只记「完成 + 有产物路径」的集）：
 // 只有「已完成 + 产物路径非空」的集进历史；失败的不记，完成了却没产物路径的也不记
 var recorderDbPath = Path.Combine(dbDir, "recorder.db");
-var recorderHistory = new SqliteDownloadHistory(new SqliteDatabase(recorderDbPath, Legacy(dbDir)));
+var recorderHistory = new SqliteDownloadHistory(new SqliteDatabase(recorderDbPath));
 var productFile = Path.Combine(dbDir, "记账剧.01.mp4");
 File.WriteAllText(productFile, new string('x', 2048));
 
@@ -2328,12 +2232,8 @@ var okUnified = qUpsert.Count == 3
                 && qOther == 1 && qAll == 4
                 && qForget == 0 && qOtherAfter == 1 && qAllAfter == 1
                 && qReopened == 1
-                && migrated.Count == 1
-                && legacyRow is { EpisodeNumber: 7, FileBytes: 12345, SeriesTitle: "老剧", SiteName: "老站" }
-                && legacyRenamed
-                && busyCount == 1 && busyLegacyKept
-                && qDefaultsOk && qRoundTrip && qSettingsMigrated
-                && qTasksRoundTrip && qTasksMigrated && qRecorderRule;
+                && qDefaultsOk && qRoundTrip
+                && qTasksRoundTrip && qRecorderRule;
 Console.WriteLine($"  统一库: {(okUnified ? "✔" : "✘")}");
 
 Console.WriteLine();
@@ -2358,37 +2258,6 @@ listener.Stop();
 return ok ? 0 : 1;
 
 // ---------------------------------------------------------------- 辅助
-
-/// <summary>
-/// 造一个**旧版**的独立历史库（只有 downloads 一张表），用来验证迁移。
-/// 表结构照着旧版本写死 —— 迁移的输入就是那份历史文件，不能跟着新代码变。
-///
-/// 连接串必须带 <c>Pooling=False</c>：默认池化会把连接收进池里，
-/// **句柄不释放**，于是产品代码那步 <c>File.Move</c>（迁移完把旧文件改名留档）
-/// 永远失败，而异常被吞掉 —— 现象是"数据搬进来了、旧文件还在"。
-/// 这个坑自己踩了两次（另一次是 _diag 诊断里造旧库）。
-/// </summary>
-static void WriteLegacyDatabase(string path) {
-    using var connection = new SqliteConnection($"Data Source={path};Pooling=False");
-    connection.Open();
-    using var cmd = connection.CreateCommand();
-    cmd.CommandText = """
-        CREATE TABLE downloads (
-            page_url        TEXT    NOT NULL,
-            episode_number  INTEGER NOT NULL,
-            site_name       TEXT    NOT NULL DEFAULT '',
-            series_title    TEXT    NOT NULL DEFAULT '',
-            file_path       TEXT,
-            file_bytes      INTEGER NOT NULL DEFAULT 0,
-            downloaded_at   TEXT    NOT NULL,
-            PRIMARY KEY (page_url, episode_number)
-        );
-        INSERT INTO downloads VALUES
-            ('https://legacy.example.com/vodplay/1-1-1.html', 7, '老站', '老剧',
-             'D:\x\老剧.07.mp4', 12345, '2026-01-02T03:04:05+08:00');
-        """;
-    cmd.ExecuteNonQuery();
-}
 
 /// <summary>轮询等待条件成立，超时就抛异常（自检失败要立刻可见）</summary>
 static async Task WaitUntilAsync(Func<Task<bool>> condition, TimeSpan timeout, string what) {

@@ -23,7 +23,7 @@ M3U8Downloader/
 │   │   ├── AppInfo.cs                # 版本/版权/许可证/第三方声明
 │   │   ├── Settings/                 # 设置模型（落盘在统一库里）
 │   │   ├── Storage/                  # ★统一库：设置 / 任务 / 历史的 SQLite 实现
-│   │   │   ├── SqliteDatabase.cs     # 连接、建表、旧文件迁移
+│   │   │   ├── SqliteDatabase.cs     # 连接、建表、schema 版本
 │   │   │   ├── SqliteSettingsStore.cs# settings 表（一行一列一项）
 │   │   │   ├── SqliteTaskStore.cs    # tasks / task_episodes / 快照 四张表
 │   │   │   └── SqliteDownloadHistory.cs # downloads 表（upsert + 销账）
@@ -243,9 +243,9 @@ MP4 读 `moov → mvhd` 的 duration/timescale。两边都读不出来时会明�
 | 诊断日志 | `<数据目录>\logs\` | Core（每次启动一个文件） |
 
 三样数据**在同一个库里**，对应这些表：`settings`、`tasks` + `task_episodes`、
-`task_snapshots` + `snapshot_episodes`、`downloads`，另有 `meta` 存 schema 版本与迁移标记。
+`task_snapshots` + `snapshot_episodes`、`downloads`，另有 `meta` 存 schema 版本。
 
-- `SqliteDatabase` —— 连接（`Pooling=false`、每次开连接设 `busy_timeout=3000`）、建表、旧文件迁移；
+- `SqliteDatabase` —— 连接（`Pooling=false`、每次开连接设 `busy_timeout=3000`）、建表；
 - `SqliteSettingsStore` —— **一行一列一项**（不是 key-value），读的时候缺列/为 NULL 一律退回
   代码里的默认值，所以加设置项不需要写迁移；
 - `SqliteTaskStore` —— 任务 / 集 / 快照拆成四张表，`Save` 是"整表重写放一个事务"
@@ -256,7 +256,7 @@ MP4 读 `moov → mvhd` 的 duration/timescale。两边都读不出来时会明�
   账要留着解释"文件已不在"。
 
 早先这三样是**三个文件**（`settings.json` / `tasks.json` / `downloads.db`），只有历史那份用了
-SQLite。合并的理由、代价与迁移方式写在 `AGENTS.md` 的「存储」一节；一句话版本是：
+SQLite。合并的理由与代价写在 `AGENTS.md` 的「存储」一节；一句话版本是：
 **存储实现只此一份，自检能直接测到真货**（以前实现挂在界面层，自检只碰得到替身，
 SQL 得另起 `_diag` 项目兜），代价是三个入口各多带一个 `e_sqlite3.dll`（1.9 MB）。
 
@@ -268,19 +268,16 @@ SQL 得另起 `_diag` 项目兜），代价是三个入口各多带一个 `e_sql
 `<数据目录>` 由 `Core/AppPaths.cs` 统一决定，**优先程序目录下的 `data\`**：本程序是
 "解压即用"的便携形态，整个文件夹拷到别的机器或 U 盘时，任务、设置、历史一起跟过去。
 程序目录不可写时（`Program Files`、只读介质、被策略锁住）自动退回
-`%APPDATA%\M3U8Downloader\`，旧位置的数据在首次启动时由 `MigrateLegacyData()` 复制过来
-（是复制不是移动，搬错了旧的那份还在）—— 但**库已经存在时那三个旧文件会整个跳过**：
-库是权威，而旧文件在迁移后已经不在 `data\` 里了（改名成了 `.migrated`），
-不判断就会每次启动都抄一份没人读的废文件回来。
+`%APPDATA%\M3U8Downloader\`。
 
 两个要点：**探测结果只算一次并缓存**（`Lazy`）—— 设置、任务、历史必须落在同一个目录，
 各自探测一次一旦出现分歧，就会变成"设置读到了 A、历史写到 B"；**能不能用要真写一次才知道**
 —— 只读介质上目录可能早就存在，只判断 `Directory.Exists` 是不够的。
 
-**旧文件的去向**：`SqliteDatabase` 建表之后就检查迁移 —— 库里没有对应数据才搬，
-搬完把旧文件改名成 `*.migrated` **留档不删**；搬失败（旧库损坏、JSON 坏了）原样留着，
-下次启动再试。迁移来源是可注入的（`SqliteDatabase.LegacySources`），
-**自检必须传临时目录**，否则验证迁移会把用户真实的数据搬走。
+**没有旧文件迁移**：合并进统一库时写过一版"三个文件 → 一个库"的迁移逻辑，后来删掉了
+（个人项目，没有别的用户要照顾，也省得每次改 schema 都要照顾旧文件格式）。
+所以库不存在就得到一个全新的空库；`data\` 里如果还留着 `settings.json` / `tasks.json` /
+`downloads.db`，程序不会读它们。
 
 `ffmpeg\` 不在这里：它有 300MB 量级、且属于可再下载的第三方二进制，沿用
 `FfmpegLocator` 自己的"程序目录优先、`%LOCALAPPDATA%` 回退"逻辑（用 Local 而非 Roaming，
