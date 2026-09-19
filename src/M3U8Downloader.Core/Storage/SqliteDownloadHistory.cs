@@ -90,17 +90,16 @@ public sealed class SqliteDownloadHistory : IDownloadHistoryStore {
             configure?.Invoke(cmd);
 
             using var reader = cmd.ExecuteReader();
+            var row = new SqliteRow(reader);       // 按列名读，表里加列/换顺序都不会错位
             while (reader.Read()) {
                 list.Add(new DownloadHistoryEntry {
-                    PageUrl = reader.GetString(0),
-                    EpisodeNumber = reader.GetInt32(1),
-                    SiteName = reader.GetString(2),
-                    SeriesTitle = reader.GetString(3),
-                    FilePath = reader.IsDBNull(4) ? null : reader.GetString(4),
-                    FileBytes = reader.GetInt64(5),
-                    DownloadedAt = DateTimeOffset.TryParse(reader.GetString(6), out var at)
-                        ? at
-                        : DateTimeOffset.MinValue,
+                    PageUrl = row.Str("page_url"),
+                    EpisodeNumber = row.Int("episode_number"),
+                    SiteName = row.Str("site_name"),
+                    SeriesTitle = row.Str("series_title"),
+                    FilePath = row.StrOrNull("file_path"),
+                    FileBytes = row.Long("file_bytes"),
+                    DownloadedAt = row.At("downloaded_at", DateTimeOffset.MinValue),
                 });
             }
         } catch {

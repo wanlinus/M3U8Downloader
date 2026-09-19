@@ -46,30 +46,31 @@ public sealed class SqliteTaskStore {
             using (var cmd = connection.CreateCommand()) {
                 cmd.CommandText = TaskSelect;
                 using var reader = cmd.ExecuteReader();
+                var row = new SqliteRow(reader);        // 按列名读：表里加列/换顺序都不会错位
                 while (reader.Read()) {
                     var record = new SeriesTaskRecord {
-                        Id = reader.GetString(0),
-                        Title = reader.GetString(2),
-                        SiteName = reader.GetString(3),
-                        PageUrl = reader.GetString(4),
-                        OutputDirectory = reader.GetString(5),
-                        ResolvedDirectory = OptString(reader, 6),
-                        SourceName = OptString(reader, 7),
-                        PreferredSourceId = OptInt(reader, 8),
-                        State = reader.GetString(9),
-                        Percent = reader.GetDouble(10),
-                        DownloadedBytes = reader.GetInt64(11),
-                        ReportPath = OptString(reader, 12),
-                        Message = OptString(reader, 13),
-                        SkippedAdSegments = (int)reader.GetInt64(14),
-                        CreatedAt = At(reader, 15, DateTimeOffset.Now),
-                        FinishedAt = OptAt(reader, 16),
-                        EpisodeConcurrency = (int)reader.GetInt64(17),
-                        SegmentConcurrency = (int)reader.GetInt64(18),
-                        PreferHeight = OptInt(reader, 19),
-                        FfmpegPath = OptString(reader, 20),
-                        FileNamePattern = reader.GetString(21),
-                        SeriesSubdirectory = reader.GetInt64(22) != 0,
+                        Id = row.Str("id"),
+                        Title = row.Str("title"),
+                        SiteName = row.Str("site_name"),
+                        PageUrl = row.Str("page_url"),
+                        OutputDirectory = row.Str("output_directory"),
+                        ResolvedDirectory = row.StrOrNull("resolved_directory"),
+                        SourceName = row.StrOrNull("source_name"),
+                        PreferredSourceId = row.IntOrNull("preferred_source_id"),
+                        State = row.Str("state"),
+                        Percent = row.Double("percent"),
+                        DownloadedBytes = row.Long("downloaded_bytes"),
+                        ReportPath = row.StrOrNull("report_path"),
+                        Message = row.StrOrNull("message"),
+                        SkippedAdSegments = row.Int("skipped_ad_segments"),
+                        CreatedAt = row.At("created_at", DateTimeOffset.Now),
+                        FinishedAt = row.AtOrNull("finished_at"),
+                        EpisodeConcurrency = row.Int("episode_concurrency"),
+                        SegmentConcurrency = row.Int("segment_concurrency"),
+                        PreferHeight = row.IntOrNull("prefer_height"),
+                        FfmpegPath = row.StrOrNull("ffmpeg_path"),
+                        FileNamePattern = row.Str("file_name_pattern"),
+                        SeriesSubdirectory = row.Bool("series_subdirectory"),
                     };
 
                     byId[record.Id] = record;
@@ -81,17 +82,18 @@ public sealed class SqliteTaskStore {
             using (var cmd = connection.CreateCommand()) {
                 cmd.CommandText = EpisodeSelect;
                 using var reader = cmd.ExecuteReader();
+                var row = new SqliteRow(reader);
                 while (reader.Read()) {
-                    if (!byId.TryGetValue(reader.GetString(0), out var record)) continue;
+                    if (!byId.TryGetValue(row.Str("task_id"), out var record)) continue;
 
                     record.Episodes.Add(new TaskEpisodeRecord {
-                        Number = (int)reader.GetInt64(1),
-                        Title = reader.GetString(2),
-                        Status = reader.GetString(3),
-                        Percent = reader.GetDouble(4),
-                        Bytes = reader.GetInt64(5),
-                        OutputPath = OptString(reader, 6),
-                        Error = OptString(reader, 7),
+                        Number = row.Int("number"),
+                        Title = row.Str("title"),
+                        Status = row.Str("status"),
+                        Percent = row.Double("percent"),
+                        Bytes = row.Long("bytes"),
+                        OutputPath = row.StrOrNull("output_path"),
+                        Error = row.StrOrNull("error"),
                     });
                 }
             }
@@ -100,18 +102,19 @@ public sealed class SqliteTaskStore {
             using (var cmd = connection.CreateCommand()) {
                 cmd.CommandText = SnapshotSelect;
                 using var reader = cmd.ExecuteReader();
+                var row = new SqliteRow(reader);
                 while (reader.Read()) {
-                    if (!byId.TryGetValue(reader.GetString(0), out var record)) continue;
+                    if (!byId.TryGetValue(row.Str("task_id"), out var record)) continue;
 
                     record.Snapshot = new SeriesSnapshot {
-                        Kind = reader.GetString(1),
-                        SiteName = reader.GetString(2),
-                        PageUrl = reader.GetString(3),
-                        SeriesId = reader.GetString(4),
-                        Title = reader.GetString(5),
-                        Headers = ParseHeaders(reader.GetString(6)),
-                        SourceId = OptInt(reader, 7),
-                        CapturedAt = At(reader, 8, DateTimeOffset.Now),
+                        Kind = row.Str("kind"),
+                        SiteName = row.Str("site_name"),
+                        PageUrl = row.Str("page_url"),
+                        SeriesId = row.Str("series_id"),
+                        Title = row.Str("title"),
+                        Headers = ParseHeaders(row.Str("headers")),
+                        SourceId = row.IntOrNull("source_id"),
+                        CapturedAt = row.At("captured_at", DateTimeOffset.Now),
                     };
                 }
             }
@@ -120,16 +123,17 @@ public sealed class SqliteTaskStore {
             using (var cmd = connection.CreateCommand()) {
                 cmd.CommandText = SnapshotEpisodeSelect;
                 using var reader = cmd.ExecuteReader();
+                var row = new SqliteRow(reader);
                 while (reader.Read()) {
-                    if (!byId.TryGetValue(reader.GetString(0), out var record)) continue;
+                    if (!byId.TryGetValue(row.Str("task_id"), out var record)) continue;
                     if (record.Snapshot is not { } snapshot) continue;
 
                     snapshot.Episodes.Add(new EpisodeMetadata {
-                        Number = (int)reader.GetInt64(1),
-                        Title = reader.GetString(2),
-                        PageUrl = reader.GetString(3),
-                        Key = OptString(reader, 4),
-                        SourceId = (int)reader.GetInt64(5),
+                        Number = row.Int("number"),
+                        Title = row.Str("title"),
+                        PageUrl = row.Str("page_url"),
+                        Key = row.StrOrNull("ep_key"),
+                        SourceId = row.Int("source_id"),
                     });
                 }
             }
@@ -258,18 +262,6 @@ public sealed class SqliteTaskStore {
 
     private static object Null(object? value) => value ?? DBNull.Value;
 
-    private static string? OptString(SqliteDataReader reader, int index) =>
-        reader.IsDBNull(index) ? null : reader.GetString(index);
-
-    private static int? OptInt(SqliteDataReader reader, int index) =>
-        reader.IsDBNull(index) ? null : (int)reader.GetInt64(index);
-
-    private static DateTimeOffset At(SqliteDataReader reader, int index, DateTimeOffset fallback) =>
-        DateTimeOffset.TryParse(reader.GetString(index), out var at) ? at : fallback;
-
-    private static DateTimeOffset? OptAt(SqliteDataReader reader, int index) =>
-        reader.IsDBNull(index) ? null : At(reader, index, DateTimeOffset.Now);
-
     /// <summary>请求头是个小字典（Referer / Origin / UA），存成一列 JSON 就够了，不单独建表</summary>
     private static string SerializeHeaders(Dictionary<string, string> headers) {
         try {
@@ -287,7 +279,6 @@ public sealed class SqliteTaskStore {
         }
     }
 
-    // 列顺序被下面的序号读取依赖，改的时候两边一起改
     private const string TaskSelect = """
         SELECT id, sort_order, title, site_name, page_url, output_directory, resolved_directory,
                source_name, preferred_source_id, state, percent, downloaded_bytes, report_path, message,

@@ -37,19 +37,20 @@ public sealed class SqliteSettingsStore {
             using var reader = cmd.ExecuteReader();
             if (!reader.Read()) return settings;
 
-            settings.FfmpegPath = Text(reader, 0);
-            settings.FfmpegDownloadUrl = Text(reader, 1);
-            settings.DefaultOutputDirectory = Text(reader, 2);
-            settings.EpisodeConcurrency = Number(reader, 3, settings.EpisodeConcurrency);
-            settings.SegmentConcurrency = Number(reader, 4, settings.SegmentConcurrency);
-            settings.AutoSkipInvalidSegments = Flag(reader, 5, settings.AutoSkipInvalidSegments);
-            settings.SeriesSubdirectory = Flag(reader, 6, settings.SeriesSubdirectory);
-            settings.FullDecodeCheck = Flag(reader, 7, settings.FullDecodeCheck);
-            settings.MinimizeToTrayOnClose = Flag(reader, 8, settings.MinimizeToTrayOnClose);
-            settings.UserAgent = Text(reader, 9);
-            settings.ProxyEnabled = Flag(reader, 10, settings.ProxyEnabled);
-            settings.ProxyUrl = Text(reader, 11);
-            settings.CheckUpdateOnStartup = Flag(reader, 12, settings.CheckUpdateOnStartup);
+            var row = new SqliteRow(reader);       // 按列名读，读不到就用构造好的默认值打底
+            settings.FfmpegPath = row.StrOrNull("ffmpeg_path");
+            settings.FfmpegDownloadUrl = row.StrOrNull("ffmpeg_download_url");
+            settings.DefaultOutputDirectory = row.StrOrNull("default_output_directory");
+            settings.EpisodeConcurrency = row.Int("episode_concurrency", settings.EpisodeConcurrency);
+            settings.SegmentConcurrency = row.Int("segment_concurrency", settings.SegmentConcurrency);
+            settings.AutoSkipInvalidSegments = row.Bool("auto_skip_invalid_segments", settings.AutoSkipInvalidSegments);
+            settings.SeriesSubdirectory = row.Bool("series_subdirectory", settings.SeriesSubdirectory);
+            settings.FullDecodeCheck = row.Bool("full_decode_check", settings.FullDecodeCheck);
+            settings.MinimizeToTrayOnClose = row.Bool("minimize_to_tray_on_close", settings.MinimizeToTrayOnClose);
+            settings.UserAgent = row.StrOrNull("user_agent");
+            settings.ProxyEnabled = row.Bool("proxy_enabled", settings.ProxyEnabled);
+            settings.ProxyUrl = row.StrOrNull("proxy_url");
+            settings.CheckUpdateOnStartup = row.Bool("check_update_on_startup", settings.CheckUpdateOnStartup);
         } catch {
             return new AppSettings();
         }
@@ -109,13 +110,4 @@ public sealed class SqliteSettingsStore {
     }
 
     private static object Null(string? value) => (object?)value ?? DBNull.Value;
-
-    private static string? Text(SqliteDataReader reader, int index) =>
-        reader.IsDBNull(index) ? null : reader.GetString(index);
-
-    private static int Number(SqliteDataReader reader, int index, int fallback) =>
-        reader.IsDBNull(index) ? fallback : (int)reader.GetInt64(index);
-
-    private static bool Flag(SqliteDataReader reader, int index, bool fallback) =>
-        reader.IsDBNull(index) ? fallback : reader.GetInt64(index) != 0;
 }
