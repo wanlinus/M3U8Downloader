@@ -1,7 +1,7 @@
 # M3U8 视频下载器（WinUI）
 
 给国内影视站用的批量下载器：粘贴一个播放页地址，自动识别站点、列出剧集、多线程下载，
-下完转 MP4 并做一轮产物校验。图形界面（WinUI）+ 命令行两个入口，共用同一个下载内核。
+下完转 MP4 并做一轮产物校验。
 
 ## 下载即用
 
@@ -28,7 +28,6 @@
 | **托盘常驻** | 点关闭只是缩到托盘，下载继续跑；真正退出走托盘右键菜单 |
 | AES 解密 | AES-128/192/256，按密钥字节长度分派（不信任 METHOD 字符串） |
 | FFmpeg 集成 | 设置里可手动指定，也可应用内一键下载（默认 LGPL 构建） |
-| 两个入口 | WinUI 桌面界面 + 命令行 `m3u8dl` |
 
 ## 支持的站点
 
@@ -92,7 +91,8 @@ dotnet run --project tests\M3U8Downloader.SelfTest
 | L | 插播广告识别：编号带断裂才标记，无断层的反例必须一片都不标 |
 | M | 更新检测的版本比较（含 `2.0.0` vs `10.0.0` 这种必须按数值比的用例） |
 | N | 续下更新：预检列候选 → 只下勾选的集，没勾的集不许跟着进来 |
-| O | 已下载置灰：判据是磁盘上的文件（.mp4 也算、0 字节不算），下载完自动记账 |
+| O | 已下载置灰：判据是磁盘上的文件（.mp4 也算、0 字节不算），下载完自动记账，移除任务连带销账 |
+| Q | 统一库（真 SQLite）：历史 upsert 与销账、设置读写往返、任务（含快照）读写往返、三种旧文件的迁移与"库里已有数据就不搬" |
 
 退出码 0 表示全部通过。阶段 E 是「点重试冒出重复集」那个 bug 的回归测试。
 
@@ -110,37 +110,8 @@ git tag v1.0.0 && git push origin v1.0.0
 ```
 
 `.github/workflows/release.yml` 会先跑自检（过不了就不打包），再调上面同一个
-`publish.ps1` 发布、压成两个 zip、传到 Releases。
+`publish.ps1` 发布、压成 zip、传到 Releases。
 也可以到 **Actions → 打包发布 → Run workflow** 手动触发。
-
-## 命令行用法
-
-```powershell
-# 单文件
-m3u8dl "https://example.com/index.m3u8" -o D:\videos -n 第01集
-m3u8dl "https://example.com/index.m3u8" --dry-run        # 只分析不下载
-m3u8dl "https://example.com/index.m3u8" --variants       # 列出所有清晰度
-
-# 站点批量
-m3u8dl --series "https://www.example.com/vodplay/30450-1-1.html" --list
-m3u8dl --series "https://www.example.com/vodplay/30450-1-1.html" --episodes 1-8 -o D:\剧集
-```
-
-| 选项 | 说明 |
-|---|---|
-| `-o, --out <目录>` | 输出目录（默认系统「下载」目录） |
-| `-n, --name <文件名>` | 输出文件名（不含扩展名） |
-| `--referer` / `--origin` / `--ua` | 附加请求头（应对防盗链） |
-| `-c, --concurrency <n>` | 并发下载数，默认 16 |
-| `--retries <n>` | 单分片重试次数，默认 3 |
-| `--no-skip-ads` | **不**自动跳过疑似广告分片（默认跳过） |
-| `--dry-run` / `--variants` | 只分析 / 只列清晰度 |
-| `--log <文件>` | 完整日志写入文件 |
-| `--series <地址>` | 启用站点批量模式 |
-| `--list` / `--episodes <范围>` | 站点模式：只列剧集 / 选集（`1-8`、`1,3,5`） |
-| `--all-sources` / `--ep-concurrency <n>` / `--height <n>` | 站点模式：全源 / 同时下载集数 / 优先清晰度 |
-| `--ffmpeg-status` / `--ffmpeg-download` / `--ffmpeg-path` | FFmpeg 检测 / 应用内下载 / 手动指定 |
-| `--proxy <url>` / `--proxy-test` | 代理地址 / 测试连通性 |
 
 ## 代理策略
 
@@ -165,12 +136,17 @@ m3u8dl --series "https://www.example.com/vodplay/30450-1-1.html" --episodes 1-8 
 
 ## 下载任务与报告
 
-**数据目录**：设置、任务列表、下载历史、诊断日志都在**同一个文件夹**里。
+**数据目录**：设置、任务列表、下载历史、诊断日志都在**同一个文件夹**里，
+其中前三样**存在同一个数据库文件** `m3u8.db` 里（SQLite）—— 不像早先那样一个设置一个文件。
 默认是**程序目录下的 `data\`** —— 本程序是解压即用的便携形态，把整个文件夹拷到
 U 盘或另一台机器时，任务、设置、历史会一起跟过去。程序目录不可写时
 （装在 `Program Files`、只读介质）自动退回 `%APPDATA%\M3U8Downloader\`；
 旧版本留在那儿的数据会在第一次启动时自动搬过来。当前实际用的目录可以在
-「关于」里看到。界面版与命令行版解压到同一个文件夹时，共用同一份数据。
+「关于」里看到。
+
+> 从旧版本升级时，`settings.json` / `tasks.json` / `downloads.db` 会在第一次启动时
+> 搬进 `m3u8.db`，原文件改名成 `*.migrated` **留着不删**（确认没问题后你自己删掉即可）。
+> 三个老文件里没搬完的会原样保留，下次启动再试。
 
 - **暂停**：任务落到「已暂停」，可以「继续下载」；重新解析站点后只补没下完的集；
 - **重试失败集**：在**原任务上就地重试**，已完成的集不会重下，任务列表里始终只有一条；
@@ -184,11 +160,13 @@ U 盘或另一台机器时，任务、设置、历史会一起跟过去。程序
   保存的集数据，照样能把没下完的集补上 —— 只是看不到当天新更新的集。
   用本地数据续下时如果有集下载失败，程序会**自动重新拉一次集列表**（多半是站点改版
   让播放页地址失效了），点「重试失败集」就能用上新地址；
-- **续传**：任务列表存数据目录里的 `tasks.json`，重开程序自动接着下；
+- **续传**：任务列表也在那个数据库里，重开程序自动接着下；
   记录说下好了、文件却已被删的集会被识别出来重下；
-- **下载历史**：每下好一集都记进数据目录里的 `downloads.db`（SQLite）。
+- **下载历史**：每下好一集都记进数据库（和设置、任务同一个文件）。
   任务列表被「清理已完成」清掉、程序重装后这份账还在 —— 补更时能告诉你
-  "这集当初下过，只是文件已经不在了"；
+  "这集当初下过，只是文件已经不在了"；把任务**移除**则连同它的历史一起销掉
+  （任务都删了，账留着只会让下次补更凭空冒出"下过"的提示），
+  「清理已完成」只收拾列表、不动账；
 - **报告**：整部剧结束后在视频目录生成 `剧名-下载报告.md`，含汇总、分集明细
   （编码 / 分辨率 / 帧率 / 时长核对 / 解码检查）、失败原因与完整日志。
 
@@ -250,7 +228,8 @@ You may obtain a copy of the License at
   完整声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 - .NET / Windows App SDK / Windows SDK：适用各自许可证，见 [NOTICE](NOTICE)。
 - [H.NotifyIcon](https://github.com/HavenDV/H.NotifyIcon)（MIT）：托盘图标、气泡通知与右键菜单。
-- [Microsoft.Data.Sqlite](https://learn.microsoft.com/dotnet/standard/data/sqlite/)（MIT）：下载历史库
-  （`downloads.db`）。只挂在界面层 —— `Core` 保持零第三方依赖，见 `AGENTS.md`。
+- [Microsoft.Data.Sqlite](https://learn.microsoft.com/dotnet/standard/data/sqlite/)（MIT）：
+  统一数据库（`m3u8.db`，装设置 / 任务列表 / 下载历史）。它是内核项目 `Core`
+  **唯一的第三方依赖** —— 为什么破例、代价是多少，见 `AGENTS.md` 的「存储」一节。
 - 功能设计参考了 [Liubsyy/M3U8Quicker](https://github.com/Liubsyy/M3U8Quicker)（Apache-2.0）；
   本项目为独立的 C# / WinUI 实现，未复制其源代码。

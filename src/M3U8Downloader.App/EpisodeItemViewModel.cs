@@ -11,10 +11,8 @@ namespace M3U8Downloader;
 /// WinUI 的 CheckBox 双向绑定需要 INotifyPropertyChanged 才会把勾选状态写回，
 /// 否则界面上勾了、内存里还是旧值。这里做一层薄包装，保持 Core 模型干净。
 /// </summary>
-public sealed class EpisodeItemViewModel : INotifyPropertyChanged
-{
-    public EpisodeItemViewModel(SiteEpisode episode)
-    {
+public sealed class EpisodeItemViewModel : INotifyPropertyChanged {
+    public EpisodeItemViewModel(SiteEpisode episode) {
         Episode = episode;
         _isSelected = episode.IsSelected;
         _title = episode.DisplayTitle;
@@ -23,11 +21,9 @@ public sealed class EpisodeItemViewModel : INotifyPropertyChanged
     public SiteEpisode Episode { get; }
 
     private bool _isSelected;
-    public bool IsSelected
-    {
+    public bool IsSelected {
         get => _isSelected;
-        set
-        {
+        set {
             if (_isSelected == value) return;
             _isSelected = value;
             Episode.IsSelected = value;   // 回写到 Core 模型
@@ -36,32 +32,27 @@ public sealed class EpisodeItemViewModel : INotifyPropertyChanged
     }
 
     private string _title;
-    public string Title
-    {
+    public string Title {
         get => _title;
         set { if (_title != value) { _title = value; OnPropertyChanged(); } }
     }
 
     private string _status = "待下载";
-    public string Status
-    {
+    public string Status {
         get => _status;
         set { if (_status != value) { _status = value; OnPropertyChanged(); } }
     }
 
     private double _percent;
-    public double Percent
-    {
+    public double Percent {
         get => _percent;
         set { if (Math.Abs(_percent - value) > 0.01) { _percent = value; OnPropertyChanged(); } }
     }
 
     private bool _isDownloading;
-    public bool IsDownloading
-    {
+    public bool IsDownloading {
         get => _isDownloading;
-        set
-        {
+        set {
             if (_isDownloading == value) return;
             _isDownloading = value;
             OnPropertyChanged();
@@ -70,15 +61,13 @@ public sealed class EpisodeItemViewModel : INotifyPropertyChanged
     }
 
     private bool _isDone;
-    public bool IsDone
-    {
+    public bool IsDone {
         get => _isDone;
         set { if (_isDone != value) { _isDone = value; OnPropertyChanged(); } }
     }
 
     private bool _isFailed;
-    public bool IsFailed
-    {
+    public bool IsFailed {
         get => _isFailed;
         set { if (_isFailed != value) { _isFailed = value; OnPropertyChanged(); } }
     }

@@ -16,8 +16,7 @@ namespace M3U8Downloader;
 /// 这里的所有路径都来自 Core 的按用户目录推导，不含任何与本机相关的硬编码 ——
 /// 装到别人机器上同样能跑。
 /// </summary>
-public sealed partial class SettingsDialog : ContentDialog
-{
+public sealed partial class SettingsDialog : ContentDialog {
     private readonly IntPtr _hwnd;
     private readonly AppSettings _working;
 
@@ -29,8 +28,7 @@ public sealed partial class SettingsDialog : ContentDialog
 
     private CancellationTokenSource? _downloadCts;
 
-    public SettingsDialog(IntPtr hwnd, AppSettings settings)
-    {
+    public SettingsDialog(IntPtr hwnd, AppSettings settings) {
         _hwnd = hwnd;
         _working = settings;
 
@@ -43,8 +41,7 @@ public sealed partial class SettingsDialog : ContentDialog
         _ = RefreshStatusAsync();
     }
 
-    private void LoadFromSettings()
-    {
+    private void LoadFromSettings() {
         FfmpegPathBox.Text = _working.FfmpegPath ?? "";
         FfmpegUrlBox.Text = _working.FfmpegDownloadUrl ?? "";
         ProxyEnabledCheck.IsChecked = _working.ProxyEnabled;
@@ -59,8 +56,7 @@ public sealed partial class SettingsDialog : ContentDialog
         UpdateCheckBox.IsChecked = _working.CheckUpdateOnStartup;
     }
 
-    private void CollectBack()
-    {
+    private void CollectBack() {
         _working.FfmpegPath = NullIfBlank(FfmpegPathBox.Text);
         _working.FfmpegDownloadUrl = NullIfBlank(FfmpegUrlBox.Text);
         _working.ProxyEnabled = ProxyEnabledCheck.IsChecked == true;
@@ -79,14 +75,12 @@ public sealed partial class SettingsDialog : ContentDialog
     private static string? NullIfBlank(string? text) =>
         string.IsNullOrWhiteSpace(text) ? null : text.Trim();
 
-    private void OnSaveClicked(ContentDialog sender, ContentDialogButtonClickEventArgs args)
-    {
+    private void OnSaveClicked(ContentDialog sender, ContentDialogButtonClickEventArgs args) {
         CollectBack();
         Saved = true;
     }
 
-    private void OnClosed(ContentDialog sender, ContentDialogClosedEventArgs args)
-    {
+    private void OnClosed(ContentDialog sender, ContentDialogClosedEventArgs args) {
         try { _downloadCts?.Cancel(); } catch { }
     }
 
@@ -94,27 +88,21 @@ public sealed partial class SettingsDialog : ContentDialog
 
     private async void OnDetectFfmpeg(object sender, RoutedEventArgs e) => await RefreshStatusAsync();
 
-    private async Task RefreshStatusAsync()
-    {
+    private async Task RefreshStatusAsync() {
         CollectBack();
         FfmpegStatusText.Text = "正在检测…";
-        try
-        {
+        try {
             var status = await FfmpegLocator.DetectAsync(_working);
             FfmpegStatusText.Text = status.Describe();
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             FfmpegStatusText.Text = "检测失败：" + ex.Message;
         }
     }
 
-    private async void OnDownloadFfmpeg(object sender, RoutedEventArgs e)
-    {
+    private async void OnDownloadFfmpeg(object sender, RoutedEventArgs e) {
         CollectBack();
 
-        if (ProxyHelper.IsConfiguredButInvalid(_working))
-        {
+        if (ProxyHelper.IsConfiguredButInvalid(_working)) {
             FfmpegStatusText.Text = "代理地址格式不正确，请检查后再下载。";
             return;
         }
@@ -127,10 +115,8 @@ public sealed partial class SettingsDialog : ContentDialog
         _downloadCts?.Dispose();
         _downloadCts = new CancellationTokenSource();
 
-        try
-        {
-            var progress = new Progress<FfmpegInstallProgress>(p =>
-            {
+        try {
+            var progress = new Progress<FfmpegInstallProgress>(p => {
                 DownloadProgressBar.Value = p.TotalBytes > 0 ? p.Percent : 0;
                 DownloadProgressText.Text = p.Describe();
             });
@@ -141,8 +127,7 @@ public sealed partial class SettingsDialog : ContentDialog
                 progress,
                 _downloadCts.Token);
 
-            if (result.Success)
-            {
+            if (result.Success) {
                 // 装好后把"手动指定"清掉，让它走应用管理副本
                 _working.FfmpegPath = null;
                 FfmpegPathBox.Text = "";
@@ -153,38 +138,28 @@ public sealed partial class SettingsDialog : ContentDialog
                 DownloadProgressText.Text = $"✔ 安装完成：ffmpeg {result.Version}{where}";
 
                 await RefreshStatusAsync();
-            }
-            else
-            {
+            } else {
                 DownloadProgressText.Text = "✘ " + result.Error;
-                if (result.Error?.Contains("下载失败") == true)
-                {
+                if (result.Error?.Contains("下载失败") == true) {
                     DownloadProgressText.Text +=
                         "\n提示：如果直连不通，请在上面填写代理（例如 http://127.0.0.1:7897），或改用镜像下载源。";
                 }
             }
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             DownloadProgressText.Text = "✘ 安装失败：" + ex.Message;
-        }
-        finally
-        {
+        } finally {
             DownloadFfmpegButton.IsEnabled = true;
         }
     }
 
-    private async void OnRemoveManagedFfmpeg(object sender, RoutedEventArgs e)
-    {
+    private async void OnRemoveManagedFfmpeg(object sender, RoutedEventArgs e) {
         var existing = FfmpegLocator.ManagedDirectories.Where(Directory.Exists).ToList();
-        if (existing.Count == 0)
-        {
+        if (existing.Count == 0) {
             FfmpegStatusText.Text = "没有找到应用下载的 FFmpeg（可能用的是手动指定或系统 PATH 里的）。";
             return;
         }
 
-        var confirm = new ContentDialog
-        {
+        var confirm = new ContentDialog {
             XamlRoot = XamlRoot,
             Title = "清理已下载的 FFmpeg",
             Content = "将删除：\n" + string.Join("\n", existing) +
@@ -197,18 +172,15 @@ public sealed partial class SettingsDialog : ContentDialog
         if (await confirm.ShowAsync() != ContentDialogResult.Primary) return;
 
         var failed = new List<string>();
-        foreach (var dir in existing)
-        {
-            try { Directory.Delete(dir, recursive: true); }
-            catch (Exception ex) { failed.Add($"{dir}：{ex.Message}"); }
+        foreach (var dir in existing) {
+            try { Directory.Delete(dir, recursive: true); } catch (Exception ex) { failed.Add($"{dir}：{ex.Message}"); }
         }
 
         await RefreshStatusAsync();
         if (failed.Count > 0) FfmpegStatusText.Text += "\n删除失败：" + string.Join("；", failed);
     }
 
-    private async void OnPickFfmpeg(object sender, RoutedEventArgs e)
-    {
+    private async void OnPickFfmpeg(object sender, RoutedEventArgs e) {
         var picker = new FileOpenPicker();
         InitializeWithWindow.Initialize(picker, _hwnd);
         picker.SuggestedStartLocation = PickerLocationId.ComputerFolder;
@@ -224,32 +196,25 @@ public sealed partial class SettingsDialog : ContentDialog
 
     // ==================== 代理 ====================
 
-    private async void OnTestProxy(object sender, RoutedEventArgs e)
-    {
+    private async void OnTestProxy(object sender, RoutedEventArgs e) {
         ProxyTestText.Visibility = Visibility.Visible;
         ProxyTestText.Text = "正在测试…（最多 12 秒）";
         ProxyTestText.StartBringIntoView();   // 结果在滚动区里，保证用户一定看得到
 
-        try
-        {
+        try {
             // 直接用输入框里的地址：即使「启用代理」没勾，也应该能测这个地址通不通
             var result = await ProxyHelper.TestAsync(ProxyUrlBox.Text);
             ProxyTestText.Text = result.Message;
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             ProxyTestText.Text = "✘ 测试失败：" + ex.Message;
-        }
-        finally
-        {
+        } finally {
             ProxyTestText.StartBringIntoView();
         }
     }
 
     // ==================== 目录 ====================
 
-    private async void OnPickOutputDir(object sender, RoutedEventArgs e)
-    {
+    private async void OnPickOutputDir(object sender, RoutedEventArgs e) {
         var picker = new FolderPicker();
         InitializeWithWindow.Initialize(picker, _hwnd);
         picker.SuggestedStartLocation = PickerLocationId.Downloads;

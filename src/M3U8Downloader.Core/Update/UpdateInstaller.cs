@@ -7,8 +7,7 @@ using M3U8Downloader.Core.Net;
 namespace M3U8Downloader.Core.Update;
 
 /// <summary>下载进度</summary>
-public sealed record UpdateDownloadProgress(long Received, long Total)
-{
+public sealed record UpdateDownloadProgress(long Received, long Total) {
     public double Percent => Total > 0 ? Math.Min(100, Received * 100.0 / Total) : 0;
 
     public string Text => Total > 0
@@ -29,8 +28,7 @@ public sealed record UpdateDownloadProgress(long Received, long Total)
 /// 代价是首次运行时可能有杀软提示 —— 脚本内容可读、不做任何混淆，
 /// 就是为了让它看起来像它本来的样子。
 /// </summary>
-public static class UpdateInstaller
-{
+public static class UpdateInstaller {
     /// <summary>下载解压的工作目录（也是更新日志与备份的落脚点）</summary>
     public static string WorkDirectory =>
         Path.Combine(Path.GetTempPath(), "M3U8Downloader-update");
@@ -46,17 +44,13 @@ public static class UpdateInstaller
     /// </summary>
     public static string AppTracePath => Path.Combine(WorkDirectory, "app-update.log");
 
-    public static void Trace(string message)
-    {
-        try
-        {
+    public static void Trace(string message) {
+        try {
             Directory.CreateDirectory(WorkDirectory);
             File.AppendAllText(AppTracePath,
                 $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}  {message}{Environment.NewLine}",
                 new UTF8Encoding(false));
-        }
-        catch
-        {
+        } catch {
             // 记日志失败不能影响更新本身
         }
     }
@@ -84,8 +78,7 @@ public static class UpdateInstaller
         ReleaseInfo release,
         string? proxyUrl,
         IProgress<UpdateDownloadProgress>? progress = null,
-        CancellationToken ct = default)
-    {
+        CancellationToken ct = default) {
         if (string.IsNullOrWhiteSpace(release.DownloadUrl))
             throw new InvalidOperationException("这个版本没有提供 Windows 包，请到发布页手动下载");
 
@@ -100,12 +93,9 @@ public static class UpdateInstaller
 
         if (Directory.Exists(extractDir)) Directory.Delete(extractDir, true);
 
-        try
-        {
+        try {
             ZipFile.ExtractToDirectory(zipPath, extractDir);
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             throw new InvalidOperationException($"解压安装包失败：{ex.Message}", ex);
         }
 
@@ -119,24 +109,20 @@ public static class UpdateInstaller
     /// 校验解压结果。这是**覆盖前的最后一道闸** ——
     /// 拿一个残缺的目录去覆盖，等于把用户的程序毁掉。
     /// </summary>
-    public static bool Validate(string directory, out string error)
-    {
-        if (!Directory.Exists(directory))
-        {
+    public static bool Validate(string directory, out string error) {
+        if (!Directory.Exists(directory)) {
             error = "目录不存在";
             return false;
         }
 
-        foreach (var name in RequiredFiles)
-        {
+        foreach (var name in RequiredFiles) {
             if (File.Exists(Path.Combine(directory, name))) continue;
             error = $"缺少 {name}";
             return false;
         }
 
         var count = Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories).Count();
-        if (count < MinFileCount)
-        {
+        if (count < MinFileCount) {
             error = $"文件数异常（只有 {count} 个）";
             return false;
         }
@@ -147,20 +133,15 @@ public static class UpdateInstaller
 
     private static async Task DownloadAsync(
         string url, string destination, string? proxyUrl, long expectedSize,
-        IProgress<UpdateDownloadProgress>? progress, CancellationToken ct)
-    {
+        IProgress<UpdateDownloadProgress>? progress, CancellationToken ct) {
         // 先按用户配的代理试；代理没开就退回直连 —— 和别处一样的策略。
         var normalized = ProxyHelper.Normalize(proxyUrl);
-        if (normalized is not null)
-        {
-            try
-            {
+        if (normalized is not null) {
+            try {
                 await DownloadCoreAsync(url, destination, normalized, expectedSize, progress, ct)
                     .ConfigureAwait(false);
                 return;
-            }
-            catch (Exception) when (!ct.IsCancellationRequested)
-            {
+            } catch (Exception) when (!ct.IsCancellationRequested) {
                 progress?.Report(new UpdateDownloadProgress(0, expectedSize));
             }
         }
@@ -170,17 +151,14 @@ public static class UpdateInstaller
 
     private static async Task DownloadCoreAsync(
         string url, string destination, string? proxyUrl, long expectedSize,
-        IProgress<UpdateDownloadProgress>? progress, CancellationToken ct)
-    {
-        using var handler = new SocketsHttpHandler
-        {
+        IProgress<UpdateDownloadProgress>? progress, CancellationToken ct) {
+        using var handler = new SocketsHttpHandler {
             ConnectTimeout = TimeSpan.FromSeconds(10),
             // 显式关掉，否则会退到系统代理（见 AGENTS.md 的硬约定）
             UseProxy = false,
         };
 
-        if (proxyUrl is not null)
-        {
+        if (proxyUrl is not null) {
             handler.Proxy = new WebProxy(new Uri(proxyUrl)) { BypassProxyOnLocal = true };
             handler.UseProxy = true;
         }
@@ -202,8 +180,7 @@ public static class UpdateInstaller
         var buffer = new byte[81920];
         long received = 0;
         int read;
-        while ((read = await source.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
-        {
+        while ((read = await source.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0) {
             await target.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
             received += read;
             progress?.Report(new UpdateDownloadProgress(received, total));
@@ -218,8 +195,7 @@ public static class UpdateInstaller
     /// <param name="exeName">主程序文件名</param>
     /// <param name="waitPid">要等它退出的进程；默认当前进程（测试时可指定别的）</param>
     public static void LaunchUpdater(
-        string newVersionDir, string targetDir, string exeName, int? waitPid = null)
-    {
+        string newVersionDir, string targetDir, string exeName, int? waitPid = null) {
         Directory.CreateDirectory(WorkDirectory);
         var scriptPath = Path.Combine(WorkDirectory, "apply-update.ps1");
 
@@ -230,8 +206,7 @@ public static class UpdateInstaller
 
         var currentPid = waitPid ?? Environment.ProcessId;
 
-        var psi = new ProcessStartInfo
-        {
+        var psi = new ProcessStartInfo {
             FileName = "powershell.exe",
             Arguments =
                 $"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{scriptPath}\" " +

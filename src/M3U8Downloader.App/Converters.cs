@@ -7,10 +7,8 @@ namespace M3U8Downloader;
 /// bool → Visibility。WinUI 没有内置转换器（WPF 才自带），所以自己写一个。
 /// 传 ConverterParameter="invert" 可反向（true → 折叠）。
 /// </summary>
-public sealed class BoolToVisibilityConverter : IValueConverter
-{
-    public object Convert(object value, Type targetType, object parameter, string language)
-    {
+public sealed class BoolToVisibilityConverter : IValueConverter {
+    public object Convert(object value, Type targetType, object parameter, string language) {
         var flag = value is true;
         if (parameter is string s && s.Equals("invert", StringComparison.OrdinalIgnoreCase))
             flag = !flag;

@@ -5,8 +5,7 @@ using M3U8Downloader.Core.Staging;
 namespace M3U8Downloader.Core.Downloads;
 
 /// <summary>一集（或一个单文件）当前走到了流水线的哪一步</summary>
-public enum EpisodeStage
-{
+public enum EpisodeStage {
     /// <summary>解析播放列表</summary>
     Resolving,
 
@@ -18,8 +17,7 @@ public enum EpisodeStage
 }
 
 /// <summary>流水线的最终状态</summary>
-public enum EpisodeOutcomeStatus
-{
+public enum EpisodeOutcomeStatus {
     Pending,
     Completed,
     Failed,
@@ -32,8 +30,7 @@ public enum EpisodeOutcomeStatus
 /// 刻意**不含任何站点概念**（没有 SiteEpisode / 剧集 / 集号）——
 /// 站点批量模式与单文件模式都归结成"一个已解析出的播放列表地址 + 一个暂存目录 + 一个输出文件名"。
 /// </summary>
-public sealed class EpisodeJob
-{
+public sealed class EpisodeJob {
     /// <summary>显示名：日志前缀与进度标题（站点模式是「第 12 集」，单文件模式是文件名）</summary>
     public required string Title { get; init; }
 
@@ -54,8 +51,7 @@ public sealed class EpisodeJob
 }
 
 /// <summary>流水线参数</summary>
-public sealed class EpisodePipelineOptions
-{
+public sealed class EpisodePipelineOptions {
     /// <summary>分片并发</summary>
     public int SegmentConcurrency { get; init; } = 16;
 
@@ -79,8 +75,7 @@ public sealed class EpisodePipelineOptions
 }
 
 /// <summary>一集跑完流水线后的全部结论（报告与界面都从这里取数）</summary>
-public sealed class EpisodeOutcome
-{
+public sealed class EpisodeOutcome {
     public required string Title { get; init; }
 
     public EpisodeOutcomeStatus Status { get; set; } = EpisodeOutcomeStatus.Pending;
@@ -136,8 +131,7 @@ public sealed class EpisodeOutcome
 /// - 暂存目录由调用方用 <see cref="CreateStagingDirectory"/> 取（可能要复用上次的，**不能**在这里新建）；
 /// - 日志统一走构造时传入的 <c>log</c> 回调，避免多集并发时直接往同一个 List 里塞。
 /// </summary>
-public sealed class EpisodePipeline
-{
+public sealed class EpisodePipeline {
     private readonly HlsDownloader _hls;
     private readonly Dictionary<string, string> _headers;
     private readonly EpisodePipelineOptions _options;
@@ -147,8 +141,7 @@ public sealed class EpisodePipeline
         HlsDownloader hls,
         Dictionary<string, string> headers,
         EpisodePipelineOptions options,
-        Action<string>? log = null)
-    {
+        Action<string>? log = null) {
         _hls = hls;
         _headers = headers;
         _options = options;
@@ -160,10 +153,8 @@ public sealed class EpisodePipeline
         EpisodeJob job,
         IProgress<DownloadProgress>? progress = null,
         Action<EpisodeStage>? onStage = null,
-        CancellationToken ct = default)
-    {
-        var outcome = new EpisodeOutcome
-        {
+        CancellationToken ct = default) {
+        var outcome = new EpisodeOutcome {
             Title = job.Title,
             PlaylistUrl = job.PlaylistUrl,
             StagingDirectory = job.StagingDirectory,
@@ -171,8 +162,7 @@ public sealed class EpisodePipeline
 
         var clock = Stopwatch.StartNew();
 
-        try
-        {
+        try {
             // ---- 1. 解析媒体清单（主清单自动挑清晰度）----
             onStage?.Invoke(EpisodeStage.Resolving);
             var (media, parseLogs) = await _hls
@@ -189,8 +179,7 @@ public sealed class EpisodePipeline
 
             var intermediate = Path.Combine(job.StagingDirectory, media.IsFmp4 ? "merged.mp4" : "merged.ts");
 
-            var downloadOptions = new DownloadOptions
-            {
+            var downloadOptions = new DownloadOptions {
                 Concurrency = Math.Clamp(_options.SegmentConcurrency, 1, 64),
                 MaxRetries = Math.Clamp(_options.MaxRetries, 0, 10),
                 RetryBaseDelayMs = _options.RetryBaseDelayMs,
@@ -219,8 +208,7 @@ public sealed class EpisodePipeline
 
             foreach (var message in result.Messages) _log($"[{job.Title}] {message}");
 
-            if (!result.Success)
-            {
+            if (!result.Success) {
                 outcome.Status = EpisodeOutcomeStatus.Failed;
                 // 引擎偶尔会在没给出 Error 的情况下判失败，这时把分片统计打出来 ——
                 // 只显示"未知错误"对排查毫无帮助。
@@ -252,34 +240,25 @@ public sealed class EpisodePipeline
             await InspectProductAsync(outcome, final.Path, ct).ConfigureAwait(false);
 
             // ---- 5. 全部成功 → 删除暂存目录（含中间文件）----
-            if (StagingStore.TryRemoveStagingDirectory(job.StagingDirectory))
-            {
+            if (StagingStore.TryRemoveStagingDirectory(job.StagingDirectory)) {
                 outcome.StagingDirectory = null;
                 _log($"[{job.Title}] 已清理暂存目录。");
-            }
-            else
-            {
+            } else {
                 _log($"[{job.Title}] 暂存目录未能删除（可能被占用）：{job.StagingDirectory}");
             }
 
             outcome.Status = EpisodeOutcomeStatus.Completed;
             _log($"[{job.Title}] 完成 → {final.Path}");
             return outcome;
-        }
-        catch (OperationCanceledException)
-        {
+        } catch (OperationCanceledException) {
             outcome.Status = EpisodeOutcomeStatus.Canceled;
             return outcome;
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             outcome.Status = EpisodeOutcomeStatus.Failed;
             outcome.Error = ex.Message;
             _log($"[{job.Title}] 异常：{ex.Message}");
             return outcome;
-        }
-        finally
-        {
+        } finally {
             clock.Stop();
         }
     }
@@ -300,24 +279,18 @@ public sealed class EpisodePipeline
     /// 站点模式用集号（<c>007</c>），单文件模式用 <c>single</c> ——
     /// 两者互不干扰，各自都能命中自己的历史目录继续续传。
     /// </summary>
-    public static string CreateStagingDirectory(string directory, string tag)
-    {
-        try
-        {
-            if (Directory.Exists(directory))
-            {
+    public static string CreateStagingDirectory(string directory, string tag) {
+        try {
+            if (Directory.Exists(directory)) {
                 var candidates = Directory.GetDirectories(directory, $".m3u8tmp-{tag}-*");
-                if (candidates.Length > 0)
-                {
+                if (candidates.Length > 0) {
                     // 同集有多个残留时取最近用过的那个
                     return candidates
                         .OrderByDescending(Directory.GetLastWriteTimeUtc)
                         .First();
                 }
             }
-        }
-        catch
-        {
+        } catch {
             // 目录枚举失败就按新建处理
         }
 
@@ -336,18 +309,15 @@ public sealed class EpisodePipeline
     /// 少一段照样能转出 MP4。时长对不上就写进日志，由调用方决定是否算完整。
     /// </summary>
     private async Task<(string Path, long Bytes, string Format, string? DurationVerdict)> FinalizeOutputAsync(
-        EpisodeJob job, string intermediate, bool alreadyFmp4, double expectedSeconds, CancellationToken ct)
-    {
+        EpisodeJob job, string intermediate, bool alreadyFmp4, double expectedSeconds, CancellationToken ct) {
         var ffmpegPath = _options.FfmpegPath;
         var finalPath = Path.Combine(job.OutputDirectory, job.FileName + ".mp4");
 
-        if (!string.IsNullOrWhiteSpace(ffmpegPath) && File.Exists(ffmpegPath))
-        {
+        if (!string.IsNullOrWhiteSpace(ffmpegPath) && File.Exists(ffmpegPath)) {
             var remux = await FfmpegRunner.RemuxToMp4Async(ffmpegPath!, intermediate, finalPath, ct)
                 .ConfigureAwait(false);
 
-            if (remux.Success && File.Exists(finalPath) && new FileInfo(finalPath).Length > 0)
-            {
+            if (remux.Success && File.Exists(finalPath) && new FileInfo(finalPath).Length > 0) {
                 _log($"[{job.Title}] 已转封装为 MP4（流复制，无画质损失）。");
                 var verdict = await CheckDurationAsync(ffmpegPath, finalPath, expectedSeconds, job.Title, ct)
                     .ConfigureAwait(false);
@@ -356,22 +326,17 @@ public sealed class EpisodePipeline
 
             _log($"[{job.Title}] 转 MP4 失败，改为保留原始格式：{remux.Error}");
             try { if (File.Exists(finalPath)) File.Delete(finalPath); } catch { }
-        }
-        else
-        {
+        } else {
             _log($"[{job.Title}] 未配置 FFmpeg，跳过转 MP4；如需 MP4 请在设置里指定或下载 FFmpeg。");
         }
 
         // 退路：把中间文件搬到输出目录并保留原格式
         var fallbackExt = alreadyFmp4 ? ".mp4" : ".ts";
         var fallbackPath = Path.Combine(job.OutputDirectory, job.FileName + fallbackExt);
-        try
-        {
+        try {
             if (File.Exists(fallbackPath)) File.Delete(fallbackPath);
             File.Move(intermediate, fallbackPath);
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             _log($"[{job.Title}] 移动产物失败：{ex.Message}");
             return (intermediate, new FileInfo(intermediate).Length, alreadyFmp4 ? "mp4" : "ts", null);
         }
@@ -391,38 +356,30 @@ public sealed class EpisodePipeline
     /// - 解码检查回答"内容是不是好的"—— 包对齐、字节数、时长全对，
     ///   源站返回的坏包依然会留在产物里，只有整条解一遍才知道。
     /// </summary>
-    private async Task InspectProductAsync(EpisodeOutcome outcome, string path, CancellationToken ct)
-    {
+    private async Task InspectProductAsync(EpisodeOutcome outcome, string path, CancellationToken ct) {
         var ffmpegPath = _options.FfmpegPath;
         if (string.IsNullOrWhiteSpace(ffmpegPath) || !File.Exists(ffmpegPath)) return;
 
-        try
-        {
+        try {
             outcome.Container = await FfmpegRunner.TryProbeContainerAsync(ffmpegPath!, path, ct).ConfigureAwait(false);
-            if (outcome.Container is { Streams.Count: > 0 })
-            {
+            if (outcome.Container is { Streams.Count: > 0 }) {
                 _log($"[{outcome.Title}] 容器信息：{outcome.Container.FormatName}，" +
                      $"时长 {TimeSpan.FromSeconds(outcome.Container.DurationSeconds):hh\\:mm\\:ss}" +
                      (outcome.Container.BitRate > 0 ? $"，码率 {outcome.Container.BitRate / 1000} kbps" : "") +
                      $"；流：{string.Join(" + ", outcome.Container.Streams.Select(s => s.Describe()))}");
             }
-        }
-        catch
-        {
+        } catch {
             // 探测失败不影响产物
         }
 
-        try
-        {
-            if (!_options.FullDecodeCheck)
-            {
+        try {
+            if (!_options.FullDecodeCheck) {
                 _log($"[{outcome.Title}] 已跳过全量解码检查（设置里关掉了；容器与时长核对不受影响）。");
                 return;
             }
 
             outcome.DecodeCheck = await FfmpegRunner.RunDecodeCheckAsync(ffmpegPath!, path, ct).ConfigureAwait(false);
-            if (outcome.DecodeCheck is not null)
-            {
+            if (outcome.DecodeCheck is not null) {
                 // 输出阶段的时间戳提示单列出来说，免得用户以为产物坏了
                 var ignored = outcome.DecodeCheck.IgnoredMuxerWarnings > 0
                     ? $"（另有 {outcome.DecodeCheck.IgnoredMuxerWarnings} 条输出阶段时间戳提示，带 B 帧的源必然出现，与产物无关）"
@@ -433,9 +390,7 @@ public sealed class EpisodePipeline
                     : $"[{outcome.Title}] ⚠ 全量解码检查发现异常（退出码 {outcome.DecodeCheck.ExitCode}）：" +
                       $"{string.Join("；", outcome.DecodeCheck.Issues)}。这通常是源站数据问题，不是拼接错位{ignored}。");
             }
-        }
-        catch
-        {
+        } catch {
             // 同上
         }
     }
@@ -448,28 +403,22 @@ public sealed class EpisodePipeline
     /// 而不是默默当通过（那等于没校验）。
     /// </summary>
     private async Task<string?> CheckDurationAsync(
-        string? ffmpegPath, string path, double expectedSeconds, string title, CancellationToken ct)
-    {
+        string? ffmpegPath, string path, double expectedSeconds, string title, CancellationToken ct) {
         if (expectedSeconds <= 0) return null;
 
         var source = "内置探测";
         double? actual = MediaDurationProbe.TryProbeSeconds(path);
 
-        if (actual is null && !string.IsNullOrWhiteSpace(ffmpegPath) && File.Exists(ffmpegPath))
-        {
+        if (actual is null && !string.IsNullOrWhiteSpace(ffmpegPath) && File.Exists(ffmpegPath)) {
             source = "ffmpeg";
-            try
-            {
+            try {
                 actual = await FfmpegRunner.TryGetDurationSecondsAsync(ffmpegPath!, path, ct).ConfigureAwait(false);
-            }
-            catch
-            {
+            } catch {
                 actual = null;
             }
         }
 
-        if (actual is null)
-        {
+        if (actual is null) {
             var note = $"读不出产物时长（清单声明 {expectedSeconds:0.0}s）";
             _log($"[{title}] ⚠ 时长核对未完成：{note}；产物已保留，建议用播放器确认是否能完整播放。");
             return $"未完成（{note}）";
@@ -480,8 +429,7 @@ public sealed class EpisodePipeline
         var diff = Math.Abs(actual.Value - expectedSeconds);
         var tolerance = Math.Max(3.0, expectedSeconds * 0.05);
 
-        if (diff > tolerance)
-        {
+        if (diff > tolerance) {
             _log($"[{title}] ⚠ 时长核对不通过（{source}）：清单声明 {expectedSeconds:0.0}s，" +
                  $"产物实际 {actual.Value:0.0}s，相差 {diff:0.0}s（可能缺片，建议核对原播放列表）。");
             return $"不通过：产物 {actual.Value:0.0}s vs 清单 {expectedSeconds:0.0}s（差 {diff:0.0}s）";

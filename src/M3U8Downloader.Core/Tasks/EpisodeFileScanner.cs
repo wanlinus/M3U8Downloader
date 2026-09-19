@@ -13,8 +13,7 @@ namespace M3U8Downloader.Core.Tasks;
 /// 而不是拿正则去反向猜：模板里的 <c>{title}</c> 要过一遍非法字符替换、
 /// 集号还可能有补零差异，正向算才能保证和下载时用的是同一套规则。
 /// </summary>
-public static class EpisodeFileScanner
-{
+public static class EpisodeFileScanner {
     /// <summary>认得出来的产物扩展名（下载产物 + 转封装结果）</summary>
     private static readonly string[] VideoExtensions =
     {
@@ -26,38 +25,30 @@ public static class EpisodeFileScanner
     /// 目录不存在、没权限、文件名非法等一律当作"没找到"，绝不抛给调用方。
     /// </summary>
     public static string? FindEpisodeFile(string directory, string fileNamePattern,
-        SiteSeries series, int number)
-    {
+        SiteSeries series, int number) {
         if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(fileNamePattern))
             return null;
         if (!Directory.Exists(directory)) return null;
 
         string name;
-        try
-        {
+        try {
             name = SeriesDownloader.BuildFileName(fileNamePattern, series, number);
-        }
-        catch
-        {
+        } catch {
             return null;
         }
 
         // 常见扩展名先各试一次（绝大多数情况命中这里）
-        foreach (var ext in VideoExtensions)
-        {
+        foreach (var ext in VideoExtensions) {
             var path = Path.Combine(directory, name + ext);
             if (IsRealFile(path)) return path;
         }
 
         // 扩展名大小写不同、或用户自己转成了别的容器：宽松地按「名字 + 任意扩展名」再找一遍。
         // 暂存目录（xxx.m3u8tmp）是目录不是文件，EnumerateFiles 不会命中它。
-        try
-        {
+        try {
             foreach (var path in Directory.EnumerateFiles(directory, name + ".*"))
                 if (IsRealFile(path)) return path;
-        }
-        catch
-        {
+        } catch {
             // 枚举失败（权限、路径过长）就当没找到
         }
 
@@ -66,11 +57,9 @@ public static class EpisodeFileScanner
 
     /// <summary>批量扫描，返回「集号 → 产物路径」，只含确实在磁盘上、且非空的集</summary>
     public static Dictionary<int, string> ScanExisting(string directory, string fileNamePattern,
-        SiteSeries series, IEnumerable<int> numbers)
-    {
+        SiteSeries series, IEnumerable<int> numbers) {
         var found = new Dictionary<int, string>();
-        foreach (var number in numbers)
-        {
+        foreach (var number in numbers) {
             var path = FindEpisodeFile(directory, fileNamePattern, series, number);
             if (path is not null) found[number] = path;
         }
@@ -78,15 +67,11 @@ public static class EpisodeFileScanner
     }
 
     /// <summary>空文件不算下过（中途中断、占位都可能留下 0 字节文件）</summary>
-    private static bool IsRealFile(string path)
-    {
-        try
-        {
+    private static bool IsRealFile(string path) {
+        try {
             var info = new FileInfo(path);
             return info.Exists && info.Length > 0;
-        }
-        catch
-        {
+        } catch {
             return false;
         }
     }

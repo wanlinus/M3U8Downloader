@@ -16,7 +16,15 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <WindowsPackageType>None</WindowsPackageType>
-    <EnableMsixTooling>true</EnableMsixTooling>
+    <!--
+      这里**故意不写** EnableMsixTooling。
+      它是"单项目 MSIX 打包"的总开关，只有要生成 .msix 时才需要；本项目没有
+      Package.appxmanifest，发布走 scripts/publish.ps1 的非打包自包含形态，用不上它。
+      更要紧的是它会引入 MSIX 的部署目标（Deploy / vs.appxrecipe 那一套），
+      IDE 据此以为"运行前要先部署应用包"，于是要求系统开启开发者模式 ——
+      Rider 上就是这么被挡住的（报"此设备当前未处于开发者模式"）。
+      我们是直接跑 exe 的，不需要旁加载。详见 docs/pitfalls.md 第 36 条。
+    -->
     <WindowsSdkPackageVersion>10.0.19041.57</WindowsSdkPackageVersion>
     <!-- 使用自定义 Main（可捕获并落盘启动异常），禁掉 XAML 自动生成的入口 -->
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
@@ -35,7 +43,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
+    <!-- Microsoft.Data.Sqlite 不再单独引：存储实现都挪进了 Core，跟着项目引用传递过来 -->
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.4.0" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4654" />
     <!-- 系统托盘：WinUI 没有内置托盘 API，用 H.NotifyIcon 的 TaskbarIcon（托盘图标 + 气泡通知 + 效率模式） -->

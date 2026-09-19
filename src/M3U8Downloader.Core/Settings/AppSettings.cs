@@ -8,8 +8,7 @@ namespace M3U8Downloader.Core.Settings;
 /// 所有字段都有合理默认值，且读取失败时整体回退到默认值 ——
 /// 这个文件是要跟着安装包分发给别人的，不能因为用户改坏一个字段就启动失败。
 /// </summary>
-public sealed class AppSettings
-{
+public sealed class AppSettings {
     /// <summary>用户手工指定的 ffmpeg.exe 完整路径（留空则自动探测）</summary>
     public string? FfmpegPath { get; set; }
 
@@ -73,37 +72,31 @@ public sealed class AppSettings
     public static AppSettings Default => new();
 
     /// <summary>把越界/非法的值拉回合法范围（读到脏数据时兜底）</summary>
-    public void Normalize()
-    {
+    public void Normalize() {
         EpisodeConcurrency = Math.Clamp(EpisodeConcurrency, 1, 8);
         SegmentConcurrency = Math.Clamp(SegmentConcurrency, 1, 64);
 
-        if (FfmpegPath is not null)
-        {
+        if (FfmpegPath is not null) {
             FfmpegPath = FfmpegPath.Trim();
             if (FfmpegPath.Length == 0) FfmpegPath = null;
         }
 
-        if (FfmpegDownloadUrl is not null)
-        {
+        if (FfmpegDownloadUrl is not null) {
             FfmpegDownloadUrl = FfmpegDownloadUrl.Trim();
             if (FfmpegDownloadUrl.Length == 0) FfmpegDownloadUrl = null;
         }
 
-        if (DefaultOutputDirectory is not null)
-        {
+        if (DefaultOutputDirectory is not null) {
             DefaultOutputDirectory = DefaultOutputDirectory.Trim();
             if (DefaultOutputDirectory.Length == 0) DefaultOutputDirectory = null;
         }
 
-        if (UserAgent is not null)
-        {
+        if (UserAgent is not null) {
             UserAgent = UserAgent.Trim();
             if (UserAgent.Length == 0) UserAgent = null;
         }
 
-        if (ProxyUrl is not null)
-        {
+        if (ProxyUrl is not null) {
             ProxyUrl = ProxyUrl.Trim();
             if (ProxyUrl.Length == 0) ProxyUrl = null;
         }

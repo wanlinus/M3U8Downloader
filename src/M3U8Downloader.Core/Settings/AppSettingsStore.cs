@@ -1,77 +1,34 @@
-using System.Text;
-using System.Text.Json;
+using M3U8Downloader.Core.Storage;
 
 namespace M3U8Downloader.Core.Settings;
 
 /// <summary>
-/// 设置的落盘仓库。
+/// 设置的对外入口。
 ///
-/// 位置：数据目录下的 <c>settings.json</c> —— 默认是**程序目录\data\**（便携，
-/// 拷走整个文件夹即带走设置），程序目录不可写时退回 <c>%APPDATA%\M3U8Downloader\</c>。
-/// 具体见 <see cref="AppPaths"/>。
+/// **设置存在统一库（<c>data\m3u8.db</c>）的 <c>settings</c> 表里**，不再是独立的
+/// <c>settings.json</c>。这里保留静态方法是因为 Core 里有三处随手调用它：
+/// <c>FfmpegLocator</c> 找 ffmpeg、<c>HlsDownloader</c> 与 <c>SiteResolver</c> 取代理 ——
+/// 换成注入式接口会把这四处一起牵动，而"读一下当前设置"这种事不值得。
 ///
-/// 注意：**不使用任何与本机相关的硬编码路径** —— 分发给别人时会落到各自的目录。
+/// 读写的实现在 <see cref="SqliteSettingsStore"/>。任何异常都回退到默认值：
+/// 设置坏了也不该让程序起不来。
 /// </summary>
-public static class AppSettingsStore
-{
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        WriteIndented = true,
-        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-    };
+public static class AppSettingsStore {
+    private static readonly Lazy<SqliteSettingsStore> Store =
+        new(() => new SqliteSettingsStore(), isThreadSafe: true);
 
-    /// <summary>设置文件所在目录（= 数据目录）</summary>
+    /// <summary>数据目录（设置、任务列表、下载历史都在这个目录里的那个库中）</summary>
     public static string SettingsDirectory => AppPaths.DataDirectory;
 
-    /// <summary>设置文件完整路径</summary>
-    public static string SettingsFilePath => AppPaths.SettingsFile;
-
     /// <summary>
-    /// 读取设置。任何异常都回退到默认值 —— 设置坏了也不该让程序起不来。
+    /// 数据文件完整路径（就是那个库）——「关于」与命令行用它告诉用户"数据存在哪"。
+    /// 名字不再叫"设置文件"：设置只是库里的三张表之一。
     /// </summary>
-    public static AppSettings Load()
-    {
-        try
-        {
-            var path = SettingsFilePath;
-            if (!File.Exists(path)) return AppSettings.Default;
+    public static string DataFilePath => AppPaths.DatabaseFile;
 
-            var json = File.ReadAllText(path, Encoding.UTF8);
-            if (string.IsNullOrWhiteSpace(json)) return AppSettings.Default;
+    /// <summary>读设置；库坏了、表没了都退回默认值</summary>
+    public static AppSettings Load() => Store.Value.Load();
 
-            var settings = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? AppSettings.Default;
-            settings.Normalize();
-            return settings;
-        }
-        catch
-        {
-            return AppSettings.Default;
-        }
-    }
-
-    /// <summary>
-    /// 保存设置。先写临时文件再替换，避免中途失败留下半个损坏的 JSON。
-    /// 返回是否写成功（失败不抛异常，由调用方决定怎么提示）。
-    /// </summary>
-    public static bool Save(AppSettings settings)
-    {
-        try
-        {
-            settings.Normalize();
-
-            Directory.CreateDirectory(SettingsDirectory);
-            var path = SettingsFilePath;
-            var temp = path + ".tmp";
-
-            File.WriteAllText(temp, JsonSerializer.Serialize(settings, JsonOptions), new UTF8Encoding(false));
-
-            // File.Move(overwrite) 在 .NET Core 3.0+ 上等价于原子替换
-            File.Move(temp, path, overwrite: true);
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
+    /// <summary>写设置；返回是否成功（失败不抛，由调用方决定怎么提示）</summary>
+    public static bool Save(AppSettings settings) => Store.Value.Save(settings);
 }

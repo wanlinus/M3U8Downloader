@@ -7,8 +7,7 @@ using M3U8Downloader.Core.Settings;
 namespace M3U8Downloader.Core.Ffmpeg;
 
 /// <summary>下载阶段</summary>
-public enum FfmpegInstallStage
-{
+public enum FfmpegInstallStage {
     Downloading,
     Unpacking,
     Verifying,
@@ -16,12 +15,10 @@ public enum FfmpegInstallStage
 }
 
 /// <summary>下载进度</summary>
-public sealed record FfmpegInstallProgress(long DownloadedBytes, long TotalBytes, FfmpegInstallStage Stage)
-{
+public sealed record FfmpegInstallProgress(long DownloadedBytes, long TotalBytes, FfmpegInstallStage Stage) {
     public double Percent => TotalBytes > 0 ? DownloadedBytes * 100.0 / TotalBytes : 0;
 
-    public string Describe() => Stage switch
-    {
+    public string Describe() => Stage switch {
         FfmpegInstallStage.Downloading => TotalBytes > 0
             ? $"正在下载 {DownloadedBytes / 1024.0 / 1024.0:0.0} / {TotalBytes / 1024.0 / 1024.0:0.0} MB"
             : $"正在下载 {DownloadedBytes / 1024.0 / 1024.0:0.0} MB",
@@ -32,8 +29,7 @@ public sealed record FfmpegInstallProgress(long DownloadedBytes, long TotalBytes
 }
 
 /// <summary>安装结果</summary>
-public sealed class FfmpegInstallResult
-{
+public sealed class FfmpegInstallResult {
     public bool Success { get; init; }
     public string? FfmpegPath { get; init; }
     public string? FfprobePath { get; init; }
@@ -61,8 +57,7 @@ public sealed class FfmpegInstallResult
 /// 许可证提醒：FFmpeg 是独立的第三方组件，其 LGPL/GPL 条款不受本项目许可证影响，
 /// 因此「关于」界面里必须给出相应声明（见 <see cref="AppInfo.ThirdPartyNotices"/>）。
 /// </summary>
-public static class FfmpegInstaller
-{
+public static class FfmpegInstaller {
     /// <summary>
     /// Windows x64 默认下载源。
     ///
@@ -79,10 +74,8 @@ public static class FfmpegInstaller
         "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-winarm64-lgpl.zip";
 
     /// <summary>按当前运行环境挑默认下载源</summary>
-    public static string GetDefaultDownloadUrl()
-    {
-        if (!OperatingSystem.IsWindows())
-        {
+    public static string GetDefaultDownloadUrl() {
+        if (!OperatingSystem.IsWindows()) {
             // 本项目当前只分发 Windows 版；其它平台请让用户在设置里填自己的构建地址
             return DefaultWindowsX64Url;
         }
@@ -103,15 +96,13 @@ public static class FfmpegInstaller
         string? downloadUrl = null,
         string? proxyUrl = null,
         IProgress<FfmpegInstallProgress>? progress = null,
-        CancellationToken ct = default)
-    {
+        CancellationToken ct = default) {
         var url = string.IsNullOrWhiteSpace(downloadUrl) ? GetDefaultDownloadUrl() : downloadUrl!.Trim();
         var tempRoot = Path.Combine(Path.GetTempPath(), "M3U8Downloader-ffmpeg-" + Guid.NewGuid().ToString("N")[..8]);
         var archivePath = Path.Combine(tempRoot, "ffmpeg.zip");
         var extractDir = Path.Combine(tempRoot, "unpacked");
 
-        try
-        {
+        try {
             Directory.CreateDirectory(tempRoot);
 
             // ---------- 1. 下载 ----------
@@ -120,18 +111,13 @@ public static class FfmpegInstaller
 
             // ---------- 2. 解包 ----------
             progress?.Report(new FfmpegInstallProgress(0, 0, FfmpegInstallStage.Unpacking));
-            try
-            {
+            try {
                 ZipFile.ExtractToDirectory(archivePath, extractDir, overwriteFiles: true);
-            }
-            catch (InvalidDataException)
-            {
+            } catch (InvalidDataException) {
                 return FfmpegInstallResult.Fail(
                     "下载到的不是有效的 zip 包。若下载源被网络拦截，通常返回的是 HTML 错误页；" +
                     "请检查网络，或在设置里换一个下载源。");
-            }
-            catch (Exception ex)
-            {
+            } catch (Exception ex) {
                 return FfmpegInstallResult.Fail($"解包失败：{ex.Message}");
             }
 
@@ -152,8 +138,7 @@ public static class FfmpegInstaller
             CopyWithReplace(ffmpegSrc, ffmpegDest);
 
             string? ffprobeDest = null;
-            if (ffprobeSrc is not null)
-            {
+            if (ffprobeSrc is not null) {
                 ffprobeDest = Path.Combine(targetDir, FfmpegLocator.FfprobeFileName);
                 CopyWithReplace(ffprobeSrc, ffprobeDest);
             }
@@ -171,10 +156,8 @@ public static class FfmpegInstaller
 
             progress?.Report(new FfmpegInstallProgress(0, 0, FfmpegInstallStage.Done));
 
-            if (ffprobe is null)
-            {
-                return new FfmpegInstallResult
-                {
+            if (ffprobe is null) {
+                return new FfmpegInstallResult {
                     Success = true,
                     FfmpegPath = ffmpegDest,
                     FfprobePath = null,
@@ -185,8 +168,7 @@ public static class FfmpegInstaller
                 };
             }
 
-            return new FfmpegInstallResult
-            {
+            return new FfmpegInstallResult {
                 Success = true,
                 FfmpegPath = ffmpegDest,
                 FfprobePath = ffprobeDest,
@@ -194,36 +176,26 @@ public static class FfmpegInstaller
                 Directory = targetDir,
                 UsedFallbackDirectory = usingFallback,
             };
-        }
-        catch (OperationCanceledException)
-        {
+        } catch (OperationCanceledException) {
             return FfmpegInstallResult.Fail("已取消下载。");
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             return FfmpegInstallResult.Fail($"安装失败：{ex.Message}");
-        }
-        finally
-        {
+        } finally {
             try { if (Directory.Exists(tempRoot)) Directory.Delete(tempRoot, recursive: true); } catch { }
         }
     }
 
     private static async Task<string?> DownloadAsync(
         string url, string destination, string? proxyUrl,
-        IProgress<FfmpegInstallProgress>? progress, CancellationToken ct)
-    {
-        try
-        {
-            using var handler = new HttpClientHandler
-            {
+        IProgress<FfmpegInstallProgress>? progress, CancellationToken ct) {
+        try {
+            using var handler = new HttpClientHandler {
                 AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
                 AllowAutoRedirect = true,
             };
 
             // 代理：国内直连 GitHub 基本拿不到 ffmpeg 包，必须支持
-            var proxy = ProxyHelper.Create(new AppSettings
-            {
+            var proxy = ProxyHelper.Create(new AppSettings {
                 ProxyEnabled = !string.IsNullOrWhiteSpace(proxyUrl),
                 ProxyUrl = proxyUrl,
             });
@@ -254,8 +226,7 @@ public static class FfmpegInstaller
             long downloaded = 0;
             progress?.Report(new FfmpegInstallProgress(0, total, FfmpegInstallStage.Downloading));
 
-            while (true)
-            {
+            while (true) {
                 var read = await source.ReadAsync(buffer, ct).ConfigureAwait(false);
                 if (read <= 0) break;
 
@@ -266,34 +237,25 @@ public static class FfmpegInstaller
 
             if (downloaded == 0) return "下载到的文件为空，请稍后重试或更换下载源。";
             return null;
-        }
-        catch (OperationCanceledException)
-        {
+        } catch (OperationCanceledException) {
             throw;
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             return $"下载失败：{ex.Message}";
         }
     }
 
     /// <summary>在解包目录里递归找可执行文件（压缩包内层目录名随版本变化，不能写死）</summary>
-    private static string? FindBinary(string root, string fileName)
-    {
-        try
-        {
+    private static string? FindBinary(string root, string fileName) {
+        try {
             return Directory
                 .EnumerateFiles(root, fileName, SearchOption.AllDirectories)
                 .FirstOrDefault();
-        }
-        catch
-        {
+        } catch {
             return null;
         }
     }
 
-    private static void CopyWithReplace(string source, string destination)
-    {
+    private static void CopyWithReplace(string source, string destination) {
         if (File.Exists(destination)) File.Delete(destination);
         File.Copy(source, destination, overwrite: true);
     }

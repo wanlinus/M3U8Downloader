@@ -1,5 +1,5 @@
 # Publish self-contained builds (target machine needs NO .NET / Windows App SDK runtime)
-# Usage: .\publish.ps1 [-Runtime win-x64|win-x86|win-arm64] [-SkipApp] [-SkipCli] [-Version 1.2.3]
+# Usage: .\publish.ps1 [-Runtime win-x64|win-x86|win-arm64] [-SkipApp] [-Version 1.2.3]
 #
 # -Version is optional: it stamps the assembly version (CI passes the tag, so the
 # built exe reports the released version instead of the project default).
@@ -8,7 +8,6 @@ param(
     [ValidateSet('win-x64','win-x86','win-arm64')]
     [string]$Runtime = 'win-x64',
     [switch]$SkipApp,
-    [switch]$SkipCli,
     [string]$Version = ''
 )
 
@@ -16,25 +15,16 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-# 交给 dotnet 的版本参数（不指定就沿用项目里的默认值）
+# Version argument passed to dotnet (empty = keep the project default)
 $versionArgs = @()
 if ($Version) { $versionArgs = @("-p:Version=$Version") }
 
 Write-Host "== Publish M3U8 Downloader ($Runtime, self-contained) ==" -ForegroundColor Cyan
 if ($Version) { Write-Host "   version: $Version" -ForegroundColor Cyan }
 
-if (-not $SkipCli) {
-    Write-Host ""
-    Write-Host "[1/2] CLI" -ForegroundColor Yellow
-    $cliOut = Join-Path $root "publish\cli-$Runtime"
-    dotnet publish "src\M3U8Downloader.Cli\M3U8Downloader.Cli.csproj" -c Release -r $Runtime -o $cliOut @versionArgs
-    if ($LASTEXITCODE -ne 0) { exit 1 }
-    Write-Host ("  -> " + (Join-Path $cliOut 'm3u8dl.exe')) -ForegroundColor Green
-}
-
 if (-not $SkipApp) {
     Write-Host ""
-    Write-Host "[2/2] WinUI app" -ForegroundColor Yellow
+    Write-Host "[1/1] WinUI app" -ForegroundColor Yellow
     $appOut = Join-Path $root "publish\app-$Runtime"
 
     # A running copy locks the DLLs in the publish folder, which surfaces as a
@@ -58,9 +48,10 @@ if (-not $SkipApp) {
 
     # Verify the private runtime was actually bundled, otherwise the target
     # machine will fail with "required components of the Windows App Runtime are missing".
-    # e_sqlite3.dll is the native SQLite library (download history). Missing it is
-    # nastier than the others: the app starts fine and only blows up later, the first
-    # time the history is used -- so it belongs in this completeness check.
+    # e_sqlite3.dll is the native SQLite library behind the unified database
+    # (settings / task list / download history). Missing it is nastier than the
+    # others: the app starts fine and only blows up later, the first time storage
+    # is touched -- so it belongs in this completeness check.
     $required = @(
         'M3U8Downloader.exe', 'hostpolicy.dll', 'coreclr.dll',
         'Microsoft.WindowsAppRuntime.dll', 'Microsoft.ui.xaml.dll',

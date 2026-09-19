@@ -6,8 +6,7 @@ using M3U8Downloader.Core.Sites;
 namespace M3U8Downloader.Core.Tasks;
 
 /// <summary>下载任务状态</summary>
-public enum SeriesTaskState
-{
+public enum SeriesTaskState {
     Queued,
     Running,
 
@@ -25,8 +24,7 @@ public enum SeriesTaskState
 }
 
 /// <summary>任务里的一集（可绑定，实时显示该集进度）</summary>
-public sealed class TaskEpisodeItem : INotifyPropertyChanged
-{
+public sealed class TaskEpisodeItem : INotifyPropertyChanged {
     public required int Number { get; init; }
     public required string Title { get; init; }
 
@@ -43,38 +41,33 @@ public sealed class TaskEpisodeItem : INotifyPropertyChanged
     public string StatusText { get => _statusText; set => Set(ref _statusText, value); }
 
     private double _percent;
-    public double Percent
-    {
+    public double Percent {
         get => _percent;
         set { if (Set(ref _percent, value)) OnPropertyChanged(nameof(PercentText)); }
     }
 
     private long _bytes;
-    public long Bytes
-    {
+    public long Bytes {
         get => _bytes;
         set { if (Set(ref _bytes, value)) OnPropertyChanged(nameof(SizeText)); }
     }
 
     private string? _error;
-    public string? Error
-    {
+    public string? Error {
         get => _error;
         set { if (Set(ref _error, value)) OnPropertyChanged(nameof(HasError)); }
     }
 
     /// <summary>已下完的分片数（下载中才有意义）</summary>
     private int _completedSegments;
-    public int CompletedSegments
-    {
+    public int CompletedSegments {
         get => _completedSegments;
         set { if (Set(ref _completedSegments, value)) OnPropertyChanged(nameof(SegmentText)); }
     }
 
     /// <summary>分片总数（播放列表还没解析出来时为 0）</summary>
     private int _totalSegments;
-    public int TotalSegments
-    {
+    public int TotalSegments {
         get => _totalSegments;
         set { if (Set(ref _totalSegments, value)) OnPropertyChanged(nameof(SegmentText)); }
     }
@@ -95,8 +88,7 @@ public sealed class TaskEpisodeItem : INotifyPropertyChanged
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null)
-    {
+    private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null) {
         if (EqualityComparer<T>.Default.Equals(field, value)) return false;
         field = value;
         OnPropertyChanged(name);
@@ -114,11 +106,9 @@ public sealed class TaskEpisodeItem : INotifyPropertyChanged
 /// <param name="Skipped">跳过几集（已经是 MP4，或产物文件已不在）</param>
 /// <param name="Failed">失败几集</param>
 /// <param name="Messages">逐集说明（失败原因、原文件删不掉之类）</param>
-public sealed record Mp4RemuxOutcome(int Converted, int Skipped, int Failed, List<string> Messages)
-{
+public sealed record Mp4RemuxOutcome(int Converted, int Skipped, int Failed, List<string> Messages) {
     /// <summary>一句话总结，直接给用户看</summary>
-    public string Describe()
-    {
+    public string Describe() {
         if (Converted == 0 && Failed == 0)
             return "没有需要转换的集（都已经在是 MP4，或产物文件已不在）。";
 
@@ -154,8 +144,7 @@ public sealed record FetchNewCandidate(
 ///
 /// <see cref="Parsed"/> 一并带回来是为了省掉第二次页面请求。
 /// </summary>
-public sealed class FetchNewPreview
-{
+public sealed class FetchNewPreview {
     /// <summary>这次预检重新解析出来的站点数据（挑集的几秒里站点不会变，可直接复用）</summary>
     public required SiteSeries Parsed { get; init; }
 
@@ -201,8 +190,7 @@ public sealed record SnapshotRefreshResult(
 /// 一个「整部剧」下载任务。
 /// 实现 INotifyPropertyChanged，界面可以直接绑定，不必再包一层。
 /// </summary>
-public sealed class SeriesTask : INotifyPropertyChanged
-{
+public sealed class SeriesTask : INotifyPropertyChanged {
     public string Id { get; init; } = Guid.NewGuid().ToString("N")[..8];
 
     public required string Title { get; init; }
@@ -217,11 +205,9 @@ public sealed class SeriesTask : INotifyPropertyChanged
     /// 这种根目录，看不出东西到底下到哪个文件夹里。每开一轮下载都会重算一次
     /// （站点子目录名可能随解析结果变）。
     /// </summary>
-    public string? ResolvedDirectory
-    {
+    public string? ResolvedDirectory {
         get => _resolvedDirectory;
-        set
-        {
+        set {
             if (Set(ref _resolvedDirectory, value)) OnPropertyChanged(nameof(DisplayDirectory));
         }
     }
@@ -241,11 +227,9 @@ public sealed class SeriesTask : INotifyPropertyChanged
     /// 否则界面会出现「26/24 集」、进度分母也还是旧数。
     /// 不落盘 —— 恢复时按 Episodes 数量重算（见 <see cref="FromRecord"/>）。
     /// </summary>
-    public int TotalEpisodes
-    {
+    public int TotalEpisodes {
         get => _totalEpisodes;
-        set
-        {
+        set {
             if (!Set(ref _totalEpisodes, value)) return;
             OnPropertyChanged(nameof(ProgressText));
             OnPropertyChanged(nameof(EpisodeCountText));
@@ -284,11 +268,9 @@ public sealed class SeriesTask : INotifyPropertyChanged
     // ---------------- 可变状态 ----------------
 
     private SeriesTaskState _state = SeriesTaskState.Queued;
-    public SeriesTaskState State
-    {
+    public SeriesTaskState State {
         get => _state;
-        internal set
-        {
+        internal set {
             if (!Set(ref _state, value)) return;
             OnPropertyChanged(nameof(StateText));
             OnPropertyChanged(nameof(IsRunning));
@@ -317,11 +299,9 @@ public sealed class SeriesTask : INotifyPropertyChanged
     /// 不做声的话这个功能等于白做 —— 用户只会觉得"怎么短了一截"，
     /// 甚至怀疑是下载丢了内容。显式说出来，它才是一个用户能感知到的价值。
     /// </summary>
-    public int SkippedAdSegments
-    {
+    public int SkippedAdSegments {
         get => _skippedAdSegments;
-        internal set
-        {
+        internal set {
             if (!Set(ref _skippedAdSegments, value)) return;
             OnPropertyChanged(nameof(HasSkippedAds));
             OnPropertyChanged(nameof(SkippedAdsText));
@@ -337,11 +317,9 @@ public sealed class SeriesTask : INotifyPropertyChanged
         : "";
 
     private int _failedEpisodes;
-    public int FailedEpisodes
-    {
+    public int FailedEpisodes {
         get => _failedEpisodes;
-        internal set
-        {
+        internal set {
             if (!Set(ref _failedEpisodes, value)) return;
             OnPropertyChanged(nameof(NeedsRetry));
         }
@@ -351,18 +329,15 @@ public sealed class SeriesTask : INotifyPropertyChanged
     public double Percent { get => _percent; internal set => Set(ref _percent, value); }
 
     private long _downloadedBytes;
-    public long DownloadedBytes
-    {
+    public long DownloadedBytes {
         get => _downloadedBytes;
         internal set { if (Set(ref _downloadedBytes, value)) OnPropertyChanged(nameof(SizeText)); }
     }
 
     private double _speed;
-    public double SpeedBytesPerSecond
-    {
+    public double SpeedBytesPerSecond {
         get => _speed;
-        internal set
-        {
+        internal set {
             if (!Set(ref _speed, value)) return;
             OnPropertyChanged(nameof(SpeedText));
             OnPropertyChanged(nameof(DownloadStatusText));
@@ -376,11 +351,9 @@ public sealed class SeriesTask : INotifyPropertyChanged
     public double UploadBytesPerSecond => 0;
 
     private string? _currentEpisode;
-    public string? CurrentEpisode
-    {
+    public string? CurrentEpisode {
         get => _currentEpisode;
-        internal set
-        {
+        internal set {
             if (!Set(ref _currentEpisode, value)) return;
             OnPropertyChanged(nameof(CurrentEpisodeText));
             OnPropertyChanged(nameof(MessageText));
@@ -392,11 +365,9 @@ public sealed class SeriesTask : INotifyPropertyChanged
     /// 一集上千个分片时，百分比会长时间停在同一个数字上，分片计数才是"确实在动"的证据。
     /// </summary>
     private string _currentDetail = "";
-    internal string CurrentDetail
-    {
+    internal string CurrentDetail {
         get => _currentDetail;
-        set
-        {
+        set {
             if (!Set(ref _currentDetail, value)) return;
             OnPropertyChanged(nameof(CurrentEpisodeText));
             OnPropertyChanged(nameof(MessageText));
@@ -405,11 +376,9 @@ public sealed class SeriesTask : INotifyPropertyChanged
 
     private string? _message;
     /// <summary>状态说明文字。界面也会用它显示临时反馈（如"报告文件不存在"），因此公开可写。</summary>
-    public string? Message
-    {
+    public string? Message {
         get => _message;
-        set
-        {
+        set {
             if (!Set(ref _message, value)) return;
             OnPropertyChanged(nameof(MessageText));
             OnPropertyChanged(nameof(DownloadStatusText));
@@ -422,11 +391,9 @@ public sealed class SeriesTask : INotifyPropertyChanged
     public DateTimeOffset? FinishedAt { get => _finishedAt; internal set => Set(ref _finishedAt, value); }
 
     private TimeSpan _elapsed;
-    public TimeSpan Elapsed
-    {
+    public TimeSpan Elapsed {
         get => _elapsed;
-        internal set
-        {
+        internal set {
             if (!Set(ref _elapsed, value)) return;
             OnPropertyChanged(nameof(ElapsedText));
             OnPropertyChanged(nameof(DownloadStatusText));
@@ -434,8 +401,7 @@ public sealed class SeriesTask : INotifyPropertyChanged
     }
 
     private string? _reportPath;
-    public string? ReportPath
-    {
+    public string? ReportPath {
         get => _reportPath;
         internal set { if (Set(ref _reportPath, value)) OnPropertyChanged(nameof(HasReport)); }
     }
@@ -486,8 +452,7 @@ public sealed class SeriesTask : INotifyPropertyChanged
     /// </summary>
     public bool CanFetchNewEpisodes => IsFinished;
 
-    public string StateText => _state switch
-    {
+    public string StateText => _state switch {
         SeriesTaskState.Queued => "排队中",
         SeriesTaskState.Running => "下载中",
         SeriesTaskState.Paused => "已暂停",
@@ -503,10 +468,8 @@ public sealed class SeriesTask : INotifyPropertyChanged
     public string SizeText => _downloadedBytes > 0 ? $"{_downloadedBytes / 1024.0 / 1024.0:0.0} MB" : "";
 
     /// <summary>形如 "6/16 集 · 失败 1 · 12.3 MB/s · 1.2 GB"</summary>
-    public string ProgressText
-    {
-        get
-        {
+    public string ProgressText {
+        get {
             var parts = new List<string> { $"{_finishedEpisodes}/{TotalEpisodes} 集" };
             if (_failedEpisodes > 0) parts.Add($"失败 {_failedEpisodes}");
             if (_speed > 0 && IsRunning) parts.Add(SpeedText);
@@ -517,10 +480,8 @@ public sealed class SeriesTask : INotifyPropertyChanged
     }
 
     /// <summary>形如 "正在下载 第03集 · 62% · 183/185 片"</summary>
-    public string CurrentEpisodeText
-    {
-        get
-        {
+    public string CurrentEpisodeText {
+        get {
             if (!IsRunning || string.IsNullOrWhiteSpace(_currentEpisode)) return "";
             return string.IsNullOrWhiteSpace(_currentDetail)
                 ? $"正在下载 {_currentEpisode}"
@@ -532,10 +493,8 @@ public sealed class SeriesTask : INotifyPropertyChanged
     /// 任务行右侧的说明文字：正在下载时把「当前是第几集」和状态说明拼成一句。
     /// 界面上这一行横向位置紧张，所以合成一个 TextBlock 显示。
     /// </summary>
-    public string MessageText
-    {
-        get
-        {
+    public string MessageText {
+        get {
             var current = CurrentEpisodeText;
             if (string.IsNullOrWhiteSpace(current)) return _message ?? "";
             if (string.IsNullOrWhiteSpace(_message)) return current;
@@ -553,10 +512,8 @@ public sealed class SeriesTask : INotifyPropertyChanged
     /// 任务行右侧那一句：下载中优先显示速度与耗时（进度本身由进度条表达），
     /// 停下来之后显示说明文字（为什么停的、下一步该干什么）。
     /// </summary>
-    public string DownloadStatusText
-    {
-        get
-        {
+    public string DownloadStatusText {
+        get {
             if (!IsRunning) return MessageText;
 
             var parts = new List<string> { SpeedText };
@@ -566,8 +523,7 @@ public sealed class SeriesTask : INotifyPropertyChanged
         }
     }
 
-    public static string FormatSpeed(double bytesPerSecond) => bytesPerSecond switch
-    {
+    public static string FormatSpeed(double bytesPerSecond) => bytesPerSecond switch {
         >= 1024 * 1024 => $"{bytesPerSecond / 1024 / 1024:0.00} MB/s",
         >= 1024 => $"{bytesPerSecond / 1024:0.0} KB/s",
         > 0 => $"{bytesPerSecond:0} B/s",
@@ -575,8 +531,7 @@ public sealed class SeriesTask : INotifyPropertyChanged
     };
 
     // 组合文本依赖多个字段，统一在这里刷新
-    internal void RaiseTexts()
-    {
+    internal void RaiseTexts() {
         OnPropertyChanged(nameof(ProgressText));
         OnPropertyChanged(nameof(CurrentEpisodeText));
         OnPropertyChanged(nameof(MessageText));
@@ -588,10 +543,8 @@ public sealed class SeriesTask : INotifyPropertyChanged
         OnPropertyChanged(nameof(EpisodeCountText));
     }
     /// <summary>按快照同步分集清单（只在 UI 线程调用）</summary>
-    internal void SyncEpisodes(List<EpisodeProgressSnapshot> snapshots)
-    {
-        foreach (var s in snapshots)
-        {
+    internal void SyncEpisodes(List<EpisodeProgressSnapshot> snapshots) {
+        foreach (var s in snapshots) {
             var item = Episodes.FirstOrDefault(e => e.Number == s.Number);
             if (item is null) continue;
 
@@ -633,8 +586,7 @@ public sealed class SeriesTask : INotifyPropertyChanged
     /// </summary>
     public void ApplySimulatedProgress(int percent, int finished, int succeeded, int failed,
         long bytes, TimeSpan elapsed, string? message = null, string? currentEpisode = null,
-        double speedBytesPerSecond = 0)
-    {
+        double speedBytesPerSecond = 0) {
         Percent = percent;
         FinishedEpisodes = finished;
         SucceededEpisodes = succeeded;
@@ -650,8 +602,7 @@ public sealed class SeriesTask : INotifyPropertyChanged
     /// <summary>
     /// 强制任务状态，仅供自检与界面布局预览使用（见 <see cref="ApplySimulatedProgress"/>）。
     /// </summary>
-    public void ApplySimulatedState(SeriesTaskState state, string? message = null)
-    {
+    public void ApplySimulatedState(SeriesTaskState state, string? message = null) {
         State = state;
         if (message is not null) Message = message;
         RaiseTexts();
@@ -721,8 +672,7 @@ public sealed class SeriesTask : INotifyPropertyChanged
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null)
-    {
+    private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null) {
         if (EqualityComparer<T>.Default.Equals(field, value)) return false;
         field = value;
         OnPropertyChanged(name);
@@ -746,8 +696,7 @@ public sealed class SeriesTask : INotifyPropertyChanged
 /// 回到 UI 线程**。WinUI 里从后台线程修改绑定属性不会刷新界面（表现就是"卡在下载中"），
 /// 所以这里统一通过 <c>uiInvoker</c> 封送。
 /// </summary>
-public sealed class DownloadTaskManager : IDisposable
-{
+public sealed class DownloadTaskManager : IDisposable {
     private readonly SeriesDownloader _downloader;
     private readonly Action<Action>? _uiInvoker;
     private readonly TaskStore? _store;
@@ -774,8 +723,7 @@ public sealed class DownloadTaskManager : IDisposable
     /// 传 null 则任务只活在内存里（自检/命令行用）。
     /// </param>
     public DownloadTaskManager(SeriesDownloader? downloader = null, Action<Action>? uiInvoker = null,
-        TaskStore? store = null)
-    {
+        TaskStore? store = null) {
         _downloader = downloader ?? new SeriesDownloader();
         _uiInvoker = uiInvoker;
         _store = store;
@@ -818,8 +766,7 @@ public sealed class DownloadTaskManager : IDisposable
     public TaskDiagnostics Diagnostics { get; set; } = TaskDiagnostics.Disabled;
 
     /// <summary>日志用：把将要下载的集号压成 "1-21" 这种紧凑形式</summary>
-    private static string DescribeNumbers(IEnumerable<int> numbers)
-    {
+    private static string DescribeNumbers(IEnumerable<int> numbers) {
         var ordered = numbers.Distinct().OrderBy(n => n).ToList();
         if (ordered.Count == 0) return "(空)";
         if (ordered.Count == 1) return ordered[0].ToString();
@@ -828,8 +775,7 @@ public sealed class DownloadTaskManager : IDisposable
         var start = ordered[0];
         var prev = ordered[0];
 
-        for (var i = 1; i <= ordered.Count; i++)
-        {
+        for (var i = 1; i <= ordered.Count; i++) {
             var current = i < ordered.Count ? ordered[i] : int.MinValue;
             if (i < ordered.Count && current == prev + 1) { prev = current; continue; }
 
@@ -846,26 +792,21 @@ public sealed class DownloadTaskManager : IDisposable
     public int RunningCount => Tasks.Count(t => t.State == SeriesTaskState.Running);
     public int QueuedCount => Tasks.Count(t => t.State == SeriesTaskState.Queued);
 
-    private void RunOnUi(Action action)
-    {
+    private void RunOnUi(Action action) {
         if (_uiInvoker is null) { action(); return; }
         _uiInvoker(action);
     }
 
     /// <summary>封送到 UI 线程并等它做完（恢复任务时需要先插进列表再继续处理）</summary>
-    private Task RunOnUiAsync(Action action)
-    {
-        if (_uiInvoker is null)
-        {
+    private Task RunOnUiAsync(Action action) {
+        if (_uiInvoker is null) {
             action();
             return Task.CompletedTask;
         }
 
         var tcs = new TaskCompletionSource();
-        _uiInvoker(() =>
-        {
-            try { action(); tcs.SetResult(); }
-            catch (Exception ex) { tcs.SetException(ex); }
+        _uiInvoker(() => {
+            try { action(); tcs.SetResult(); } catch (Exception ex) { tcs.SetException(ex); }
         });
         return tcs.Task;
     }
@@ -882,8 +823,7 @@ public sealed class DownloadTaskManager : IDisposable
     /// </summary>
     public async Task<Mp4RemuxOutcome> RemuxToMp4Async(
         SeriesTask task, string ffmpegPath, IProgress<string>? progress = null,
-        CancellationToken ct = default)
-    {
+        CancellationToken ct = default) {
         // 集合必须在 UI 线程上快照：本方法跑在后台线程，直接遍历界面绑定的
         // ObservableCollection 会与之撞车（见 pitfalls 第 14 条）
         TaskEpisodeItem[] episodes = Array.Empty<TaskEpisodeItem>();
@@ -896,8 +836,7 @@ public sealed class DownloadTaskManager : IDisposable
         var messages = new List<string>();
         var renames = new List<(string Old, string New)>();
 
-        foreach (var ep in todo)
-        {
+        foreach (var ep in todo) {
             ct.ThrowIfCancellationRequested();
 
             var src = ep.OutputPath!;
@@ -906,8 +845,7 @@ public sealed class DownloadTaskManager : IDisposable
             progress?.Report($"正在转 MP4：第 {ep.Number:00} 集（{converted + failed + 1}/{todo.Count}）");
 
             var r = await FfmpegRunner.RemuxToMp4Async(ffmpegPath, src, dst, ct).ConfigureAwait(false);
-            if (!r.Success || !File.Exists(dst) || new FileInfo(dst).Length == 0)
-            {
+            if (!r.Success || !File.Exists(dst) || new FileInfo(dst).Length == 0) {
                 failed++;
                 messages.Add($"第 {ep.Number:00} 集转失败：{r.Error ?? "产物为空"}");
                 try { if (File.Exists(dst)) File.Delete(dst); } catch { /* 半成品留着也没用，删不掉就算了 */ }
@@ -915,12 +853,9 @@ public sealed class DownloadTaskManager : IDisposable
             }
 
             // 转好了再删原文件：万一 MP4 有问题，至少 TS 还在
-            try
-            {
+            try {
                 File.Delete(src);
-            }
-            catch (Exception ex)
-            {
+            } catch (Exception ex) {
                 messages.Add($"第 {ep.Number:00} 集已转好，但原文件删不掉（{ex.Message}）");
             }
 
@@ -930,8 +865,7 @@ public sealed class DownloadTaskManager : IDisposable
         }
 
         // 产物路径变了，得落盘 —— 否则下次「继续下载」会以为这一集的文件不见了
-        if (converted > 0)
-        {
+        if (converted > 0) {
             UpdateReportAfterRemux(task, renames);
             ScheduleSave();
         }
@@ -947,13 +881,11 @@ public sealed class DownloadTaskManager : IDisposable
     /// 其余内容一个字都不动 —— 报告终究是历史记录，不该被重写成另一份东西。
     /// </summary>
     private static void UpdateReportAfterRemux(
-        SeriesTask task, IReadOnlyList<(string Old, string New)> renames)
-    {
+        SeriesTask task, IReadOnlyList<(string Old, string New)> renames) {
         var path = task.ReportPath;
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
 
-        try
-        {
+        try {
             var text = File.ReadAllText(path);
             foreach (var (oldName, newName) in renames)
                 text = text.Replace(oldName, newName, StringComparison.Ordinal);
@@ -961,9 +893,7 @@ public sealed class DownloadTaskManager : IDisposable
             text = text.Replace("- **产物格式**：TS", "- **产物格式**：MP4", StringComparison.Ordinal);
 
             File.WriteAllText(path, text);
-        }
-        catch
-        {
+        } catch {
             // 报告改不动不影响主流程：产物本身已经转好了
         }
     }
@@ -979,8 +909,7 @@ public sealed class DownloadTaskManager : IDisposable
         && !ep.OutputPath!.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>状态有变化：通知界面，并安排一次落盘（节流）</summary>
-    private void RaiseChanged()
-    {
+    private void RaiseChanged() {
         Changed?.Invoke(this, EventArgs.Empty);
         ScheduleSave();
     }
@@ -991,13 +920,11 @@ public sealed class DownloadTaskManager : IDisposable
     /// 安排一次节流的落盘。进度回调每秒可能来几十次，不能每次都写文件，
     /// 但也不能拖太久 —— 否则用户在这中间关掉程序就会丢进度。
     /// </summary>
-    private void ScheduleSave()
-    {
+    private void ScheduleSave() {
         if (_store is null || _disposed) return;
         if (Interlocked.Exchange(ref _saveQueued, 1) == 1) return;
 
-        _ = Task.Run(async () =>
-        {
+        _ = Task.Run(async () => {
             try { await Task.Delay(1200).ConfigureAwait(false); } catch { }
             Interlocked.Exchange(ref _saveQueued, 0);
 
@@ -1009,24 +936,18 @@ public sealed class DownloadTaskManager : IDisposable
     /// <summary>
     /// 立即落盘。关窗时由界面在 UI 线程直接调用，保证「关掉程序」这一刻的进度已经写进文件。
     /// </summary>
-    public void SaveNow()
-    {
+    public void SaveNow() {
         if (_store is null) return;
 
-        try
-        {
+        try {
             _store.Save(Tasks.Select(ToRecord).ToList());
-        }
-        catch
-        {
+        } catch {
             // 存盘失败不该影响下载
         }
     }
 
-    private SeriesTaskRecord ToRecord(SeriesTask t)
-    {
-        var record = new SeriesTaskRecord
-        {
+    private SeriesTaskRecord ToRecord(SeriesTask t) {
+        var record = new SeriesTaskRecord {
             Id = t.Id,
             Title = t.Title,
             SiteName = t.SiteName,
@@ -1054,10 +975,8 @@ public sealed class DownloadTaskManager : IDisposable
             Snapshot = t.Snapshot,
         };
 
-        foreach (var e in t.Episodes)
-        {
-            record.Episodes.Add(new TaskEpisodeRecord
-            {
+        foreach (var e in t.Episodes) {
+            record.Episodes.Add(new TaskEpisodeRecord {
                 Number = e.Number,
                 Title = e.Title,
                 Status = e.State.ToString(),
@@ -1071,12 +990,10 @@ public sealed class DownloadTaskManager : IDisposable
         return record;
     }
 
-    private static SeriesTask FromRecord(SeriesTaskRecord r)
-    {
+    private static SeriesTask FromRecord(SeriesTaskRecord r) {
         var ordered = r.Episodes.OrderBy(e => e.Number).ToList();
 
-        var task = new SeriesTask
-        {
+        var task = new SeriesTask {
             Id = string.IsNullOrWhiteSpace(r.Id) ? Guid.NewGuid().ToString("N")[..8] : r.Id,
             Title = r.Title,
             SiteName = r.SiteName,
@@ -1097,14 +1014,12 @@ public sealed class DownloadTaskManager : IDisposable
             SeriesSubdirectory = r.SeriesSubdirectory,
         };
 
-        foreach (var e in ordered)
-        {
+        foreach (var e in ordered) {
             var state = Enum.TryParse<EpisodeDownloadStatus>(e.Status, ignoreCase: true, out var parsed)
                 ? parsed
                 : EpisodeDownloadStatus.Pending;
 
-            task.Episodes.Add(new TaskEpisodeItem
-            {
+            task.Episodes.Add(new TaskEpisodeItem {
                 Number = e.Number,
                 Title = e.Title,
                 State = state,
@@ -1123,8 +1038,7 @@ public sealed class DownloadTaskManager : IDisposable
         // 由 RestoreAsync 决定是否自动接着下。
         // 上次是「已暂停」的保持暂停 —— 用户要求停下，就别自作主张又跑起来。
         var restoredState = r.ParsedState;
-        task.State = restoredState switch
-        {
+        task.State = restoredState switch {
             SeriesTaskState.Running or SeriesTaskState.Queued => SeriesTaskState.PartiallyCompleted,
             _ => restoredState,
         };
@@ -1149,8 +1063,7 @@ public sealed class DownloadTaskManager : IDisposable
         return task;
     }
 
-    internal static string DescribeStatus(EpisodeDownloadStatus status) => status switch
-    {
+    internal static string DescribeStatus(EpisodeDownloadStatus status) => status switch {
         EpisodeDownloadStatus.Pending => "等待中",
         EpisodeDownloadStatus.Resolving => "解析中",
         EpisodeDownloadStatus.Downloading => "下载中",
@@ -1165,22 +1078,18 @@ public sealed class DownloadTaskManager : IDisposable
     /// 已完成的任务只恢复显示，不会重新下载。
     /// </summary>
     /// <returns>恢复的任务数</returns>
-    public async Task<int> RestoreAsync(CancellationToken ct = default)
-    {
+    public async Task<int> RestoreAsync(CancellationToken ct = default) {
         if (_store is null) return 0;
         if (Interlocked.Exchange(ref _restoring, 1) == 1) return 0;
 
         List<SeriesTask> restored = new();
-        try
-        {
+        try {
             var records = _store.Load();
             if (records.Count == 0) return 0;
 
-            await RunOnUiAsync(() =>
-            {
+            await RunOnUiAsync(() => {
                 // Tasks 是「最新的在最前」，所以按创建时间正序依次插到最前面
-                foreach (var r in records.OrderBy(r => r.CreatedAt))
-                {
+                foreach (var r in records.OrderBy(r => r.CreatedAt)) {
                     if (string.IsNullOrWhiteSpace(r.PageUrl)) continue;
 
                     var task = FromRecord(r);
@@ -1191,8 +1100,7 @@ public sealed class DownloadTaskManager : IDisposable
 
             if (restored.Count == 0) return 0;
 
-            foreach (var task in restored)
-            {
+            foreach (var task in restored) {
                 ct.ThrowIfCancellationRequested();
 
                 // 已完成 / 用户主动取消的，不自动接着下；
@@ -1201,20 +1109,15 @@ public sealed class DownloadTaskManager : IDisposable
                     or SeriesTaskState.Paused) continue;
                 if (!task.CanResume) continue;
 
-                RunOnUi(() =>
-                {
+                RunOnUi(() => {
                     task.Message = "正在恢复…";
                     ScheduleSave();
                 });
 
-                try
-                {
+                try {
                     await ResumeAsync(task, ct).ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    RunOnUi(() =>
-                    {
+                } catch (Exception ex) {
+                    RunOnUi(() => {
                         task.Message = $"恢复失败：{ex.Message}";
                         RaiseChanged();
                     });
@@ -1222,9 +1125,7 @@ public sealed class DownloadTaskManager : IDisposable
             }
 
             return restored.Count;
-        }
-        finally
-        {
+        } finally {
             Interlocked.Exchange(ref _restoring, 0);
         }
     }
@@ -1242,18 +1143,14 @@ public sealed class DownloadTaskManager : IDisposable
     /// 用户勾完把选中的集号与这里返回的 <see cref="FetchNewPreview"/> 一起交给
     /// <see cref="ResumeAsync"/>，既省掉一次页面请求，也保证"下什么"由用户决定。
     /// </summary>
-    public async Task<FetchNewPreview?> PreviewFetchNewAsync(SeriesTask task, CancellationToken ct = default)
-    {
+    public async Task<FetchNewPreview?> PreviewFetchNewAsync(SeriesTask task, CancellationToken ct = default) {
         if (_disposed) return null;
         if (task.State == SeriesTaskState.Running) return null;
 
         SiteSeries parsed;
-        try
-        {
+        try {
             parsed = await ParseSeriesAsync(task.PageUrl, ct).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             // 站点解析不了（断网 / 站点挂了 / 代理没开）→ 退回本地快照：
             // 至少让用户把没下完的集补上，而不是一集都下不了
             var fallback = await PreviewFromSnapshotAsync(task, ct).ConfigureAwait(false);
@@ -1261,8 +1158,7 @@ public sealed class DownloadTaskManager : IDisposable
 
             Diagnostics.Write($"{Diagnostics.Tag(task.Id, task.Title)} 站点解析失败，改用本地快照：" +
                               $"{ex.Message}");
-            return new FetchNewPreview
-            {
+            return new FetchNewPreview {
                 Parsed = fallback.Parsed,
                 SourceId = fallback.SourceId,
                 Directory = fallback.Directory,
@@ -1287,8 +1183,7 @@ public sealed class DownloadTaskManager : IDisposable
 
         var candidates = await BuildCandidatesAsync(task, parsed, siteEpisodes, ct).ConfigureAwait(false);
 
-        var preview = new FetchNewPreview
-        {
+        var preview = new FetchNewPreview {
             Parsed = parsed,
             SourceId = sourceId,
             Directory = ResolveProductDirectory(task, parsed),
@@ -1322,8 +1217,7 @@ public sealed class DownloadTaskManager : IDisposable
     ///
     /// 返回 null = 没有快照（老任务）或任务没停下，调用方退回联网解析。
     /// </summary>
-    public async Task<FetchNewPreview?> PreviewFromSnapshotAsync(SeriesTask task, CancellationToken ct = default)
-    {
+    public async Task<FetchNewPreview?> PreviewFromSnapshotAsync(SeriesTask task, CancellationToken ct = default) {
         if (_disposed) return null;
         if (task.State == SeriesTaskState.Running) return null;
 
@@ -1344,8 +1238,7 @@ public sealed class DownloadTaskManager : IDisposable
 
         var candidates = await BuildCandidatesAsync(task, series, siteEpisodes, ct).ConfigureAwait(false);
 
-        var preview = new FetchNewPreview
-        {
+        var preview = new FetchNewPreview {
             Parsed = series,
             SourceId = sourceId,
             Directory = ResolveProductDirectory(task, series),
@@ -1368,8 +1261,7 @@ public sealed class DownloadTaskManager : IDisposable
     /// 由调用方降级（继续用快照，不影响已列出的集下载）。
     /// </summary>
     public async Task<SnapshotRefreshResult> RefreshEpisodesSnapshotAsync(SeriesTask task,
-        CancellationToken ct = default)
-    {
+        CancellationToken ct = default) {
         var parsed = await ParseSeriesAsync(task.PageUrl, ct).ConfigureAwait(false);
 
         var sourceId = task.PreferredSourceId
@@ -1385,8 +1277,7 @@ public sealed class DownloadTaskManager : IDisposable
 
         HashSet<int> known = new();
         SeriesSnapshot? previous = null;
-        await RunOnUiAsync(() =>
-        {
+        await RunOnUiAsync(() => {
             previous = task.Snapshot;
             known = previous?.Episodes.Select(m => m.Number).ToHashSet() ?? new HashSet<int>();
         }).ConfigureAwait(false);
@@ -1398,8 +1289,7 @@ public sealed class DownloadTaskManager : IDisposable
         // 新集也可能已经在磁盘上（用户自己下过/别的任务下过）—— 逐集核一下再交给界面
         var directory = ResolveProductDirectory(task, parsed);
         var candidates = new List<FetchNewCandidate>();
-        foreach (var ep in fresh)
-        {
+        foreach (var ep in fresh) {
             var path = await Task.Run(() =>
                     EpisodeFileScanner.FindEpisodeFile(directory, task.FileNamePattern, parsed, ep.Number), ct)
                 .ConfigureAwait(false);
@@ -1422,8 +1312,7 @@ public sealed class DownloadTaskManager : IDisposable
     /// 联网预检与本地快照预检共用这一段 —— 两条路径的判定必须完全一致。
     /// </summary>
     private async Task<List<FetchNewCandidate>> BuildCandidatesAsync(SeriesTask task, SiteSeries series,
-        IReadOnlyList<SiteEpisode> siteEpisodes, CancellationToken ct)
-    {
+        IReadOnlyList<SiteEpisode> siteEpisodes, CancellationToken ct) {
         // 任务里每一集的现状。绑定用的集合只能在 UI 线程上读（pitfalls 第 14 条），
         // 先快照一份再在后台算。
         TaskEpisodeItem[] known = Array.Empty<TaskEpisodeItem>();
@@ -1438,23 +1327,18 @@ public sealed class DownloadTaskManager : IDisposable
 
         // 下载历史：文件被改名/搬走时，还能提醒用户"这集记录里下过"（带上当时的大小）
         Dictionary<int, DownloadHistoryEntry> history;
-        try
-        {
+        try {
             history = History.FindBySeries(task.PageUrl)
                 .GroupBy(h => h.EpisodeNumber)
                 .ToDictionary(g => g.Key, g => g.First());
-        }
-        catch
-        {
+        } catch {
             history = new Dictionary<int, DownloadHistoryEntry>();
         }
 
         var candidates = new List<FetchNewCandidate>();
-        foreach (var ep in siteEpisodes)
-        {
+        foreach (var ep in siteEpisodes) {
             // 磁盘上就有文件 —— 这就是"下过了"，置灰不让重下
-            if (onDisk.TryGetValue(ep.Number, out var path))
-            {
+            if (onDisk.TryGetValue(ep.Number, out var path)) {
                 candidates.Add(new FetchNewCandidate(ep.Number, ep.DisplayTitle,
                     IsNew: false, Note: "已下载", IsDownloaded: true, FilePath: path));
                 continue;
@@ -1462,8 +1346,7 @@ public sealed class DownloadTaskManager : IDisposable
 
             var item = known.FirstOrDefault(x => x.Number == ep.Number);
             var isNew = item is null;
-            var note = item?.State switch
-            {
+            var note = item?.State switch {
                 EpisodeDownloadStatus.Failed => "上次失败",
                 EpisodeDownloadStatus.Canceled => "上次取消",
                 EpisodeDownloadStatus.Completed => "产物已丢失",
@@ -1473,8 +1356,7 @@ public sealed class DownloadTaskManager : IDisposable
 
             // 任务里没有（被清理了/换了机器）但历史里下过 —— 说法要准确，免得用户以为是新的，
             // 顺带报一下当初下出来多大（历史里存着，此时正是它派用场的地方）
-            if (history.TryGetValue(ep.Number, out var past) && note is "新增" or "产物已丢失")
-            {
+            if (history.TryGetValue(ep.Number, out var past) && note is "新增" or "产物已丢失") {
                 note = past.FileBytes > 0
                     ? $"曾下载过（{past.FileBytes / 1024.0 / 1024.0:0.0} MB），文件已不在"
                     : "曾下载过，文件已不在";
@@ -1488,24 +1370,19 @@ public sealed class DownloadTaskManager : IDisposable
     }
 
     /// <summary>产物目录：任务跑过就用它记下来的；没跑成过就按参数算一遍</summary>
-    private static string ResolveProductDirectory(SeriesTask task, SiteSeries series)
-    {
+    private static string ResolveProductDirectory(SeriesTask task, SiteSeries series) {
         var directory = task.ResolvedDirectory;
         if (!string.IsNullOrWhiteSpace(directory)) return directory;
 
-        try
-        {
+        try {
             return SeriesDownloader.ResolveSeriesDirectory(series, BuildOptions(task));
-        }
-        catch
-        {
+        } catch {
             return task.OutputDirectory;
         }
     }
 
     /// <summary>把站点上的全部集记进任务（首轮快照）</summary>
-    private void CaptureEpisodesSnapshot(SeriesTask task, SiteSeries series)
-    {
+    private void CaptureEpisodesSnapshot(SeriesTask task, SiteSeries series) {
         var sourceId = task.PreferredSourceId
                        ?? series.Sources.FirstOrDefault(s => s.Episodes.Any(e => e.IsSelected))?.Id
                        ?? series.Sources.FirstOrDefault()?.Id;
@@ -1514,8 +1391,7 @@ public sealed class DownloadTaskManager : IDisposable
     }
 
     /// <summary>把站点上的全部集记进任务（首轮快照，指定播放源）</summary>
-    private void CaptureEpisodesSnapshot(SeriesTask task, SiteSeries series, int? sourceId)
-    {
+    private void CaptureEpisodesSnapshot(SeriesTask task, SiteSeries series, int? sourceId) {
         var episodes = series.AllEpisodes
             .Where(e => sourceId is null || e.SourceId == sourceId)
             .GroupBy(e => e.Number)
@@ -1526,8 +1402,7 @@ public sealed class DownloadTaskManager : IDisposable
         if (episodes.Count == 0) return;
 
         var snapshot = BuildSnapshot(series, sourceId, episodes);
-        RunOnUi(() =>
-        {
+        RunOnUi(() => {
             task.Snapshot = snapshot;
             ScheduleSave();
         });
@@ -1535,12 +1410,10 @@ public sealed class DownloadTaskManager : IDisposable
 
     /// <summary>刷新快照（用已经解析好的站点数据），并落盘</summary>
     private async Task SaveEpisodesSnapshotAsync(SeriesTask task, SiteSeries series, int? sourceId,
-        IReadOnlyList<SiteEpisode> siteEpisodes, SeriesSnapshot? previous = null)
-    {
+        IReadOnlyList<SiteEpisode> siteEpisodes, SeriesSnapshot? previous = null) {
         var snapshot = BuildSnapshot(series, sourceId, siteEpisodes, previous);
 
-        await RunOnUiAsync(() =>
-        {
+        await RunOnUiAsync(() => {
             task.Snapshot = snapshot;
             ScheduleSave();
             RaiseChanged();
@@ -1555,10 +1428,8 @@ public sealed class DownloadTaskManager : IDisposable
     /// 分片请求没了 Referer，站点直接 403。所以旧头先铺底，新头再覆盖。
     /// </summary>
     private static SeriesSnapshot BuildSnapshot(SiteSeries series, int? sourceId,
-        IReadOnlyList<SiteEpisode> episodes, SeriesSnapshot? previous = null)
-    {
-        var snapshot = new SeriesSnapshot
-        {
+        IReadOnlyList<SiteEpisode> episodes, SeriesSnapshot? previous = null) {
+        var snapshot = new SeriesSnapshot {
             Kind = series.Kind.ToString(),
             SiteName = series.SiteName,
             PageUrl = series.PageUrl,
@@ -1576,8 +1447,7 @@ public sealed class DownloadTaskManager : IDisposable
         return snapshot;
     }
 
-    private static EpisodeMetadata ToMetadata(SiteEpisode ep) => new()
-    {
+    private static EpisodeMetadata ToMetadata(SiteEpisode ep) => new() {
         Number = ep.Number,
         Title = string.IsNullOrWhiteSpace(ep.Title) ? ep.DisplayTitle : ep.Title,
         PageUrl = ep.PageUrl,
@@ -1585,8 +1455,7 @@ public sealed class DownloadTaskManager : IDisposable
         SourceId = ep.SourceId,
     };
 
-    private static SiteEpisode ToSiteEpisode(EpisodeMetadata m) => new()
-    {
+    private static SiteEpisode ToSiteEpisode(EpisodeMetadata m) => new() {
         Number = m.Number,
         SourceId = m.SourceId,
         PageUrl = m.PageUrl,
@@ -1603,10 +1472,8 @@ public sealed class DownloadTaskManager : IDisposable
     ///   直链在每集下载前现解析（<c>SiteResolver.ResolvePlaylistUrlAsync</c>）。
     /// </summary>
     private static SiteSeries BuildSeriesFromSnapshot(SeriesTask task, SeriesSnapshot snapshot,
-        IReadOnlyList<SiteEpisode> episodes)
-    {
-        var series = new SiteSeries
-        {
+        IReadOnlyList<SiteEpisode> episodes) {
+        var series = new SiteSeries {
             Kind = Enum.TryParse<SiteKind>(snapshot.Kind, ignoreCase: true, out var kind)
                 ? kind
                 : SiteKind.Generic,
@@ -1619,8 +1486,7 @@ public sealed class DownloadTaskManager : IDisposable
 
         foreach (var kv in snapshot.Headers) series.Headers[kv.Key] = kv.Value;
 
-        var source = new SitePlaySource
-        {
+        var source = new SitePlaySource {
             Id = snapshot.SourceId ?? episodes.FirstOrDefault()?.SourceId ?? 0,
             Name = task.SourceName ?? "",
         };
@@ -1653,13 +1519,11 @@ public sealed class DownloadTaskManager : IDisposable
     /// </param>
     public async Task<bool> ResumeAsync(SeriesTask task, CancellationToken ct = default,
         bool includeNewEpisodes = false, FetchNewPreview? preview = null,
-        IReadOnlySet<int>? onlyNumbers = null)
-    {
+        IReadOnlySet<int>? onlyNumbers = null) {
         if (_disposed) return false;
         if (task.State == SeriesTaskState.Running) return false;
 
-        lock (_gate)
-        {
+        lock (_gate) {
             if (_pending.Contains(task)) return false;
         }
 
@@ -1680,21 +1544,14 @@ public sealed class DownloadTaskManager : IDisposable
 
         // 1. 重新解析整部剧：m3u8 直链有效期很短，上次存下来的多半已经失效
         SiteSeries parsed;
-        if (preview is not null)
-        {
+        if (preview is not null) {
             // 预检刚抓过一遍页面，直接复用 —— 用户挑集的那几秒里站点不会变
             parsed = preview.Parsed;
-        }
-        else
-        {
-            try
-            {
+        } else {
+            try {
                 parsed = await ParseSeriesAsync(task.PageUrl, ct).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                RunOnUi(() =>
-                {
+            } catch (Exception ex) {
+                RunOnUi(() => {
                     task.Message = $"继续下载失败（{ex.Message}），可稍后重试";
                     RaiseChanged();
                 });
@@ -1711,8 +1568,7 @@ public sealed class DownloadTaskManager : IDisposable
 
         // 自己联网解析的这条路（「继续下载」、或老任务第一次续下）顺手把集快照补上：
         // 否则用户只点「继续下载」的话，快照永远补不上，下次续下还是得联网。
-        if (preview is null)
-        {
+        if (preview is null) {
             var snapshotEpisodes = parsed.AllEpisodes
                 .Where(e => e.SourceId == sourceId)
                 .GroupBy(e => e.Number)
@@ -1731,8 +1587,7 @@ public sealed class DownloadTaskManager : IDisposable
         // 必须并入 numbers 之后再选集，下面的筛选/去重/分拨逻辑就全都复用，
         // 不用另起一条下载路径。只勾了一部分时，没勾的集**不追加**（用户选择优先）。
         var newOnSite = new List<SiteEpisode>();
-        if (includeNewEpisodes)
-        {
+        if (includeNewEpisodes) {
             var known = task.Episodes.Select(e => e.Number).ToHashSet();
             newOnSite = parsed.AllEpisodes
                 .Where(e => e.SourceId == sourceId
@@ -1742,8 +1597,7 @@ public sealed class DownloadTaskManager : IDisposable
                 .Select(g => g.First())
                 .ToList();
 
-            if (newOnSite.Count > 0)
-            {
+            if (newOnSite.Count > 0) {
                 numbers.UnionWith(newOnSite.Select(e => e.Number));
                 Diagnostics.Write($"{Diagnostics.Tag(task.Id, task.Title)} " +
                                   $"续下发现新集：{DescribeNumbers(newOnSite.Select(e => e.Number))}");
@@ -1754,8 +1608,7 @@ public sealed class DownloadTaskManager : IDisposable
             .Where(e => e.SourceId == sourceId && numbers.Contains(e.Number))
             .ToList();
 
-        if (wanted.Count < numbers.Count)
-        {
+        if (wanted.Count < numbers.Count) {
             // 原来的源对不上了（源改版 / re-parse 后 id 变了）：退一步"按集号找"。
             // 但**每个集号只取一个**（优先同名源，其次列表靠前的源）——
             // 站点把同一集挂在多个源上是常态，不去重就会把同一集下两遍。
@@ -1768,8 +1621,7 @@ public sealed class DownloadTaskManager : IDisposable
                               .First())
                 .ToList();
 
-            if (extra.Count > 0)
-            {
+            if (extra.Count > 0) {
                 wanted.AddRange(extra);
                 Diagnostics.Write($"{Diagnostics.Tag(task.Id, task.Title)} " +
                                   $"⚠ 首选源（sid={sourceId}）缺少部分集，已按集号在其它源补齐：" +
@@ -1786,10 +1638,8 @@ public sealed class DownloadTaskManager : IDisposable
         foreach (var e in keep) e.IsSelected = true;
         wanted = keep;
 
-        if (wanted.Count == 0)
-        {
-            RunOnUi(() =>
-            {
+        if (wanted.Count == 0) {
+            RunOnUi(() => {
                 task.Message = $"继续下载失败：站点上找不到原来的剧集（集号 {DescribeNumbers(numbers)}）";
                 RaiseChanged();
             });
@@ -1797,8 +1647,7 @@ public sealed class DownloadTaskManager : IDisposable
         }
 
         var planned = parsed.SelectedEpisodes.Select(e => e.Number).ToList();
-        if (planned.Count != wanted.Count || planned.Any(n => !numbers.Contains(n)))
-        {
+        if (planned.Count != wanted.Count || planned.Any(n => !numbers.Contains(n))) {
             Diagnostics.Write($"{Diagnostics.Tag(task.Id, task.Title)} " +
                               $"⚠ 选集异常：期望 {DescribeNumbers(numbers)}，实际 {DescribeNumbers(planned)}");
         }
@@ -1808,8 +1657,7 @@ public sealed class DownloadTaskManager : IDisposable
         var unfinished = new HashSet<int>();
         var staleNumbers = new List<int>();
 
-        foreach (var ep in wanted)
-        {
+        foreach (var ep in wanted) {
             var item = task.Episodes.FirstOrDefault(x => x.Number == ep.Number);
             var fileMissing = item is not null
                               && !string.IsNullOrWhiteSpace(item.OutputPath)
@@ -1819,18 +1667,14 @@ public sealed class DownloadTaskManager : IDisposable
                        && item.State == EpisodeDownloadStatus.Completed
                        && !fileMissing;
 
-            if (done)
-            {
-                previous.Add(new EpisodeDownloadReport
-                {
+            if (done) {
+                previous.Add(new EpisodeDownloadReport {
                     Episode = ep,
                     Status = EpisodeDownloadStatus.Completed,
                     OutputPath = item!.OutputPath,
                     OutputBytes = item.Bytes,
                 });
-            }
-            else
-            {
+            } else {
                 unfinished.Add(ep.Number);
                 if (item is not null && item.State == EpisodeDownloadStatus.Completed)
                     staleNumbers.Add(item.Number);
@@ -1838,12 +1682,9 @@ public sealed class DownloadTaskManager : IDisposable
         }
 
         // 记录说下好了、文件却不在了 —— 当作没下过，重新下
-        if (staleNumbers.Count > 0)
-        {
-            RunOnUi(() =>
-            {
-                foreach (var number in staleNumbers)
-                {
+        if (staleNumbers.Count > 0) {
+            RunOnUi(() => {
+                foreach (var number in staleNumbers) {
                     var item = task.Episodes.FirstOrDefault(x => x.Number == number);
                     if (item is null) continue;
                     item.State = EpisodeDownloadStatus.Pending;
@@ -1860,15 +1701,11 @@ public sealed class DownloadTaskManager : IDisposable
         // 「续下更新」：把新集插进分集清单（必须在 UI 线程 —— 绑定的
         // ObservableCollection，见 pitfalls 第 14 条），并等它真正执行完：
         // worker 回填进度按集号在 Episodes 里找行，插晚了就丢进度。
-        if (newOnSite.Count > 0)
-        {
+        if (newOnSite.Count > 0) {
             var added = newOnSite.ToList();
-            await RunOnUiAsync(() =>
-            {
-                foreach (var ep in added)
-                {
-                    task.Episodes.Add(new TaskEpisodeItem
-                    {
+            await RunOnUiAsync(() => {
+                foreach (var ep in added) {
+                    task.Episodes.Add(new TaskEpisodeItem {
                         Number = ep.Number,
                         Title = string.IsNullOrWhiteSpace(ep.Title)
                             ? $"第{ep.Number:00}集"
@@ -1883,10 +1720,8 @@ public sealed class DownloadTaskManager : IDisposable
             }).ConfigureAwait(false);
         }
 
-        if (unfinished.Count == 0)
-        {
-            RunOnUi(() =>
-            {
+        if (unfinished.Count == 0) {
+            RunOnUi(() => {
                 task.State = SeriesTaskState.Completed;
                 task.Percent = 100;
                 task.FinishedEpisodes = task.Episodes.Count;
@@ -1933,10 +1768,8 @@ public sealed class DownloadTaskManager : IDisposable
     /// 而 RunOnUi 是异步封送 —— 写晚了 worker 只会看到 null，任务会直接判失败。
     /// </summary>
     private async Task StartRoundAsync(SeriesTask task, SiteSeries series, SeriesDownloadOptions options,
-        string? message = null)
-    {
-        await RunOnUiAsync(() =>
-        {
+        string? message = null) {
+        await RunOnUiAsync(() => {
             task.Series = series;
             task.Options = options;
 
@@ -1950,8 +1783,7 @@ public sealed class DownloadTaskManager : IDisposable
                               $"本轮计划：{DescribeNumbers(series.SelectedEpisodes.Select(e => e.Number))}");
 
             // 暂停时被藏起来的失败集数，一开新的一轮就放回去
-            if (task.HiddenFailedEpisodes > 0)
-            {
+            if (task.HiddenFailedEpisodes > 0) {
                 task.FailedEpisodes = task.HiddenFailedEpisodes;
                 task.HiddenFailedEpisodes = 0;
             }
@@ -1964,8 +1796,7 @@ public sealed class DownloadTaskManager : IDisposable
     }
 
     /// <summary>按任务上记住的参数重建下载参数（续传/重试用）</summary>
-    private static SeriesDownloadOptions BuildOptions(SeriesTask task) => new()
-    {
+    private static SeriesDownloadOptions BuildOptions(SeriesTask task) => new() {
         OutputDirectory = task.OutputDirectory,
         EpisodeConcurrency = task.EpisodeConcurrency,
         SegmentConcurrency = task.SegmentConcurrency,
@@ -1982,15 +1813,12 @@ public sealed class DownloadTaskManager : IDisposable
     /// 把任务放进待执行队列（任务本身已经在界面列表里了）。
     /// 先把状态改成「排队中」再入队，worker 才不会在状态还没落定时就把它当运行中处理。
     /// </summary>
-    private async Task QueueTaskAsync(SeriesTask task)
-    {
-        await RunOnUiAsync(() =>
-        {
+    private async Task QueueTaskAsync(SeriesTask task) {
+        await RunOnUiAsync(() => {
             // 上一轮停止时用掉的取消标记要换新：否则新的一轮一启动就会被判取消
             ResetStopSignal(task);
 
-            if (task.State != SeriesTaskState.Queued)
-            {
+            if (task.State != SeriesTaskState.Queued) {
                 task.State = SeriesTaskState.Queued;
                 task.FinishedAt = null;
             }
@@ -2005,8 +1833,7 @@ public sealed class DownloadTaskManager : IDisposable
     /// 换一个新的取消标记，并清掉「暂停」意图。
     /// 每次真正开始下载前都必须调一次。
     /// </summary>
-    private static void ResetStopSignal(SeriesTask task)
-    {
+    private static void ResetStopSignal(SeriesTask task) {
         var old = task.Cts;
         task.Cts = new CancellationTokenSource();
         task.PauseRequested = false;
@@ -2018,12 +1845,10 @@ public sealed class DownloadTaskManager : IDisposable
     }
 
     /// <summary>把一部剧加入队列，立即返回（不等待下载完成）</summary>
-    public SeriesTask Enqueue(SiteSeries series, SeriesDownloadOptions options)
-    {
+    public SeriesTask Enqueue(SiteSeries series, SeriesDownloadOptions options) {
         var episodes = series.SelectedEpisodes.ToList();
 
-        var task = new SeriesTask
-        {
+        var task = new SeriesTask {
             Title = series.Title,
             SiteName = series.SiteName,
             PageUrl = series.PageUrl,
@@ -2056,8 +1881,7 @@ public sealed class DownloadTaskManager : IDisposable
 
         lock (_gate) _pending.Add(task);
 
-        RunOnUi(() =>
-        {
+        RunOnUi(() => {
             Tasks.Insert(0, task);          // 新任务排在最上面
             RaiseChanged();
         });
@@ -2070,8 +1894,7 @@ public sealed class DownloadTaskManager : IDisposable
     /// 「暂停」：停下这一轮下载，但保留已下载的分片与每一集的状态。
     /// 之后点「继续下载」会重新解析站点、只补没下完的集，暂存目录里的分片照旧复用。
     /// </summary>
-    public void Pause(SeriesTask task)
-    {
+    public void Pause(SeriesTask task) {
         if (!task.CanPause) return;
 
         Diagnostics.Write($"{Diagnostics.Tag(task.Id, task.Title)} 用户点了暂停（{task.StateText}）");
@@ -2082,16 +1905,13 @@ public sealed class DownloadTaskManager : IDisposable
     }
 
     /// <summary>取消一个任务（排队中的直接从待执行队列里摘掉）</summary>
-    public void Cancel(SeriesTask task)
-    {
+    public void Cancel(SeriesTask task) {
         try { task.Cts.Cancel(); } catch { }
 
         lock (_gate) _pending.Remove(task);
 
-        if (task.State == SeriesTaskState.Queued)
-        {
-            RunOnUi(() =>
-            {
+        if (task.State == SeriesTaskState.Queued) {
+            RunOnUi(() => {
                 // worker 可能刚好把它取走了，那就让 worker 自己收尾
                 if (task.State != SeriesTaskState.Queued) return;
                 ApplyStoppedState(task, "尚未开始");
@@ -2103,45 +1923,62 @@ public sealed class DownloadTaskManager : IDisposable
     /// <summary>
     /// 任务停止后要落到哪个状态：用户点的是「暂停」还是「取消」。
     /// </summary>
-    private static void ApplyStoppedState(SeriesTask task, string when)
-    {
-        if (task.PauseRequested)
-        {
+    private static void ApplyStoppedState(SeriesTask task, string when) {
+        if (task.PauseRequested) {
             task.State = SeriesTaskState.Paused;
             task.Message = $"已暂停（{when}）。点「继续下载」接着下，已下载的分片会保留。";
-        }
-        else
-        {
+        } else {
             task.State = SeriesTaskState.Canceled;
             task.Message = $"已取消（{when}）";
         }
         task.FinishedAt = DateTimeOffset.Now;
     }
 
-    /// <summary>从列表里移除（运行中的会先取消）</summary>
-    public void Remove(SeriesTask task)
-    {
+    /// <summary>
+    /// 从列表里移除（运行中的会先取消），并把这部剧的**下载历史一起销掉** ——
+    /// 任务都删了、账还留着的话，下次再下这部剧会冒出"当初下过、文件已不在"的提示，
+    /// 而那个文件是用户自己连同任务一起清掉的。
+    ///
+    /// 「清理已完成」不销账：那只是收拾列表，视频还在盘上，
+    /// 留着账才能在文件被删掉时说出"这集下过"。
+    /// </summary>
+    public void Remove(SeriesTask task) {
         if (task.CanCancel) Cancel(task);
-        RunOnUi(() =>
-        {
+
+        // 先取地址：Cancel 之后 worker 收尾还会动这个对象，摘出列表前把要用的值拿稳
+        var pageUrl = task.PageUrl;
+
+        RunOnUi(() => {
             Tasks.Remove(task);
             RaiseChanged();
         });
+
+        ForgetHistory(pageUrl);
     }
 
-    public void ClearFinished()
-    {
-        RunOnUi(() =>
-        {
+    /// <summary>
+    /// 销掉一部剧的下载历史。扔到线程池上做：这是按钮点出来的，
+    /// 而库文件 I/O（开库、写盘）不该压在 UI 线程。删不掉也不影响移除本身。
+    /// </summary>
+    private void ForgetHistory(string pageUrl) {
+        var history = History;
+        if (history is null or NullDownloadHistoryStore) return;
+        if (string.IsNullOrWhiteSpace(pageUrl)) return;
+
+        _ = Task.Run(() => {
+            try { history.Forget(pageUrl); } catch { /* 接口实现方本该自己吞异常，这里再兜一层：历史永远不该挡住用户操作 */ }
+        });
+    }
+
+    public void ClearFinished() {
+        RunOnUi(() => {
             foreach (var t in Tasks.Where(t => t.IsFinished).ToList()) Tasks.Remove(t);
             RaiseChanged();
         });
     }
 
-    private void EnsureWorker()
-    {
-        lock (_gate)
-        {
+    private void EnsureWorker() {
+        lock (_gate) {
             if (_workerRunning || _disposed) return;
             _workerRunning = true;
         }
@@ -2149,29 +1986,23 @@ public sealed class DownloadTaskManager : IDisposable
         _ = Task.Run(WorkerLoopAsync);
     }
 
-    private async Task WorkerLoopAsync()
-    {
-        while (true)
-        {
+    private async Task WorkerLoopAsync() {
+        while (true) {
             SeriesTask? task;
-            lock (_gate)
-            {
+            lock (_gate) {
                 // FIFO：先入队的先下载
                 task = _pending.Count > 0 ? _pending[0] : null;
                 if (task is not null) _pending.RemoveAt(0);
 
-                if (task is null || _disposed)
-                {
+                if (task is null || _disposed) {
                     _workerRunning = false;
                     return;
                 }
             }
 
             // 还在排队时就被取消/暂停的，直接收尾，不要真的去下载
-            if (task.Cts.IsCancellationRequested)
-            {
-                RunOnUi(() =>
-                {
+            if (task.Cts.IsCancellationRequested) {
+                RunOnUi(() => {
                     if (task.State is SeriesTaskState.Canceled or SeriesTaskState.Paused) return;
                     ApplyStoppedState(task, "尚未开始");
                     RaiseChanged();
@@ -2179,22 +2010,17 @@ public sealed class DownloadTaskManager : IDisposable
                 continue;
             }
 
-            RunOnUi(() =>
-            {
+            RunOnUi(() => {
                 task.State = SeriesTaskState.Running;
                 task.Message = "开始下载…";
                 Diagnostics.Write($"{Diagnostics.Tag(task.Id, task.Title)} 状态 → 下载中");
                 RaiseChanged();
             });
 
-            try
-            {
+            try {
                 await RunOneAsync(task).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                RunOnUi(() =>
-                {
+            } catch (Exception ex) {
+                RunOnUi(() => {
                     task.State = SeriesTaskState.Failed;
                     task.Message = ex.Message;
                     task.FinishedAt = DateTimeOffset.Now;
@@ -2205,14 +2031,11 @@ public sealed class DownloadTaskManager : IDisposable
         }
     }
 
-    private async Task RunOneAsync(SeriesTask task)
-    {
+    private async Task RunOneAsync(SeriesTask task) {
         var series = task.Series;
         var options = task.Options;
-        if (series is null || options is null)
-        {
-            RunOnUi(() =>
-            {
+        if (series is null || options is null) {
+            RunOnUi(() => {
                 task.State = SeriesTaskState.Failed;
                 task.Message = "任务数据缺失";
             });
@@ -2248,14 +2071,12 @@ public sealed class DownloadTaskManager : IDisposable
         // 用 StrongBox 包一层，才能对捕获的变量用 Volatile（C# 不允许 ref 捕获变量）。
         var roundFinished = new StrongBox<bool>(false);
 
-        void PushToUi(SeriesDownloadProgress p, bool force)
-        {
+        void PushToUi(SeriesDownloadProgress p, bool force) {
             var now = Environment.TickCount64;
             if (!force && now - Interlocked.Read(ref lastUiPush) < 100) return;
             Interlocked.Exchange(ref lastUiPush, now);
 
-            RunOnUi(() =>
-            {
+            RunOnUi(() => {
                 // 闸门必须在**真正执行时**再判一次。
                 // 只在排队前判是不够的：这个闭包可能已经进了 UI 队列，
                 // 等它执行时本轮早就收尾了，它会把收尾写好的进度又覆盖回去
@@ -2285,8 +2106,7 @@ public sealed class DownloadTaskManager : IDisposable
 
                 // 诊断：只在某集的"档位"真的变了时记一行，避免把日志写成流水账
                 if (!Diagnostics.Enabled) return;
-                foreach (var s in p.Episodes)
-                {
+                foreach (var s in p.Episodes) {
                     var before = lastEpisodeStates.TryGetValue(s.Number, out var old)
                         ? old
                         : EpisodeDownloadStatus.Pending;
@@ -2322,10 +2142,8 @@ public sealed class DownloadTaskManager : IDisposable
             report.Episodes.Sum(e => Math.Clamp(e.Percent, 0, 100)) / Math.Max(1, task.TotalEpisodes),
             0, 100);
 
-        await RunOnUiAsync(() =>
-        {
-            foreach (var s in report.Episodes)
-            {
+        await RunOnUiAsync(() => {
+            foreach (var s in report.Episodes) {
                 var item = task.Episodes.FirstOrDefault(e => e.Number == s.Episode.Number);
                 if (item is null) continue;
 
@@ -2338,15 +2156,12 @@ public sealed class DownloadTaskManager : IDisposable
                 // 「分片下载完、界面还没回填」的空档里按了暂停，这时行上还是「下载中」。
                 if (!pausedAtEnd) continue;
 
-                if (s.Status == EpisodeDownloadStatus.Completed)
-                {
+                if (s.Status == EpisodeDownloadStatus.Completed) {
                     item.State = EpisodeDownloadStatus.Completed;
                     item.StatusText = "已完成";
                     if (!string.IsNullOrWhiteSpace(s.OutputPath)) item.OutputPath = s.OutputPath;
-                }
-                else if (s.Status == EpisodeDownloadStatus.Canceled
-                         || item.State is EpisodeDownloadStatus.Downloading or EpisodeDownloadStatus.Resolving)
-                {
+                } else if (s.Status == EpisodeDownloadStatus.Canceled
+                           || item.State is EpisodeDownloadStatus.Downloading or EpisodeDownloadStatus.Resolving) {
                     // 真正的「失败」原样保留（见下面收尾逻辑里的说明），其余视为被暂停打断
                     item.State = EpisodeDownloadStatus.Pending;
                     item.StatusText = "已暂停";
@@ -2360,16 +2175,14 @@ public sealed class DownloadTaskManager : IDisposable
         }).ConfigureAwait(false);
 
         // 完成后按报告回填每一集的最终状态
-        RunOnUi(() =>
-        {
+        RunOnUi(() => {
             var paused = task.PauseRequested;
 
             // 跳过的广告数必须说出来：用户看不出"少了几十秒"，
             // 不声不响的话这个功能做了也等于没做
             task.SkippedAdSegments = report.TotalSkippedAds;
 
-            foreach (var ep in report.Episodes)
-            {
+            foreach (var ep in report.Episodes) {
                 var item = task.Episodes.FirstOrDefault(e => e.Number == ep.Episode.Number);
                 if (item is null) continue;
 
@@ -2379,8 +2192,7 @@ public sealed class DownloadTaskManager : IDisposable
                 // 继续下载的时候还得再撞一次。
                 // 判据用 ep 上的结果而不是 item 上可能过期的状态 ——
                 // 用户可能在下载刚跑完、界面还没回填的空档里按了暂停。
-                if (paused && ep.Status == EpisodeDownloadStatus.Canceled)
-                {
+                if (paused && ep.Status == EpisodeDownloadStatus.Canceled) {
                     item.State = EpisodeDownloadStatus.Pending;
                     item.StatusText = "已暂停";
                     item.Error = null;
@@ -2393,8 +2205,7 @@ public sealed class DownloadTaskManager : IDisposable
                 // Downloading、OutputPath 也是空，「继续下载/续下」就会把这集
                 // 当成没下过的再下一遍（阶段 N 自检抓到的就是这个）。
                 item.State = ep.Status;
-                item.StatusText = ep.Status switch
-                {
+                item.StatusText = ep.Status switch {
                     EpisodeDownloadStatus.Completed => "已完成",
                     EpisodeDownloadStatus.Failed => "失败",
                     EpisodeDownloadStatus.Canceled => "已取消",
@@ -2432,16 +2243,14 @@ public sealed class DownloadTaskManager : IDisposable
 
             task.State = paused
                 ? SeriesTaskState.Paused
-                : report switch
-                {
+                : report switch {
                     { CanceledCount: > 0 } => SeriesTaskState.Canceled,
                     { FailedCount: 0 } => SeriesTaskState.Completed,
                     { SucceededCount: > 0 } => SeriesTaskState.PartiallyCompleted,
                     _ => SeriesTaskState.Failed,
                 };
 
-            task.Message = task.State switch
-            {
+            task.Message = task.State switch {
                 SeriesTaskState.Completed =>
                     $"全部 {completedTotal} 集完成，{report.TotalBytes / 1024.0 / 1024.0:0.0} MB",
                 SeriesTaskState.Paused =>
@@ -2474,20 +2283,15 @@ public sealed class DownloadTaskManager : IDisposable
         // 这一轮用的是本地快照、又有集没下成 —— 很可能站点改版了（播放页地址失效），
         // 顺手重新拉一次集元数据：用户点「重试失败集」时就能用上新地址。
         // 拉不到就算了：原来的失败原因照实显示，不覆盖成"刷新失败"。
-        if (task.RoundUsedSnapshot && report.SucceededCount < report.Episodes.Count)
-        {
-            try
-            {
+        if (task.RoundUsedSnapshot && report.SucceededCount < report.Episodes.Count) {
+            try {
                 var refreshed = await RefreshEpisodesSnapshotAsync(task, ct).ConfigureAwait(false);
-                RunOnUi(() =>
-                {
+                RunOnUi(() => {
                     task.RoundUsedSnapshot = false;
                     task.Message = $"{task.Message}；已重新拉取集列表（站点 {refreshed.TotalOnSite} 集），可重试失败集";
                     RaiseChanged();
                 });
-            }
-            catch
-            {
+            } catch {
                 // 刷新不了就保持原样
             }
         }
@@ -2496,40 +2300,11 @@ public sealed class DownloadTaskManager : IDisposable
     /// <summary>
     /// 把报告里"这一轮下好了"的集记进下载历史。
     ///
-    /// 只记 Completed 且产物路径非空的：失败/取消的集不该进历史 ——
-    /// 历史是"下过"的账，掺进没下成的集，下次补更时就会误报"曾下载过"。
+    /// 具体规则在 <see cref="DownloadHistoryRecorder"/> —— 单独成类是为了让"哪些集算下过"
+    /// 这条规则能被自检直接盯住，而不是散在这个两千多行的类里。
     /// </summary>
-    private void RecordHistory(SeriesTask task, SeriesDownloadReport report)
-    {
-        var history = History;
-        if (history is null or NullDownloadHistoryStore) return;
-
-        foreach (var ep in report.Episodes)
-        {
-            if (ep.Status != EpisodeDownloadStatus.Completed) continue;
-            if (string.IsNullOrWhiteSpace(ep.OutputPath)) continue;
-
-            long bytes = 0;
-            try { bytes = new FileInfo(ep.OutputPath).Length; } catch { /* 文件没了就记 0 */ }
-
-            try
-            {
-                history.Record(new DownloadHistoryEntry
-                {
-                    PageUrl = task.PageUrl,
-                    SiteName = task.SiteName,
-                    SeriesTitle = task.Title,
-                    EpisodeNumber = ep.Episode.Number,
-                    FilePath = ep.OutputPath,
-                    FileBytes = bytes,
-                });
-            }
-            catch
-            {
-                // 历史是辅助，记不上就算了（比如数据库被别的进程锁着）
-            }
-        }
-    }
+    private void RecordHistory(SeriesTask task, SeriesDownloadReport report) =>
+        DownloadHistoryRecorder.Record(History, task.PageUrl, task.SiteName, task.Title, report.Episodes);
 
     /// <summary>
     /// 重试：把失败（或被取消）的那些集再排一次队。
@@ -2545,8 +2320,7 @@ public sealed class DownloadTaskManager : IDisposable
     /// 暂存目录里的分片由引擎按清单指纹校验后继续复用。
     /// </summary>
     /// <returns>已排入队列的原任务；没有可重试的集时返回 null</returns>
-    public async Task<SeriesTask?> RetryFailedAsync(SeriesTask task)
-    {
+    public async Task<SeriesTask?> RetryFailedAsync(SeriesTask task) {
         var series = task.Series;
         if (task.Report is null || series is null) return null;
         if (!task.IsFinished) return null;                     // 正在跑：先暂停/取消再重试
@@ -2582,10 +2356,8 @@ public sealed class DownloadTaskManager : IDisposable
 
         // 就地重置：这几集回到「等待中」，界面上的旧错误与进度条也一起清掉。
         // 这一步必须在入队前做完 —— worker 一取到任务就会往这些行上写进度。
-        await RunOnUiAsync(() =>
-        {
-            foreach (var item in task.Episodes)
-            {
+        await RunOnUiAsync(() => {
+            foreach (var item in task.Episodes) {
                 if (!retryNumbers.Contains(item.Number)) continue;
                 item.State = EpisodeDownloadStatus.Pending;
                 item.StatusText = "等待中";
@@ -2610,16 +2382,13 @@ public sealed class DownloadTaskManager : IDisposable
         return task;
     }
 
-    public void Dispose()
-    {
-        lock (_gate)
-        {
+    public void Dispose() {
+        lock (_gate) {
             _disposed = true;
             _pending.Clear();
         }
 
-        foreach (var t in Tasks.Where(t => t.CanCancel))
-        {
+        foreach (var t in Tasks.Where(t => t.CanCancel)) {
             try { t.Cts.Cancel(); } catch { }
         }
 

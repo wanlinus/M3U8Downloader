@@ -5,8 +5,7 @@ using M3U8Downloader.Core.Settings;
 namespace M3U8Downloader.Core.Ffmpeg;
 
 /// <summary>ffmpeg 的来源，用于在界面上说明"这个是从哪找到的"</summary>
-public enum FfmpegSource
-{
+public enum FfmpegSource {
     /// <summary>用户手工指定</summary>
     Custom,
 
@@ -18,15 +17,13 @@ public enum FfmpegSource
 }
 
 /// <summary>一个可执行文件的探测结果</summary>
-public sealed record FfmpegBinary(string Path, string Version)
-{
+public sealed record FfmpegBinary(string Path, string Version) {
     public string FileName => System.IO.Path.GetFileName(Path);
     public override string ToString() => $"{FileName} {Version}";
 }
 
 /// <summary>ffmpeg 安装状态</summary>
-public sealed class FfmpegStatus
-{
+public sealed class FfmpegStatus {
     /// <summary>严格门槛：ffmpeg 与 ffprobe **都**可用才算 Installed</summary>
     public bool IsInstalled => Ffmpeg is not null && Ffprobe is not null;
 
@@ -38,12 +35,9 @@ public sealed class FfmpegStatus
     public string? FfprobePath => Ffprobe?.Path;
 
     /// <summary>界面上直接可显示的一句话状态</summary>
-    public string Describe()
-    {
-        if (IsInstalled)
-        {
-            var where = Source switch
-            {
+    public string Describe() {
+        if (IsInstalled) {
+            var where = Source switch {
                 FfmpegSource.Custom => "手动指定",
                 FfmpegSource.Managed => "应用内下载",
                 FfmpegSource.SystemPath => "系统 PATH",
@@ -74,8 +68,7 @@ public sealed class FfmpegStatus
 ///
 /// ffprobe 一律优先找 ffmpeg 同目录下的同名文件，找不到再回退 PATH。
 /// </summary>
-public static class FfmpegLocator
-{
+public static class FfmpegLocator {
     public const string AppFolderName = "M3U8Downloader";
 
     public static string FfmpegFileName => OperatingSystem.IsWindows() ? "ffmpeg.exe" : "ffmpeg";
@@ -108,10 +101,8 @@ public static class FfmpegLocator
         !string.Equals(PreferredInstallDirectory, AppLocalDirectory, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>按优先级列出所有可能的"应用管理副本"目录</summary>
-    public static IEnumerable<string> ManagedDirectories
-    {
-        get
-        {
+    public static IEnumerable<string> ManagedDirectories {
+        get {
             yield return AppLocalDirectory;
             yield return UserLocalDirectory;
         }
@@ -124,38 +115,31 @@ public static class FfmpegLocator
     public static string ManagedFfprobePath => Path.Combine(PreferredInstallDirectory, FfprobeFileName);
 
     /// <summary>某个目录能否写入（用于决定装到哪里）</summary>
-    public static bool CanWriteTo(string directory)
-    {
-        try
-        {
+    public static bool CanWriteTo(string directory) {
+        try {
             Directory.CreateDirectory(directory);
             var probe = Path.Combine(directory, ".write-test-" + Guid.NewGuid().ToString("N")[..8]);
             File.WriteAllText(probe, "ok");
             File.Delete(probe);
             return true;
-        }
-        catch
-        {
+        } catch {
             return false;
         }
     }
 
     /// <summary>探测入口</summary>
-    public static async Task<FfmpegStatus> DetectAsync(AppSettings? settings = null, CancellationToken ct = default)
-    {
+    public static async Task<FfmpegStatus> DetectAsync(AppSettings? settings = null, CancellationToken ct = default) {
         settings ??= AppSettingsStore.Load();
 
         // 1) 用户手动指定
         var custom = settings.FfmpegPath;
-        if (!string.IsNullOrWhiteSpace(custom) && File.Exists(custom))
-        {
+        if (!string.IsNullOrWhiteSpace(custom) && File.Exists(custom)) {
             var status = await ProbePairAsync(custom!, FfmpegSource.Custom, ct).ConfigureAwait(false);
             if (status.IsInstalled) return status;
         }
 
         // 2) 应用管理副本：程序目录优先，其次用户目录
-        foreach (var dir in ManagedDirectories)
-        {
+        foreach (var dir in ManagedDirectories) {
             var exe = Path.Combine(dir, FfmpegFileName);
             if (!File.Exists(exe)) continue;
 
@@ -182,16 +166,14 @@ public static class FfmpegLocator
                 : null)
             ?? await ProbeSingleAsync("ffprobe", ct).ConfigureAwait(false);
 
-        return new FfmpegStatus
-        {
+        return new FfmpegStatus {
             Ffmpeg = ffmpeg,
             Ffprobe = ffprobe,
             Source = ffmpeg is not null ? FfmpegSource.Custom : null,
         };
     }
 
-    private static async Task<FfmpegStatus> ProbePairAsync(string ffmpegPath, FfmpegSource source, CancellationToken ct)
-    {
+    private static async Task<FfmpegStatus> ProbePairAsync(string ffmpegPath, FfmpegSource source, CancellationToken ct) {
         var ffmpeg = await ProbeSingleAsync(ffmpegPath, ct).ConfigureAwait(false);
         if (ffmpeg is null) return new FfmpegStatus { Source = source };
 
@@ -206,15 +188,13 @@ public static class FfmpegLocator
         return new FfmpegStatus { Ffmpeg = ffmpeg, Ffprobe = ffprobe, Source = source };
     }
 
-    private static async Task<FfmpegStatus> ProbeFromPathAsync(CancellationToken ct)
-    {
+    private static async Task<FfmpegStatus> ProbeFromPathAsync(CancellationToken ct) {
         var ffmpeg = await ProbeSingleAsync("ffmpeg", ct).ConfigureAwait(false);
         if (ffmpeg is null) return new FfmpegStatus();
 
         // PATH 里命中的是裸名字，用 where/which 解析成绝对路径方便界面显示
         var resolved = await ResolveOnPathAsync(ffmpeg.Path, ct).ConfigureAwait(false);
-        if (resolved is not null && !string.Equals(resolved, ffmpeg.Path, StringComparison.OrdinalIgnoreCase))
-        {
+        if (resolved is not null && !string.Equals(resolved, ffmpeg.Path, StringComparison.OrdinalIgnoreCase)) {
             var re = await ProbeSingleAsync(resolved, ct).ConfigureAwait(false);
             if (re is not null) ffmpeg = re;
         }
@@ -230,12 +210,9 @@ public static class FfmpegLocator
     }
 
     /// <summary>跑一次 <c>-version</c>，成功才认为这个可执行文件可用</summary>
-    public static async Task<FfmpegBinary?> ProbeSingleAsync(string pathOrName, CancellationToken ct = default)
-    {
-        try
-        {
-            var psi = new ProcessStartInfo(pathOrName)
-            {
+    public static async Task<FfmpegBinary?> ProbeSingleAsync(string pathOrName, CancellationToken ct = default) {
+        try {
+            var psi = new ProcessStartInfo(pathOrName) {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -252,12 +229,9 @@ public static class FfmpegLocator
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromSeconds(10));
 
-            try
-            {
+            try {
                 await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
+            } catch (OperationCanceledException) {
                 TryKill(process);
                 return null;
             }
@@ -269,23 +243,18 @@ public static class FfmpegLocator
 
             var version = ParseVersion(stdout);
             return new FfmpegBinary(pathOrName, version);
-        }
-        catch
-        {
+        } catch {
             return null;
         }
     }
 
     /// <summary>从 <c>-version</c> 的首行解析版本号，如 "ffmpeg version 7.1-full_build..." → "7.1"</summary>
-    internal static string ParseVersion(string stdout)
-    {
-        foreach (var raw in stdout.Split('\n'))
-        {
+    internal static string ParseVersion(string stdout) {
+        foreach (var raw in stdout.Split('\n')) {
             var line = raw.Trim();
             if (line.Length == 0) continue;
 
-            foreach (var prefix in new[] { "ffmpeg version ", "ffprobe version " })
-            {
+            foreach (var prefix in new[] { "ffmpeg version ", "ffprobe version " }) {
                 if (!line.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
                 var rest = line[prefix.Length..].Trim();
                 var token = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
@@ -299,13 +268,10 @@ public static class FfmpegLocator
         return "unknown";
     }
 
-    private static async Task<string?> ResolveOnPathAsync(string name, CancellationToken ct)
-    {
-        try
-        {
+    private static async Task<string?> ResolveOnPathAsync(string name, CancellationToken ct) {
+        try {
             var finder = OperatingSystem.IsWindows() ? "where" : "which";
-            var psi = new ProcessStartInfo(finder)
-            {
+            var psi = new ProcessStartInfo(finder) {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -322,15 +288,12 @@ public static class FfmpegLocator
             return stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries)
                 .Select(l => l.Trim())
                 .FirstOrDefault(l => l.Length > 0);
-        }
-        catch
-        {
+        } catch {
             return null;
         }
     }
 
-    private static void TryKill(Process process)
-    {
+    private static void TryKill(Process process) {
         try { process.Kill(entireProcessTree: true); } catch { /* 已经退出 */ }
     }
 }

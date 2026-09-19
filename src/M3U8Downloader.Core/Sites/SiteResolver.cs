@@ -18,8 +18,7 @@ namespace M3U8Downloader.Core.Sites;
 ///   （典型情况：站点挂在 Cloudflare 后面，国内直连被 RST —— 实测努努影院就是这样，
 ///   但它的分片 CDN 直连正常，所以代理只用在页面解析这一步）。
 /// </summary>
-public sealed class SiteContext : IDisposable
-{
+public sealed class SiteContext : IDisposable {
     public const string DefaultUserAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
         "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -62,23 +61,18 @@ public sealed class SiteContext : IDisposable
     /// </summary>
     private readonly ConcurrentDictionary<string, bool> _proxyRequiredHosts = new(StringComparer.OrdinalIgnoreCase);
 
-    static SiteContext()
-    {
+    static SiteContext() {
         // 国内不少影视站是 GBK/GB2312，.NET Core 默认不带这些代码页，需要显式注册。
         try { Encoding.RegisterProvider(CodePagesEncodingProvider.Instance); } catch { /* 已注册或不可用 */ }
     }
 
-    public SiteContext(HttpClient? http = null, string? userAgent = null, string? proxyUrl = null)
-    {
+    public SiteContext(HttpClient? http = null, string? userAgent = null, string? proxyUrl = null) {
         UserAgent = string.IsNullOrWhiteSpace(userAgent) ? DefaultUserAgent : userAgent!;
 
-        if (http is not null)
-        {
+        if (http is not null) {
             // 外部传入的客户端由调用方负责释放（自检里就是这么用的）
             Direct = http;
-        }
-        else
-        {
+        } else {
             Direct = CreateClient(null, UserAgent);
             _ownsDirect = true;
         }
@@ -88,19 +82,15 @@ public sealed class SiteContext : IDisposable
         // 而这里要解决的是「被墙站点的页面根本打不开」——
         // 用户既然填了代理地址，就说明这台机器上有代理可用，不必再开一个开关。
         var normalized = ProxyHelper.Normalize(proxyUrl ?? TryReadProxyFromSettings());
-        if (normalized is not null)
-        {
-            try
-            {
+        if (normalized is not null) {
+            try {
                 Proxied = CreateClient(normalized, UserAgent);
                 ProxyUrl = normalized;
                 _ownsProxy = true;
 
                 // 配了代理才需要它：直连超时 → 换代理 → 代理也被拒时，才有「再宽容地直连一次」的余地
                 _directPatient = CreateClient(null, UserAgent, TimeSpan.FromSeconds(30));
-            }
-            catch
-            {
+            } catch {
                 // 代理客户端建不起来就只直连，不影响其它站点
                 Proxied = null;
                 ProxyUrl = null;
@@ -108,17 +98,13 @@ public sealed class SiteContext : IDisposable
         }
     }
 
-    private static string? TryReadProxyFromSettings()
-    {
-        try { return AppSettingsStore.Load().ProxyUrl; }
-        catch { return null; }
+    private static string? TryReadProxyFromSettings() {
+        try { return AppSettingsStore.Load().ProxyUrl; } catch { return null; }
     }
 
-    private static HttpClient CreateClient(string? proxyUrl, string userAgent, TimeSpan? connectTimeout = null)
-    {
+    private static HttpClient CreateClient(string? proxyUrl, string userAgent, TimeSpan? connectTimeout = null) {
         // 用 SocketsHttpHandler 而不是 HttpClientHandler：需要它的 ConnectTimeout
-        var handler = new SocketsHttpHandler
-        {
+        var handler = new SocketsHttpHandler {
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
             AllowAutoRedirect = true,
             MaxAutomaticRedirections = 10,
@@ -164,8 +150,7 @@ public sealed class SiteContext : IDisposable
     /// 让每个适配器自己声明 NeedsProxy 既容易漏，又会让国内站点白白绕一圈代理；
     /// 靠"失败了再回退"就两全了 —— 通畅时零代理开销，不通时自动兜底。
     /// </summary>
-    public async Task<string> GetHtmlAsync(string url, ISiteAdapter adapter, CancellationToken ct = default)
-    {
+    public async Task<string> GetHtmlAsync(string url, ISiteAdapter adapter, CancellationToken ct = default) {
         var host = Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : null;
         var canFallback = host is not null && Proxied is not null;
 
@@ -173,29 +158,21 @@ public sealed class SiteContext : IDisposable
         if (canFallback && (adapter.NeedsProxy || _proxyRequiredHosts.ContainsKey(host!)))
             return await GetHtmlAsync(url, Proxied!, ct).ConfigureAwait(false);
 
-        try
-        {
+        try {
             return await GetHtmlAsync(url, Direct, ct).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (canFallback && IsConnectivityFailure(ex, ct))
-        {
-            try
-            {
+        } catch (Exception ex) when (canFallback && IsConnectivityFailure(ex, ct)) {
+            try {
                 var html = await GetHtmlAsync(url, Proxied!, ct).ConfigureAwait(false);
                 NoteProxyFallback(url, host!);
                 return html;
-            }
-            catch (Exception) when (!ct.IsCancellationRequested && _directPatient is not null)
-            {
+            } catch (Exception) when (!ct.IsCancellationRequested && _directPatient is not null) {
                 // 代理也拿不到。但要分清：「直连 5 秒内没连上」并不等于站点不可达 ——
                 // 实测影迷界影院直连耗时在 0.9s~30s 之间剧烈波动，而它的代理 IP 被站点 403。
                 // 把「慢」当成「不通」，就会把本来能成功的一次请求判死（还会顺带污染
                 // _proxyRequiredHosts 的判断），所以给直连一次宽容的重试。
                 return await GetHtmlAsync(url, _directPatient, ct).ConfigureAwait(false);
             }
-        }
-        catch (HttpRequestException ex) when (canFallback && ShouldRetryViaProxy(ex.StatusCode))
-        {
+        } catch (HttpRequestException ex) when (canFallback && ShouldRetryViaProxy(ex.StatusCode)) {
             // 连上了但被「按 IP 拒绝」（403/451）：同样换代理再试一次
             var html = await GetHtmlAsync(url, Proxied!, ct).ConfigureAwait(false);
             NoteProxyFallback(url, host!);
@@ -203,8 +180,7 @@ public sealed class SiteContext : IDisposable
         }
     }
 
-    private void NoteProxyFallback(string url, string host)
-    {
+    private void NoteProxyFallback(string url, string host) {
         ProxyFallbackCount++;
         LastProxyFallbackHost = host;
         _proxyRequiredHosts.TryAdd(host, true);
@@ -220,13 +196,11 @@ public sealed class SiteContext : IDisposable
     /// 是不是「网络根本不通」（而不是站点返回了 4xx/5xx）。
     /// 只有这一类才值得换代理重试 —— 站点自己报错时换代理纯属白费。
     /// </summary>
-    private static bool IsConnectivityFailure(Exception ex, CancellationToken ct)
-    {
+    private static bool IsConnectivityFailure(Exception ex, CancellationToken ct) {
         // 用户按了取消：这是取消，不是网络问题
         if (ct.IsCancellationRequested) return false;
 
-        for (var e = ex; e is not null; e = e.InnerException)
-        {
+        for (var e = ex; e is not null; e = e.InnerException) {
             if (e is HttpRequestException or SocketException) return true;
             if (e is TaskCanceledException) return true;   // HttpClient.Timeout 超时
         }
@@ -235,8 +209,7 @@ public sealed class SiteContext : IDisposable
     }
 
     /// <summary>用指定客户端 GET 一个页面</summary>
-    public async Task<string> GetHtmlAsync(string url, HttpClient client, CancellationToken ct = default)
-    {
+    public async Task<string> GetHtmlAsync(string url, HttpClient client, CancellationToken ct = default) {
         using var resp = await client.GetAsync(url, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
         var bytes = await resp.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
@@ -250,12 +223,9 @@ public sealed class SiteContext : IDisposable
     /// 挨个探测一遍比"直接拿第一个、失败了再报错"体验好得多，代价又很小。
     /// 先直连试，直连不通再走代理（分片 CDN 通常直连即可）。
     /// </summary>
-    public async Task<bool> LooksLikePlaylistAsync(string url, CancellationToken ct = default)
-    {
-        foreach (var client in EnumerateClients())
-        {
-            try
-            {
+    public async Task<bool> LooksLikePlaylistAsync(string url, CancellationToken ct = default) {
+        foreach (var client in EnumerateClients()) {
+            try {
                 using var resp = await client
                     .GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct)
                     .ConfigureAwait(false);
@@ -268,9 +238,7 @@ public sealed class SiteContext : IDisposable
                 if (read <= 0) continue;
 
                 return Encoding.UTF8.GetString(buffer, 0, read).Contains("#EXTM3U", StringComparison.Ordinal);
-            }
-            catch
-            {
+            } catch {
                 // 这个客户端不行就换下一个
             }
         }
@@ -278,25 +246,21 @@ public sealed class SiteContext : IDisposable
         return false;
     }
 
-    private IEnumerable<HttpClient> EnumerateClients()
-    {
+    private IEnumerable<HttpClient> EnumerateClients() {
         yield return Direct;
         if (Proxied is not null) yield return Proxied;
     }
 
     /// <summary>按响应头 charset → &lt;meta charset&gt; → UTF-8 的顺序解码</summary>
-    public static string DecodeHtml(byte[] bytes, string? charsetHeader)
-    {
-        if (!string.IsNullOrWhiteSpace(charsetHeader))
-        {
+    public static string DecodeHtml(byte[] bytes, string? charsetHeader) {
+        if (!string.IsNullOrWhiteSpace(charsetHeader)) {
             var text = TryDecode(bytes, charsetHeader!);
             if (text is not null) return text;
         }
 
         var head = Encoding.ASCII.GetString(bytes, 0, Math.Min(bytes.Length, 4096));
         var m = Regex.Match(head, @"charset\s*=\s*[""']?\s*(?<cs>[A-Za-z0-9_\-]+)", RegexOptions.IgnoreCase);
-        if (m.Success)
-        {
+        if (m.Success) {
             var text = TryDecode(bytes, m.Groups["cs"].Value);
             if (text is not null) return text;
         }
@@ -304,14 +268,11 @@ public sealed class SiteContext : IDisposable
         return Encoding.UTF8.GetString(bytes);
     }
 
-    private static string? TryDecode(byte[] bytes, string charset)
-    {
-        try { return Encoding.GetEncoding(charset.Trim().Trim('"', '\'').Trim()).GetString(bytes); }
-        catch { return null; }
+    private static string? TryDecode(byte[] bytes, string charset) {
+        try { return Encoding.GetEncoding(charset.Trim().Trim('"', '\'').Trim()).GetString(bytes); } catch { return null; }
     }
 
-    public void Dispose()
-    {
+    public void Dispose() {
         if (_ownsDirect) Direct.Dispose();
         if (_ownsProxy) Proxied?.Dispose();
         _directPatient?.Dispose();
@@ -322,8 +283,7 @@ public sealed class SiteContext : IDisposable
 /// 站点适配器。**新增一个站点 = 在 Sites 目录下新增一个实现类**，
 /// 不需要改任何注册代码：<see cref="SiteResolver.CreateDefault"/> 会反射扫描本程序集。
 /// </summary>
-public interface ISiteAdapter
-{
+public interface ISiteAdapter {
     SiteKind Kind { get; }
 
     string Name { get; }
@@ -358,17 +318,14 @@ public interface ISiteAdapter
 /// 它会被自动登记。通用兜底适配器（<see cref="GenericHtmlAdapter"/>）优先级最低，
 /// 只在前面的专用适配器都不认的时候出手。
 /// </summary>
-public sealed class SiteResolver
-{
+public sealed class SiteResolver {
     private readonly List<ISiteAdapter> _adapters = new();
 
     public IReadOnlyList<ISiteAdapter> Adapters => _adapters;
 
-    public SiteResolver Register(ISiteAdapter adapter)
-    {
+    public SiteResolver Register(ISiteAdapter adapter) {
         _adapters.Add(adapter);
-        _adapters.Sort((a, b) =>
-        {
+        _adapters.Sort((a, b) => {
             var byPriority = b.Priority.CompareTo(a.Priority);
             return byPriority != 0 ? byPriority : string.CompareOrdinal(a.Name, b.Name);
         });
@@ -376,28 +333,22 @@ public sealed class SiteResolver
     }
 
     /// <summary>扫描本程序集里所有适配器实现并登记</summary>
-    public static SiteResolver CreateDefault()
-    {
+    public static SiteResolver CreateDefault() {
         var resolver = new SiteResolver();
         foreach (var adapter in Discover()) resolver.Register(adapter);
         return resolver;
     }
 
-    private static IEnumerable<ISiteAdapter> Discover()
-    {
+    private static IEnumerable<ISiteAdapter> Discover() {
         var types = typeof(SiteResolver).Assembly.GetTypes()
             .Where(t => t is { IsAbstract: false, IsInterface: false } && typeof(ISiteAdapter).IsAssignableFrom(t))
             .ToList();
 
         var built = new List<ISiteAdapter>();
-        foreach (var type in types)
-        {
-            try
-            {
+        foreach (var type in types) {
+            try {
                 if (Activator.CreateInstance(type) is ISiteAdapter adapter) built.Add(adapter);
-            }
-            catch
-            {
+            } catch {
                 // 某个适配器构造失败不能拖垮整个程序：跳过它，其余站点照常可用
             }
         }
@@ -411,8 +362,7 @@ public sealed class SiteResolver
     /// <summary>
     /// 一步到位：识别站点 → 抓页面 → 解析剧集。
     /// </summary>
-    public async Task<SiteSeries> ParseAsync(string url, SiteContext ctx, CancellationToken ct = default)
-    {
+    public async Task<SiteSeries> ParseAsync(string url, SiteContext ctx, CancellationToken ct = default) {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
             throw new ArgumentException($"不是合法的绝对地址：{url}", nameof(url));
 
@@ -421,12 +371,9 @@ public sealed class SiteResolver
                 $"暂不支持该站点（{uri.Host}）。当前已登记：{string.Join("、", _adapters.Select(a => a.Name))}");
 
         string html;
-        try
-        {
+        try {
             html = await ctx.GetHtmlAsync(uri.ToString(), adapter, ct).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (adapter.NeedsProxy && !ct.IsCancellationRequested)
-        {
+        } catch (Exception ex) when (adapter.NeedsProxy && !ct.IsCancellationRequested) {
             throw await BuildProxyErrorAsync(adapter, ctx, ex, ct).ConfigureAwait(false);
         }
 
@@ -439,10 +386,8 @@ public sealed class SiteResolver
 
         // 列表页通常只有当前集的 m3u8，这里顺手补一集，失败不影响列表展示
         var first = series.SelectedEpisodes.FirstOrDefault();
-        if (first is not null && string.IsNullOrEmpty(first.PlaylistUrl))
-        {
-            try { first.PlaylistUrl = await adapter.ResolvePlaylistUrlAsync(first, ctx, ct).ConfigureAwait(false); }
-            catch (Exception ex) { series.Log.Add($"当前集直链解析失败：{ex.Message}"); }
+        if (first is not null && string.IsNullOrEmpty(first.PlaylistUrl)) {
+            try { first.PlaylistUrl = await adapter.ResolvePlaylistUrlAsync(first, ctx, ct).ConfigureAwait(false); } catch (Exception ex) { series.Log.Add($"当前集直链解析失败：{ex.Message}"); }
         }
 
         return series;
@@ -460,22 +405,18 @@ public sealed class SiteResolver
     /// 代价是一次几十字节的请求，换来的是用户不用为此来问我们。
     /// </summary>
     private static async Task<SiteProxyRequiredException> BuildProxyErrorAsync(
-        ISiteAdapter adapter, SiteContext ctx, Exception error, CancellationToken ct)
-    {
+        ISiteAdapter adapter, SiteContext ctx, Exception error, CancellationToken ct) {
         const string tail = "视频分片本身是直连下载的，不受影响。";
 
-        if (!ctx.HasProxy)
-        {
+        if (!ctx.HasProxy) {
             return new SiteProxyRequiredException(
                 $"{adapter.Name} 必须通过代理才能访问，但还没有配置代理。\n\n" +
                 $"请到「设置 → 代理」填好地址（例如 http://127.0.0.1:7897）后重试。{tail}",
-                error)
-            { ProxyMissing = true };
+                error) { ProxyMissing = true };
         }
 
         var test = await ProxyHelper.TestAsync(ctx.ProxyUrl, ct).ConfigureAwait(false);
-        if (test.Success)
-        {
+        if (test.Success) {
             // 代理是通的 → 问题在站点那边（改版 / 临时故障 / 需要人机验证）
             return new SiteProxyRequiredException(
                 $"{adapter.Name} 的页面抓取失败，但代理 {ctx.ProxyUrl} 是通的（{test.Message}）。\n\n" +
@@ -491,8 +432,7 @@ public sealed class SiteResolver
 
     /// <summary>把一集补全为 m3u8 直链</summary>
     public async Task<string> ResolvePlaylistUrlAsync(SiteSeries series, SiteEpisode episode,
-        SiteContext ctx, CancellationToken ct = default)
-    {
+        SiteContext ctx, CancellationToken ct = default) {
         if (!string.IsNullOrWhiteSpace(episode.PlaylistUrl)) return episode.PlaylistUrl!;
 
         var uri = new Uri(episode.PageUrl);
@@ -510,11 +450,9 @@ public sealed class SiteResolver
 /// 改一个错别字就失效了。继承 <see cref="NotSupportedException"/> 是为了兼容
 /// 已有的捕获逻辑（调用方仍然可以只 catch NotSupportedException）。
 /// </summary>
-public sealed class SiteProxyRequiredException : NotSupportedException
-{
+public sealed class SiteProxyRequiredException : NotSupportedException {
     public SiteProxyRequiredException(string message, Exception? inner = null)
-        : base(message, inner)
-    {
+        : base(message, inner) {
     }
 
     /// <summary>true = 压根没配代理；false = 配了但连不上（或代理通、站点本身有问题）</summary>

@@ -2,9 +2,12 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
+using Microsoft.Data.Sqlite;
 using M3U8Downloader.Core;
 using M3U8Downloader.Core.Downloads;
+using M3U8Downloader.Core.Settings;
 using M3U8Downloader.Core.Sites;
+using M3U8Downloader.Core.Storage;
 using M3U8Downloader.Core.Tasks;
 
 // ============================================================================
@@ -34,8 +37,7 @@ playlistBuilder.AppendLine("#EXTM3U");
 playlistBuilder.AppendLine("#EXT-X-VERSION:3");
 playlistBuilder.AppendLine("#EXT-X-TARGETDURATION:4");
 playlistBuilder.AppendLine("#EXT-X-MEDIA-SEQUENCE:1");
-for (var i = 0; i < SegmentCount; i++)
-{
+for (var i = 0; i < SegmentCount; i++) {
     playlistBuilder.AppendLine("#EXTINF:4.000,");
     playlistBuilder.AppendLine($"seg{i}.ts");
 }
@@ -58,21 +60,18 @@ var aesKey = new byte[16] { 0x37, 0x33, 0x63, 0x30, 0x62, 0x65, 0x62, 0x31,
                             0x65, 0x61, 0x65, 0x64, 0x63, 0x39, 0x64, 0x66 };
 var encryptedSegments = new byte[3][];
 
-for (var i = 0; i < encryptedSegments.Length; i++)
-{
+for (var i = 0; i < encryptedSegments.Length; i++) {
     var plain = BuildFakeTs(188 * (300 + i * 20), (byte)(0xA0 + i));
 
     // 第一块密文的第一个字节只取决于明文前 16 字节，所以随机化首块里除同步字节外的内容，
     // 直到 PKCS7 加密后的首个字节正好是 0x3C（'<'）。命中概率约 1/16。
     var found = false;
     var rng = new Random(1234 + i);
-    for (var attempt = 0; attempt < 4000 && !found; attempt++)
-    {
+    for (var attempt = 0; attempt < 4000 && !found; attempt++) {
         for (var k = 1; k < 16; k++) plain[k] = (byte)rng.Next(256);
 
         var cipher = AesEncryptPkcs7(plain, aesKey);
-        if (cipher.Length > 0 && cipher[0] == 0x3C)
-        {
+        if (cipher.Length > 0 && cipher[0] == 0x3C) {
             encryptedSegments[i] = cipher;
             found = true;
         }
@@ -92,8 +91,7 @@ encPlaylistBuilder.AppendLine("#EXT-X-VERSION:3");
 encPlaylistBuilder.AppendLine("#EXT-X-TARGETDURATION:4");
 encPlaylistBuilder.AppendLine("#EXT-X-MEDIA-SEQUENCE:0");
 encPlaylistBuilder.AppendLine($"#EXT-X-KEY:METHOD=AES-128,URI=\"/enc/key.key\",IV=0x{new string('0', 32)}");
-for (var i = 0; i < encryptedSegments.Length; i++)
-{
+for (var i = 0; i < encryptedSegments.Length; i++) {
     encPlaylistBuilder.AppendLine("#EXTINF:4.000,");
     encPlaylistBuilder.AppendLine($"/enc/seg{i}.ts");
 }
@@ -255,18 +253,15 @@ const string WakuredoDetailHtml = """
 // 播放页的 player_aaaa 取自真实页面（只把直链换成自检用的本地地址）。
 // 不同 sid 给不同的 from，用来验证「当前源名取自本页、其余源靠探测」这条逻辑。
 // 真实播放页同样带完整选集区，且用 line-name on 标出正在播的那条线路。
-string WakuredoPlayHtml(int sid, int nid)
-{
+string WakuredoPlayHtml(int sid, int nid) {
     var from = sid switch { 3 => "lzm3u8", 7 => "bfzym3u8", 8 => "wjm3u8", _ => $"unknown{sid}" };
 
     var panels = new StringBuilder();
-    foreach (var (line, s) in new[] { ("线路10", 3), ("线路6", 7), ("线路9", 8) })
-    {
+    foreach (var (line, s) in new[] { ("线路10", 3), ("线路6", 7), ("线路9", 8) }) {
         var on = s == sid ? " on" : "";
         panels.Append($"<div class=\"line-name{on}\">{line}</div>");
         panels.Append($"<div class=\"eps mac-eps-panel{on}\">");
-        for (var i = 1; i <= 3; i++)
-        {
+        for (var i = 1; i <= 3; i++) {
             var cur = s == sid && i == nid ? " on" : "";
             panels.Append($"<a class=\"{cur}\" href=\"/play/2337178967/{s}/{i}.html\" title=\"交锋 第{i:00}集\">第{i:00}集</a>");
         }
@@ -291,40 +286,30 @@ var wakuredoPlayPath = new Regex(
 
 var listener = new HttpListener();
 listener.Prefixes.Add($"http://localhost:{Port}/");
-listener.Start();Console.WriteLine($"本地测试服务器: http://localhost:{Port}/  " +
+listener.Start(); Console.WriteLine($"本地测试服务器: http://localhost:{Port}/  " +
                   $"{SegmentCount} 个分片，每片约 {segments[0].Length / 1024.0:0} KB");
 
-_ = Task.Run(async () =>
-{
-    while (listener.IsListening)
-    {
+_ = Task.Run(async () => {
+    while (listener.IsListening) {
         HttpListenerContext ctx;
         try { ctx = await listener.GetContextAsync(); } catch { break; }
 
-        _ = Task.Run(async () =>
-        {
-            try
-            {
+        _ = Task.Run(async () => {
+            try {
                 var path = ctx.Request.Url!.AbsolutePath;
 
                 // ---- 加密流用例：/enc/index.m3u8 + /enc/key.key + /enc/segN.ts（AES-128 密文）----
-                if (path.StartsWith("/enc/", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (path.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase))
-                    {
+                if (path.StartsWith("/enc/", StringComparison.OrdinalIgnoreCase)) {
+                    if (path.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase)) {
                         var body = Encoding.UTF8.GetBytes(encPlaylist);
                         ctx.Response.ContentType = "application/vnd.apple.mpegurl";
                         ctx.Response.ContentLength64 = body.Length;
                         await ctx.Response.OutputStream.WriteAsync(body);
-                    }
-                    else if (path.EndsWith("key.key", StringComparison.OrdinalIgnoreCase))
-                    {
+                    } else if (path.EndsWith("key.key", StringComparison.OrdinalIgnoreCase)) {
                         ctx.Response.ContentType = "application/octet-stream";
                         ctx.Response.ContentLength64 = aesKey.Length;
                         await ctx.Response.OutputStream.WriteAsync(aesKey);
-                    }
-                    else
-                    {
+                    } else {
                         var name = Path.GetFileNameWithoutExtension(path);
                         var idx = int.TryParse(name.AsSpan(3), out var en) ? en : 0;
                         var body = encryptedSegments[Math.Clamp(idx, 0, encryptedSegments.Length - 1)];
@@ -335,15 +320,12 @@ _ = Task.Run(async () =>
                     }
                 }
                 // ---- 适配层用例（放在 failSegments 之前：这些用例不受「源站抽风」开关影响）----
-                else if (path.Equals("/dianshiju/20267897.html", StringComparison.OrdinalIgnoreCase))
-                {
+                else if (path.Equals("/dianshiju/20267897.html", StringComparison.OrdinalIgnoreCase)) {
                     var body = Encoding.UTF8.GetBytes(NnyyDetailHtml);
                     ctx.Response.ContentType = "text/html; charset=utf-8";
                     ctx.Response.ContentLength64 = body.Length;
                     await ctx.Response.OutputStream.WriteAsync(body);
-                }
-                else if (path.StartsWith("/_gp/", StringComparison.Ordinal))
-                {
+                } else if (path.StartsWith("/_gp/", StringComparison.Ordinal)) {
                     // 电影页用另一份取源结果（按钮上写的是「SD HD」这种）
                     var payload = path.Contains("20304951", StringComparison.Ordinal)
                         ? nnyyMoviePlaysJson
@@ -353,67 +335,50 @@ _ = Task.Run(async () =>
                     ctx.Response.ContentType = "application/json; charset=utf-8";
                     ctx.Response.ContentLength64 = body.Length;
                     await ctx.Response.OutputStream.WriteAsync(body);
-                }
-                else if (path.Equals("/dianying/20304951.html", StringComparison.OrdinalIgnoreCase))
-                {
+                } else if (path.Equals("/dianying/20304951.html", StringComparison.OrdinalIgnoreCase)) {
                     var body = Encoding.UTF8.GetBytes(NnyyMovieHtml);
                     ctx.Response.ContentType = "text/html; charset=utf-8";
                     ctx.Response.ContentLength64 = body.Length;
                     await ctx.Response.OutputStream.WriteAsync(body);
-                }
-                else if (path.Equals("/generic.html", StringComparison.OrdinalIgnoreCase))
-                {
+                } else if (path.Equals("/generic.html", StringComparison.OrdinalIgnoreCase)) {
                     var body = Encoding.UTF8.GetBytes(genericHtml);
                     ctx.Response.ContentType = "text/html; charset=utf-8";
                     ctx.Response.ContentLength64 = body.Length;
                     await ctx.Response.OutputStream.WriteAsync(body);
-                }
-                else if (path.Equals("/empty.html", StringComparison.OrdinalIgnoreCase))
-                {
+                } else if (path.Equals("/empty.html", StringComparison.OrdinalIgnoreCase)) {
                     var body = Encoding.UTF8.GetBytes(EmptyHtml);
                     ctx.Response.ContentType = "text/html; charset=utf-8";
                     ctx.Response.ContentLength64 = body.Length;
                     await ctx.Response.OutputStream.WriteAsync(body);
                 }
-                // ---- 影迷界影院用例：斜杠形态的详情页 / 播放页 ----
-                else if (path.Equals("/t/62329.html", StringComparison.OrdinalIgnoreCase))
-                {
+                  // ---- 影迷界影院用例：斜杠形态的详情页 / 播放页 ----
+                  else if (path.Equals("/t/62329.html", StringComparison.OrdinalIgnoreCase)) {
                     var body = Encoding.UTF8.GetBytes(WakuredoDetailHtml);
                     ctx.Response.ContentType = "text/html; charset=utf-8";
                     ctx.Response.ContentLength64 = body.Length;
                     await ctx.Response.OutputStream.WriteAsync(body);
-                }
-                else if (wakuredoPlayPath.Match(path) is { Success: true } wm)
-                {
+                } else if (wakuredoPlayPath.Match(path) is { Success: true } wm) {
                     var body = Encoding.UTF8.GetBytes(WakuredoPlayHtml(
                         int.Parse(wm.Groups["sid"].Value), int.Parse(wm.Groups["nid"].Value)));
                     ctx.Response.ContentType = "text/html; charset=utf-8";
                     ctx.Response.ContentLength64 = body.Length;
                     await ctx.Response.OutputStream.WriteAsync(body);
-                }
-                else if (path.Equals("/not-a-playlist.html", StringComparison.OrdinalIgnoreCase))
-                {
+                } else if (path.Equals("/not-a-playlist.html", StringComparison.OrdinalIgnoreCase)) {
                     // 「失效源」：返回 HTML 而不是 m3u8，用来验证多源里会跳过它挑下一个
                     var body = Encoding.UTF8.GetBytes("<html><body>404 not found</body></html>");
                     ctx.Response.ContentType = "text/html; charset=utf-8";
                     ctx.Response.ContentLength64 = body.Length;
                     await ctx.Response.OutputStream.WriteAsync(body);
-                }
-                else if (failSegments && !path.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase))
-                {
+                } else if (failSegments && !path.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase)) {
                     // 源站抽风：分片一直 404，重试也救不回来
                     ctx.Response.StatusCode = 404;
                     ctx.Response.ContentLength64 = 0;
-                }
-                else if (path.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase))
-                {
+                } else if (path.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase)) {
                     var body = Encoding.UTF8.GetBytes(playlist);
                     ctx.Response.ContentType = "application/vnd.apple.mpegurl";
                     ctx.Response.ContentLength64 = body.Length;
                     await ctx.Response.OutputStream.WriteAsync(body);
-                }
-                else
-                {
+                } else {
                     var name = Path.GetFileNameWithoutExtension(path);          // seg12
                     var index = int.TryParse(name.AsSpan(3), out var n) ? n : 0;
                     var body = segments[Math.Clamp(index, 0, segments.Length - 1)];
@@ -424,17 +389,14 @@ _ = Task.Run(async () =>
                     ctx.Response.ContentLength64 = body.Length;
 
                     const int chunk = 100 * 1024;
-                    for (var off = 0; off < body.Length; off += chunk)
-                    {
+                    for (var off = 0; off < body.Length; off += chunk) {
                         var count = Math.Min(chunk, body.Length - off);
                         await ctx.Response.OutputStream.WriteAsync(body.AsMemory(off, count));
                         await ctx.Response.OutputStream.FlushAsync();
                         await Task.Delay(60);   // 慢一点，便于观察进度中间态与速度
                     }
                 }
-            }
-            catch { }
-            finally { try { ctx.Response.Close(); } catch { } }
+            } catch { } finally { try { ctx.Response.Close(); } catch { } }
         });
     }
 });
@@ -444,10 +406,8 @@ _ = Task.Run(async () =>
 var outputDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-" + Guid.NewGuid().ToString("N")[..6]);
 Directory.CreateDirectory(outputDir);
 
-SiteSeries BuildSeries(int episodeCount = 3)
-{
-    var s = new SiteSeries
-    {
+SiteSeries BuildSeries(int episodeCount = 3) {
+    var s = new SiteSeries {
         Kind = SiteKind.MacCms,
         SiteName = "本地测试站",
         PageUrl = $"http://localhost:{Port}/vodplay/1-1-1.html",
@@ -458,10 +418,8 @@ SiteSeries BuildSeries(int episodeCount = 3)
     var playSource = new SitePlaySource { Id = 1, Name = "本地源" };
     s.Sources.Add(playSource);
 
-    for (var n = 1; n <= episodeCount; n++)
-    {
-        playSource.Episodes.Add(new SiteEpisode
-        {
+    for (var n = 1; n <= episodeCount; n++) {
+        playSource.Episodes.Add(new SiteEpisode {
             Number = n,
             SourceId = 1,
             PageUrl = $"http://localhost:{Port}/vodplay/1-1-{n}.html",
@@ -475,21 +433,17 @@ SiteSeries BuildSeries(int episodeCount = 3)
 }
 
 /// <summary>造一部剧，但只勾选其中某几集（模拟"用户只挑了一集下载"）</summary>
-SiteSeries BuildSeriesSelected(int episodeCount, params int[] selected)
-{
+SiteSeries BuildSeriesSelected(int episodeCount, params int[] selected) {
     var s = BuildSeries(episodeCount);
     foreach (var e in s.AllEpisodes) e.IsSelected = selected.Contains(e.Number);
     return s;
 }
 
 /// <summary>追加拿第二个播放源（同集号会重复），并把勾选切到新源上</summary>
-SiteSeries AddSecondSource(SiteSeries series, int episodeCount, params int[] selected)
-{
+SiteSeries AddSecondSource(SiteSeries series, int episodeCount, params int[] selected) {
     var second = new SitePlaySource { Id = 2, Name = "备用源" };
-    for (var n = 1; n <= episodeCount; n++)
-    {
-        second.Episodes.Add(new SiteEpisode
-        {
+    for (var n = 1; n <= episodeCount; n++) {
+        second.Episodes.Add(new SiteEpisode {
             Number = n,
             SourceId = 2,
             PageUrl = $"http://localhost:{Port}/vodplay/1-2-{n}.html",
@@ -504,8 +458,7 @@ SiteSeries AddSecondSource(SiteSeries series, int episodeCount, params int[] sel
     return series;
 }
 
-var options = new SeriesDownloadOptions
-{
+var options = new SeriesDownloadOptions {
     OutputDirectory = outputDir,
     EpisodeConcurrency = 3,
     SegmentConcurrency = 2,
@@ -524,10 +477,8 @@ Console.WriteLine("阶段 A：直接调用 SeriesDownloader（不经任务队列
 var directReports = 0;
 var directTrace = new List<string>();
 
-using (var direct = new SeriesDownloader())
-{
-    var directProgress = new Progress<SeriesDownloadProgress>(p =>
-    {
+using (var direct = new SeriesDownloader()) {
+    var directProgress = new Progress<SeriesDownloadProgress>(p => {
         directReports++;
         var line = $"{p.OverallPercent,5:0.0}%  [{string.Join(",", p.Episodes.Select(e => $"{e.Percent:0}"))}]  " +
                    $"{p.SpeedText,-10}  {p.DownloadedBytes / 1024.0 / 1024.0:0.00} MB";
@@ -557,16 +508,14 @@ Console.WriteLine("阶段 A2：直接用 HlsDownloader，看分片级上报频�
     var hlsReports = 0;
     var hlsTrace = new List<string>();
 
-    var hlsProgress = new Progress<DownloadProgress>(d =>
-    {
+    var hlsProgress = new Progress<DownloadProgress>(d => {
         hlsReports++;
         var line = $"{d.Percent,5:0.0}%  片 {d.CompletedSegments}/{d.TotalSegments}  " +
                    $"{d.DownloadedBytes / 1024.0 / 1024.0:0.00} MB  {d.SpeedText}";
         if (hlsTrace.Count == 0 || hlsTrace[^1] != line) hlsTrace.Add(line);
     });
 
-    var hlsResult = await hls.DownloadAsync(media, new DownloadOptions
-    {
+    var hlsResult = await hls.DownloadAsync(media, new DownloadOptions {
         TempDirectory = hlsDir,
         OutputPath = Path.Combine(hlsDir, "out.ts"),
         Concurrency = 2,
@@ -583,8 +532,7 @@ Console.WriteLine("阶段 A2：直接用 HlsDownloader，看分片级上报频�
 
 var queueDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-" + Guid.NewGuid().ToString("N")[..6]);
 Directory.CreateDirectory(queueDir);
-var queueOptions = new SeriesDownloadOptions
-{
+var queueOptions = new SeriesDownloadOptions {
     OutputDirectory = queueDir,
     EpisodeConcurrency = 3,
     SegmentConcurrency = 2,
@@ -610,23 +558,18 @@ var finished = new TaskCompletionSource();
 var speedSamples = 0;
 double peakSpeed = 0;
 long peakBytes = 0;
-foreach (var item in task.Episodes)
-{
+foreach (var item in task.Episodes) {
     var ep = item;
-    ep.PropertyChanged += (_, e) =>
-    {
+    ep.PropertyChanged += (_, e) => {
         if (e.PropertyName == nameof(TaskEpisodeItem.Percent) && ep.Percent > 0 && ep.Percent < 100)
             midSamples.AddOrUpdate(ep.Number, 1, (_, v) => v + 1);
     };
 }
 
-task.PropertyChanged += (_, e) =>
-{
-    switch (e.PropertyName)
-    {
+task.PropertyChanged += (_, e) => {
+    switch (e.PropertyName) {
         case nameof(SeriesTask.SpeedBytesPerSecond):
-            if (task.SpeedBytesPerSecond > 0)
-            {
+            if (task.SpeedBytesPerSecond > 0) {
                 speedSamples++;
                 peakSpeed = Math.Max(peakSpeed, task.SpeedBytesPerSecond);
             }
@@ -647,12 +590,9 @@ task.PropertyChanged += (_, e) =>
 // 而且共享的进度对象会让事件采样被合并，轮询能看到界面真正拿到的值。
 var observedStates = new List<string>();
 var progressTrace = new List<string>();
-var poller = Task.Run(async () =>
-{
-    while (!finished.Task.IsCompleted)
-    {
-        try
-        {
+var poller = Task.Run(async () => {
+    while (!finished.Task.IsCompleted) {
+        try {
             var (state, percent, perEpisode, speed, bytes) = await dispatcher.InvokeAsync(() =>
                 (task.StateText,
                  task.Percent,
@@ -664,8 +604,7 @@ var poller = Task.Run(async () =>
 
             var line = $"{percent:0.0}% [{perEpisode}] {SeriesTask.FormatSpeed(speed)} {bytes / 1024.0 / 1024.0:0.00}MB";
             if (progressTrace.Count == 0 || progressTrace[^1] != line) progressTrace.Add(line);
-        }
-        catch { }
+        } catch { }
         try { await Task.Delay(100); } catch { }
     }
 });
@@ -689,15 +628,14 @@ Console.WriteLine($"状态流转(事件) : {string.Join(" → ", stateSequence)}
 Console.WriteLine();
 Console.WriteLine("界面看到的进度（去重后）：");
 foreach (var line in progressTrace.Take(40)) Console.WriteLine("  " + line);
-if (progressTrace.Count > 40) Console.WriteLine($"  …（共 {progressTrace.Count} 个采样点）");Console.WriteLine($"UI 线程执行次数: {dispatcher.Executed}");
+if (progressTrace.Count > 40) Console.WriteLine($"  …（共 {progressTrace.Count} 个采样点）"); Console.WriteLine($"UI 线程执行次数: {dispatcher.Executed}");
 Console.WriteLine($"速度采样(>0)   : {speedSamples} 次，峰值 {SeriesTask.FormatSpeed(peakSpeed)}");
 Console.WriteLine($"已下载峰值     : {peakBytes / 1024.0 / 1024.0:0.00} MB");
 Console.WriteLine($"结束态总速度   : {SeriesTask.FormatSpeed(totalSpeed)}");
 Console.WriteLine($"上传速度       : {SeriesTask.FormatSpeed(manager.TotalUploadSpeed)}（本程序不上传数据）");
 Console.WriteLine();
 Console.WriteLine("每一集：");
-foreach (var ep in task.Episodes)
-{
+foreach (var ep in task.Episodes) {
     var mids = midSamples.TryGetValue(ep.Number, out var c) ? c : 0;
     Console.WriteLine($"  {ep.Title,-8} {ep.StatusText,-6} {ep.Percent,5:0.0}%  {ep.SizeText,-9} 中间态采样 {mids}");
 }
@@ -726,10 +664,9 @@ Console.WriteLine("阶段 C：断点续传（保存任务 → 关程序 → 重�
 var resumeRoot = Path.Combine(Path.GetTempPath(), "m3u8-selftest-resume-" + Guid.NewGuid().ToString("N")[..6]);
 var resumeOut = Path.Combine(resumeRoot, "out");
 Directory.CreateDirectory(resumeOut);
-var store = new TaskStore(Path.Combine(resumeRoot, "tasks.json"));
+var store = new TaskStore(Path.Combine(resumeRoot, "m3u8.db"));
 
-var resumeOptions = new SeriesDownloadOptions
-{
+var resumeOptions = new SeriesDownloadOptions {
     OutputDirectory = resumeOut,
     EpisodeConcurrency = 1,      // 串行下：保证第 1 集先完成，才能模拟「下到一半关掉程序」
     SegmentConcurrency = 2,
@@ -741,8 +678,7 @@ var resumeOptions = new SeriesDownloadOptions
 };
 
 var dispatcher1 = new FakeDispatcher();
-var manager1 = new DownloadTaskManager(null, dispatcher1.Post, store)
-{
+var manager1 = new DownloadTaskManager(null, dispatcher1.Post, store) {
     // 恢复时要重新解析站点；自检不去访问真实网站，直接给本地剧集数据
     SeriesParser = (_, _) => Task.FromResult(BuildSeries()),
 };
@@ -753,15 +689,12 @@ await dispatcher1.InvokeAsync(() => { });
 // 等「第 1 集已完成、第 2 集正在进行」—— 这就是用户关掉程序的那一刻
 var halfDone = new TaskCompletionSource();
 var halfPercent = 0.0;
-var watcher = Task.Run(async () =>
-{
-    while (true)
-    {
+var watcher = Task.Run(async () => {
+    while (true) {
         var (firstDone, secondPercent) = await dispatcher1.InvokeAsync(() =>
             (task1.Episodes[0].State == EpisodeDownloadStatus.Completed, task1.Episodes[1].Percent));
 
-        if (firstDone && secondPercent >= 15 && secondPercent < 100)
-        {
+        if (firstDone && secondPercent >= 15 && secondPercent < 100) {
             halfPercent = secondPercent;
             halfDone.TrySetResult();
             return;
@@ -791,10 +724,9 @@ await Task.WhenAny(watcher, Task.Delay(TimeSpan.FromSeconds(2)));
 var savedRecords = store.Load();
 var stagingKept = Directory.GetDirectories(resumeOut, ".m3u8tmp-*", SearchOption.AllDirectories).Length;
 
-// 「重新打开程序」：同一个 tasks.json，新建 manager 恢复
+// 「重新打开程序」：同一个库文件，新建 manager 恢复
 var dispatcher2 = new FakeDispatcher();
-using var manager2 = new DownloadTaskManager(null, dispatcher2.Post, store)
-{
+using var manager2 = new DownloadTaskManager(null, dispatcher2.Post, store) {
     SeriesParser = (_, _) => Task.FromResult(BuildSeries()),
 };
 
@@ -802,8 +734,7 @@ var restoredCount = await manager2.RestoreAsync();
 var restoredTask = await dispatcher2.InvokeAsync(() => manager2.Tasks.FirstOrDefault());
 
 var deadline = DateTime.UtcNow.AddMinutes(2);
-while (restoredTask is not null && DateTime.UtcNow < deadline)
-{
+while (restoredTask is not null && DateTime.UtcNow < deadline) {
     var state = await dispatcher2.InvokeAsync(() => restoredTask.State);
     if (state is SeriesTaskState.Completed or SeriesTaskState.PartiallyCompleted
         or SeriesTaskState.Failed or SeriesTaskState.Canceled or SeriesTaskState.Paused) break;
@@ -856,13 +787,11 @@ var pauseDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-pause-" + Guid.Ne
 Directory.CreateDirectory(pauseDir);
 
 var dispatcher3 = new FakeDispatcher();
-using var manager3 = new DownloadTaskManager(null, dispatcher3.Post)
-{
+using var manager3 = new DownloadTaskManager(null, dispatcher3.Post) {
     // 「继续下载」会重新解析站点；自检不去访问真实网站，直接给本地剧集数据
     SeriesParser = (_, _) => Task.FromResult(BuildSeries()),
 };
-var task3 = manager3.Enqueue(BuildSeries(), new SeriesDownloadOptions
-{
+var task3 = manager3.Enqueue(BuildSeries(), new SeriesDownloadOptions {
     OutputDirectory = pauseDir,
     EpisodeConcurrency = 1,      // 串行：第 1 集下到一半时才有机会按暂停
     SegmentConcurrency = 2,
@@ -890,17 +819,14 @@ Console.WriteLine($"  暂停刚返回时 : 进度 {await dispatcher3.InvokeAsync
 
 // 停止之后不许自己再跑起来：等"所有集都到了终态且任务不在运行中"，再观察几秒。
 // （注意不能只看 IsFinished —— 多集并发时它会短暂变 true，然后下一个集开跑又变回去）
-try
-{
+try {
     await WaitUntilAsync(async () => await dispatcher3.InvokeAsync(() =>
             !task3.IsRunning
             && task3.Episodes.All(e => e.State is EpisodeDownloadStatus.Completed
                 or EpisodeDownloadStatus.Failed or EpisodeDownloadStatus.Canceled
                 or EpisodeDownloadStatus.Pending)),
         TimeSpan.FromSeconds(20), "暂停后各集都停下");
-}
-catch (TimeoutException)
-{
+} catch (TimeoutException) {
     var dump = await dispatcher3.InvokeAsync(() => string.Join("、",
         task3.Episodes.Select(e => $"第{e.Number:00}集={e.State}/{e.StatusText}/{e.Percent:0}%")));
     Console.WriteLine($"  ⚠ 暂停后仍有集没停下：{await dispatcher3.InvokeAsync(() => task3.StateText)} / " +
@@ -1028,8 +954,7 @@ Directory.CreateDirectory(retryDir);
 
 var dispatcher4 = new FakeDispatcher();
 using var manager4 = new DownloadTaskManager(null, dispatcher4.Post);
-var task4 = manager4.Enqueue(BuildSeries(), new SeriesDownloadOptions
-{
+var task4 = manager4.Enqueue(BuildSeries(), new SeriesDownloadOptions {
     OutputDirectory = retryDir,
     EpisodeConcurrency = 1,      // 串行：失败的分片只影响当前这一集
     SegmentConcurrency = 2,
@@ -1127,15 +1052,13 @@ var subsetDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-subset-" + Guid.
 Directory.CreateDirectory(subsetDir);
 
 var dispatcher5 = new FakeDispatcher();
-using var manager5 = new DownloadTaskManager(null, dispatcher5.Post)
-{
+using var manager5 = new DownloadTaskManager(null, dispatcher5.Post) {
     // 站点上仍然是完整的 21 集 —— 续传要能从中只挑回第 12 集
     SeriesParser = (_, _) => Task.FromResult(BuildSeries(FullEpisodeCount)),
 };
 
 var task5 = manager5.Enqueue(BuildSeriesSelected(FullEpisodeCount, PickedEpisode),
-    new SeriesDownloadOptions
-    {
+    new SeriesDownloadOptions {
         OutputDirectory = subsetDir,
         EpisodeConcurrency = 1,
         SegmentConcurrency = 2,
@@ -1149,8 +1072,7 @@ await dispatcher5.InvokeAsync(() => { });
 
 var subsetStarted = new List<int>();
 var subsetDone = new TaskCompletionSource();
-task5.PropertyChanged += (_, e) =>
-{
+task5.PropertyChanged += (_, e) => {
     if (e.PropertyName is not (nameof(SeriesTask.CurrentEpisode) or nameof(SeriesTask.State))) return;
 
     var current = task5.CurrentEpisode;
@@ -1208,14 +1130,12 @@ var fallbackDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-fallback-" + G
 Directory.CreateDirectory(fallbackDir);
 
 var dispatcher6 = new FakeDispatcher();
-using var manager6 = new DownloadTaskManager(null, dispatcher6.Post)
-{
+using var manager6 = new DownloadTaskManager(null, dispatcher6.Post) {
     SeriesParser = (_, _) => Task.FromResult(AddSecondSource(BuildSeries(FullEpisodeCount), FullEpisodeCount, PickedEpisode)),
 };
 
 var task6 = manager6.Enqueue(AddSecondSource(BuildSeries(FullEpisodeCount), FullEpisodeCount, PickedEpisode),
-    new SeriesDownloadOptions
-    {
+    new SeriesDownloadOptions {
         OutputDirectory = fallbackDir,
         EpisodeConcurrency = 1,
         SegmentConcurrency = 2,
@@ -1229,8 +1149,7 @@ task6.PreferredSourceId = 99;      // 故意指向一个重新解析后不存在
 await dispatcher6.InvokeAsync(() => { });
 
 var fallbackDone = new TaskCompletionSource();
-task6.PropertyChanged += (_, e) =>
-{
+task6.PropertyChanged += (_, e) => {
     if (e.PropertyName == nameof(SeriesTask.State) && task6.IsFinished) fallbackDone.TrySetResult();
 };
 
@@ -1298,8 +1217,7 @@ var okDuration = probeOk;
     Directory.CreateDirectory(mp4Dir);
 
     using var mp4Downloader = new SeriesDownloader();
-    var mp4Report = await mp4Downloader.DownloadAsync(BuildSeries(), new SeriesDownloadOptions
-    {
+    var mp4Report = await mp4Downloader.DownloadAsync(BuildSeries(), new SeriesDownloadOptions {
         OutputDirectory = mp4Dir,
         EpisodeConcurrency = 3,
         SegmentConcurrency = 2,
@@ -1342,8 +1260,7 @@ var encOk = false;
     Console.WriteLine($"  分片 {encMedia.Segments.Count} 个；" +
                       $"密文首字节: {string.Join(", ", encryptedSegments.Select(s => $"0x{s[0]:X2}"))}");
 
-    var encResult = await encDownloader.DownloadAsync(encMedia, new DownloadOptions
-    {
+    var encResult = await encDownloader.DownloadAsync(encMedia, new DownloadOptions {
         Concurrency = 3,
         MaxRetries = 1,
         TempDirectory = Path.Combine(encDir, "staging"),
@@ -1384,8 +1301,7 @@ Directory.CreateDirectory(singleDir);
 var okSingle = false;
 {
     var service = new SingleFileDownloadService();
-    var report = await service.DownloadAsync(new SingleFileDownloadOptions
-    {
+    var report = await service.DownloadAsync(new SingleFileDownloadOptions {
         Url = $"http://localhost:{Port}/index.m3u8",
         OutputDirectory = singleDir,
         FileName = "single",
@@ -1483,8 +1399,7 @@ var okWakuredo = false;
                  .All(e => e.PlaylistUrl!.EndsWith("/index.m3u8", StringComparison.Ordinal));
 
     // 下载目录要带上站点标识：同一部剧在不同站点往往是不同版本，不能混进同一个目录
-    var folder = SeriesDownloader.ResolveSeriesDirectory(parsed, new SeriesDownloadOptions
-    {
+    var folder = SeriesDownloader.ResolveSeriesDirectory(parsed, new SeriesDownloadOptions {
         OutputDirectory = Path.Combine(Path.GetTempPath(), "m3u8-selftest-out"),
         SeriesSubdirectory = true,
     });
@@ -1529,13 +1444,10 @@ var okWakuredo = false;
 {
     using var emptyCtx = new SiteContext();
     var resolver = SiteResolver.CreateDefault();
-    try
-    {
+    try {
         var parsed = await resolver.ParseAsync($"http://localhost:{Port}/empty.html", emptyCtx);
         Console.WriteLine($"  ✘ 空页面居然解析出了 {parsed.TotalEpisodes} 集，应当明确报错");
-    }
-    catch (NotSupportedException ex)
-    {
+    } catch (NotSupportedException ex) {
         okEmpty = true;
         Console.WriteLine($"  空页面明确报错 ✔：{ex.Message}");
     }
@@ -1611,8 +1523,7 @@ var okNoSystemProxy = false;
     var originalProxy = HttpClient.DefaultProxy;
     HttpClient.DefaultProxy = new WebProxy("http://127.0.0.1:1");   // 黑洞：连上就说明走了代理
 
-    try
-    {
+    try {
         using var directCtx = new SiteContext();
         var html = await directCtx.Direct.GetStringAsync($"http://localhost:{Port}/generic.html");
         var siteOk = html.Contains("测试影片", StringComparison.Ordinal);
@@ -1624,13 +1535,9 @@ var okNoSystemProxy = false;
         okNoSystemProxy = siteOk && hlsOk;
         Console.WriteLine($"  黑洞代理下的站点解析: {(siteOk ? "✔ 直连正常" : "✘ 走了代理")}");
         Console.WriteLine($"  黑洞代理下的分片清单: {(hlsOk ? $"✔ 直连正常（{media.Segments.Count} 片）" : "✘ 走了代理")}");
-    }
-    catch (Exception ex)
-    {
+    } catch (Exception ex) {
         Console.WriteLine($"  ✘ 直连走了系统代理：{ex.GetType().Name}: {ex.Message}");
-    }
-    finally
-    {
+    } finally {
         HttpClient.DefaultProxy = originalProxy;
     }
 }
@@ -1713,8 +1620,7 @@ var okVersionCompare = false;
     };
 
     var bad = new List<string>();
-    foreach (var (l, r, expected) in cases)
-    {
+    foreach (var (l, r, expected) in cases) {
         var actual = M3U8Downloader.Core.Update.UpdateChecker.CompareVersions(l, r);
         if (actual != expected) bad.Add($"{l} vs {r} 期望 {expected} 实得 {actual}");
     }
@@ -1741,17 +1647,14 @@ var siteEpisodeCount = 2;
 var parseCount = 0;   // 预检解析了几次；续下带着预检结果就不该再抓页面
 
 var dispatcher7 = new FakeDispatcher();
-using var manager7 = new DownloadTaskManager(null, dispatcher7.Post)
-{
-    SeriesParser = (_, _) =>
-    {
+using var manager7 = new DownloadTaskManager(null, dispatcher7.Post) {
+    SeriesParser = (_, _) => {
         Interlocked.Increment(ref parseCount);
         return Task.FromResult(BuildSeries(siteEpisodeCount));
     },
 };
 
-var task7 = manager7.Enqueue(BuildSeries(siteEpisodeCount), new SeriesDownloadOptions
-{
+var task7 = manager7.Enqueue(BuildSeries(siteEpisodeCount), new SeriesDownloadOptions {
     OutputDirectory = fetchNewDir,
     EpisodeConcurrency = 2,
     SegmentConcurrency = 2,
@@ -1764,8 +1667,7 @@ var task7 = manager7.Enqueue(BuildSeries(siteEpisodeCount), new SeriesDownloadOp
 await dispatcher7.InvokeAsync(() => { });
 
 var fetchFirstDone = new TaskCompletionSource();
-task7.PropertyChanged += (_, e) =>
-{
+task7.PropertyChanged += (_, e) => {
     if (e.PropertyName == nameof(SeriesTask.State) && task7.IsFinished) fetchFirstDone.TrySetResult();
 };
 
@@ -1901,14 +1803,12 @@ Directory.CreateDirectory(histDir);
 
 var recorded = new MemoryHistory();
 var dispatcher8 = new FakeDispatcher();
-using var manager8 = new DownloadTaskManager(null, dispatcher8.Post)
-{
+using var manager8 = new DownloadTaskManager(null, dispatcher8.Post) {
     SeriesParser = (_, _) => Task.FromResult(BuildSeries(3)),
     History = recorded,
 };
 
-var task8 = manager8.Enqueue(BuildSeries(3), new SeriesDownloadOptions
-{
+var task8 = manager8.Enqueue(BuildSeries(3), new SeriesDownloadOptions {
     OutputDirectory = histDir,
     EpisodeConcurrency = 2,
     SegmentConcurrency = 2,
@@ -1921,8 +1821,7 @@ var task8 = manager8.Enqueue(BuildSeries(3), new SeriesDownloadOptions
 await dispatcher8.InvokeAsync(() => { });
 
 var histDone = new TaskCompletionSource();
-task8.PropertyChanged += (_, e) =>
-{
+task8.PropertyChanged += (_, e) => {
     if (e.PropertyName == nameof(SeriesTask.State) && task8.IsFinished) histDone.TrySetResult();
 };
 await WaitUntilAsync(async () => await dispatcher8.InvokeAsync(() => task8.IsRunning),
@@ -1935,6 +1834,17 @@ Console.WriteLine($"  下载 3 集自动记账: {histEntries.Count} 条 → " +
                   $"{string.Join("、", histEntries.OrderBy(e => e.EpisodeNumber).Select(e => $"第{e.EpisodeNumber}集({e.FileBytes}B)"))}");
 var histFilesOk = histEntries.All(e => e.FilePath is not null && File.Exists(e.FilePath));
 
+// O5：把任务**移除**掉 —— 这部剧的下载历史要跟着一起销。
+// 任务都删了、账还留着的话，下次再下这部剧会凭空冒出"当初下过、文件已不在"的提示，
+// 而那个文件是用户自己连同任务一起清掉的。
+// （「清理已完成」不走这条：那只是收拾列表，视频还在盘上，账得留着。）
+manager8.Remove(task8);
+await WaitUntilAsync(() => Task.FromResult(recorded.All().Count == 0),
+    TimeSpan.FromSeconds(5), "移除任务后历史被销掉");
+
+var histAfterRemove = recorded.All().Count;
+Console.WriteLine($"  移除任务后历史剩余: {histAfterRemove} 条（应 0）");
+
 var okDiskFirst = scanned.Keys.OrderBy(n => n).SequenceEqual(new[] { 1, 2 })
                   && scannedNoPad.Count == 0
                   && previewDone is { DownloadedCount: 4, PendingCount: 0 }
@@ -1946,8 +1856,9 @@ var okDiskFirst = scanned.Keys.OrderBy(n => n).SequenceEqual(new[] { 1, 2 })
                   && histEntries.Select(e => e.EpisodeNumber).OrderBy(n => n).SequenceEqual(new[] { 1, 2, 3 })
                   && histEntries.All(e => e.SeriesTitle == "自检剧集" && e.PageUrl == task8.PageUrl)
                   && histEntries.All(e => e.FileBytes > 0)
-                  && histFilesOk;
-Console.WriteLine($"  已下载置灰 + 自动记账: {(okDiskFirst ? "✔" : "✘")}");
+                  && histFilesOk
+                  && histAfterRemove == 0;
+Console.WriteLine($"  已下载置灰 + 自动记账 + 移除销账: {(okDiskFirst ? "✔" : "✘")}");
 
 // ---------------------------------------------------------------- 阶段 P：站点快照（续下不联网）
 //
@@ -1972,20 +1883,17 @@ var snapSiteCount = 3;
 var snapParseCalls = 0;
 var snapAllowParse = false;   // 先禁止联网：走快照路径时一次都不该解析页面
 
-var snapStorePath = Path.Combine(snapDir, "tasks.json");
+var snapStorePath = Path.Combine(snapDir, "m3u8.db");
 var dispatcher9 = new FakeDispatcher();
-using var manager9 = new DownloadTaskManager(null, dispatcher9.Post, new TaskStore(snapStorePath))
-{
-    SeriesParser = (_, _) =>
-    {
+using var manager9 = new DownloadTaskManager(null, dispatcher9.Post, new TaskStore(snapStorePath)) {
+    SeriesParser = (_, _) => {
         Interlocked.Increment(ref snapParseCalls);
         if (!snapAllowParse) throw new InvalidOperationException("这条路径不该联网");
         return Task.FromResult(BuildSeries(snapSiteCount));
     },
 };
 
-var task9 = manager9.Enqueue(snapshotSeries, new SeriesDownloadOptions
-{
+var task9 = manager9.Enqueue(snapshotSeries, new SeriesDownloadOptions {
     OutputDirectory = snapDir,
     EpisodeConcurrency = 1,
     SegmentConcurrency = 2,
@@ -1998,8 +1906,7 @@ var task9 = manager9.Enqueue(snapshotSeries, new SeriesDownloadOptions
 await dispatcher9.InvokeAsync(() => { });
 
 var snapDone = new TaskCompletionSource();
-task9.PropertyChanged += (_, e) =>
-{
+task9.PropertyChanged += (_, e) => {
     if (e.PropertyName == nameof(SeriesTask.State) && task9.IsFinished) snapDone.TrySetResult();
 };
 await WaitUntilAsync(async () => await dispatcher9.InvokeAsync(() => task9.IsRunning),
@@ -2026,12 +1933,9 @@ Console.WriteLine($"  这一步的页面解析次数：{snapCallsAfter}（应为
 // 2) 站点解析不了时，联网预检要降级用快照，而不是直接报错
 FetchNewPreview? degraded = null;
 string? degradedError = null;
-try
-{
+try {
     degraded = await manager9.PreviewFetchNewAsync(task9);
-}
-catch (Exception ex)
-{
+} catch (Exception ex) {
     degradedError = ex.Message;
 }
 Console.WriteLine($"  站点解析失败时：{(degraded is null ? "抛异常 ✘（" + degradedError + "）" : "降级用快照 ✔")}" +
@@ -2058,8 +1962,7 @@ Console.WriteLine($"  重启恢复 {snapRestoredCount} 个任务：快照 {resto
 
 // 5) 用快照续下时某集失败了 → 收尾应**自动重新拉取元数据**（很可能是站点改版让地址失效）
 //    这里把第 1 集的播放页换成一个连不上的地址，让这一集必然失败
-await dispatcher9.InvokeAsync(() =>
-{
+await dispatcher9.InvokeAsync(() => {
     var broken = task9.Snapshot!.Episodes.First(e => e.Number == 1);
     broken.PageUrl = "http://127.0.0.1:1/never.html";
 });
@@ -2105,12 +2008,340 @@ var okSnapshot = snapEpisodes.Count == 3
                  && failMessage.Contains("已重新拉取集列表");
 Console.WriteLine($"  站点快照: {(okSnapshot ? "✔" : "✘")}");
 
+// ---------------------------------------------------------------- 阶段 Q：统一库（真 SQLite）
+//
+// 存储实现搬进 Core 之后，自检终于能直接测真货 —— 以前它住在界面层，
+// 自检只碰得到 MemoryHistory，SQL 语句得靠一个一次性的 _diag 项目单独兜。
+// 这里连"旧 downloads.db 搬进新库"这条迁移路径一起守。
+
+Console.WriteLine();
+Console.WriteLine("阶段 Q：统一库（真 SQLite：下载历史 + 旧库迁移）");
+
+var dbDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-db-" + Guid.NewGuid().ToString("N")[..6]);
+Directory.CreateDirectory(dbDir);
+
+const string urlQ = "https://example.com/vodplay/9-1-1.html";
+const string urlR = "https://example.com/vodplay/8-1-1.html";
+
+// 迁移来源全指到临时目录：自检绝不能碰用户真实的 data\
+SqliteDatabase.LegacySources Legacy(string dir, string historyName = "downloads.db") =>
+    new(Path.Combine(dir, historyName), Path.Combine(dir, "settings.json"), Path.Combine(dir, "tasks.json"));
+
+var dbPath = Path.Combine(dbDir, "m3u8.db");
+var historyQ = new SqliteDownloadHistory(new SqliteDatabase(dbPath, Legacy(dbDir)));
+
+for (var n = 1; n <= 3; n++) {
+    historyQ.Record(new DownloadHistoryEntry {
+        PageUrl = urlQ,
+        SiteName = "测试站",
+        SeriesTitle = "测试剧",
+        EpisodeNumber = n,
+        FilePath = $@"D:\x\测试剧.{n:00}.mp4",
+        FileBytes = 100 + n,
+    });
+}
+
+// upsert：同一集重下不能变成两行
+historyQ.Record(new DownloadHistoryEntry {
+    PageUrl = urlQ,
+    SiteName = "测试站",
+    SeriesTitle = "测试剧",
+    EpisodeNumber = 2,
+    FileBytes = 999,
+});
+historyQ.Record(new DownloadHistoryEntry {
+    PageUrl = urlR,
+    SiteName = "测试站",
+    SeriesTitle = "另一部剧",
+    EpisodeNumber = 1,
+    FileBytes = 5,
+});
+
+var qUpsert = historyQ.FindBySeries(urlQ);
+var qEp2 = qUpsert.Single(e => e.EpisodeNumber == 2);
+var qOther = historyQ.FindBySeries(urlR).Count;
+var qAll = historyQ.All().Count;
+Console.WriteLine($"  记 3 集 + 重下第 2 集 + 另一部剧 1 集: 本剧 {qUpsert.Count} 条（应 3）、" +
+                  $"第 2 集 {qEp2.FileBytes}B（应 999）、另一部剧 {qOther} 条（应 1）、All {qAll} 条（应 4）");
+
+// 销账：整部走，不带走别的剧；空地址不能变成"清空全表"
+historyQ.Forget(urlQ);
+var qForget = historyQ.FindBySeries(urlQ).Count;
+var qOtherAfter = historyQ.FindBySeries(urlR).Count;
+historyQ.Forget("");
+historyQ.Forget("   ");
+var qAllAfter = historyQ.All().Count;
+Console.WriteLine($"  销账: 本剧 {qForget} 条（应 0）、另一部剧 {qOtherAfter} 条（应 1）；" +
+                  $"空地址后 All {qAllAfter} 条（应 1）");
+
+// 真落盘：重开一个实例（重开连接）还读得到
+var qReopened = new SqliteDownloadHistory(dbPath).FindBySeries(urlR).Count;
+Console.WriteLine($"  重开实例后另一部剧仍 {qReopened} 条（应 1）");
+
+// 造一个旧版 downloads.db（旧 schema、只有 downloads 一张表）
+var legacyPath = Path.Combine(dbDir, "downloads.db");
+WriteLegacyDatabase(legacyPath);
+
+// 空库 + 存在旧库 → 应当自动搬进来，并把旧文件改名留档
+var migratePath = Path.Combine(dbDir, "migrate.db");
+var migrated = new SqliteDownloadHistory(new SqliteDatabase(migratePath, Legacy(dbDir)))
+    .FindBySeries("https://legacy.example.com/vodplay/1-1-1.html");
+var legacyRenamed = File.Exists(legacyPath + ".migrated") && !File.Exists(legacyPath);
+var legacyRow = migrated.SingleOrDefault();
+Console.WriteLine($"  旧库迁移: 搬进 {migrated.Count} 条（应 1）→ " +
+                  $"{legacyRow?.SeriesTitle} 第{legacyRow?.EpisodeNumber}集 {legacyRow?.FileBytes}B；" +
+                  $"旧文件已改名留档 {legacyRenamed}");
+
+// 库里已经有记录时不再搬：否则会把用户正在用的数据冲掉。
+// 顺序要这样摆 —— 先建库并写进记录（此刻还没有旧文件，不会触发迁移），
+// 再放一个旧文件进去，然后重开：库里非空，那个旧文件就该原样留着。
+var busyPath = Path.Combine(dbDir, "busy.db");
+var busy = new SqliteDownloadHistory(new SqliteDatabase(busyPath, Legacy(dbDir, "downloads2.db")));
+busy.Record(new DownloadHistoryEntry {
+    PageUrl = "https://fresh.example.com/vodplay/2-1-1.html",
+    SiteName = "新站",
+    SeriesTitle = "新剧",
+    EpisodeNumber = 1,
+    FileBytes = 7,
+});
+
+var secondLegacy = Path.Combine(dbDir, "downloads2.db");
+WriteLegacyDatabase(secondLegacy);
+
+// 再开一次（模拟下次启动）：库里已有记录 → 不搬，旧文件也原样留着
+var busyAgain = new SqliteDownloadHistory(new SqliteDatabase(busyPath, Legacy(dbDir, "downloads2.db")));
+var busyCount = busyAgain.All().Count;
+var busyLegacyKept = File.Exists(secondLegacy);
+Console.WriteLine($"  库里有记录时不再搬: All {busyCount} 条（应 1）、旧文件原样留着 {busyLegacyKept}");
+
+// 设置：写一轮非默认值再读回来（一行一列一项，缺项/空值退回默认值）
+var settingsPath = Path.Combine(dbDir, "settings.db");
+var qDefaults = new SqliteSettingsStore(new SqliteDatabase(settingsPath, Legacy(dbDir))).Load();
+var qWritten = new AppSettings {
+    FfmpegPath = @"D:\tools\ffmpeg.exe",
+    DefaultOutputDirectory = @"D:\视频",
+    EpisodeConcurrency = 5,
+    SegmentConcurrency = 32,
+    AutoSkipInvalidSegments = false,
+    SeriesSubdirectory = false,
+    FullDecodeCheck = false,
+    MinimizeToTrayOnClose = false,
+    UserAgent = "TestAgent/1.0",
+    ProxyEnabled = true,
+    ProxyUrl = "http://127.0.0.1:7897",
+    CheckUpdateOnStartup = true,
+};
+var qSaved = new SqliteSettingsStore(new SqliteDatabase(settingsPath, Legacy(dbDir))).Save(qWritten);
+// 重开实例再读：走的是真库不是内存
+var qReadBack = new SqliteSettingsStore(new SqliteDatabase(settingsPath, Legacy(dbDir))).Load();
+
+var qDefaultsOk = qDefaults.EpisodeConcurrency == 2 && qDefaults.SegmentConcurrency == 16
+                  && qDefaults.AutoSkipInvalidSegments && qDefaults.SeriesSubdirectory
+                  && qDefaults.FullDecodeCheck && qDefaults.MinimizeToTrayOnClose
+                  && !qDefaults.ProxyEnabled && !qDefaults.CheckUpdateOnStartup
+                  && qDefaults.FfmpegPath is null;
+var qRoundTrip = qSaved
+                 && qReadBack.FfmpegPath == qWritten.FfmpegPath
+                 && qReadBack.DefaultOutputDirectory == qWritten.DefaultOutputDirectory
+                 && qReadBack.FfmpegDownloadUrl is null
+                 && qReadBack.EpisodeConcurrency == 5 && qReadBack.SegmentConcurrency == 32
+                 && !qReadBack.AutoSkipInvalidSegments && !qReadBack.SeriesSubdirectory
+                 && !qReadBack.FullDecodeCheck && !qReadBack.MinimizeToTrayOnClose
+                 && qReadBack.UserAgent == "TestAgent/1.0"
+                 && qReadBack.ProxyEnabled && qReadBack.ProxyUrl == "http://127.0.0.1:7897"
+                 && qReadBack.CheckUpdateOnStartup;
+Console.WriteLine($"  设置写读往返: 空库读回默认值 {qDefaultsOk}；写 12 项后读回一致 {qRoundTrip}");
+
+// 旧 settings.json 迁移
+var settingsMigDir = Path.Combine(dbDir, "settingsmig");
+Directory.CreateDirectory(settingsMigDir);
+var legacySettings = Path.Combine(settingsMigDir, "settings.json");
+File.WriteAllText(legacySettings,
+    """{"FfmpegPath":"D:\\old\\ffmpeg.exe","EpisodeConcurrency":7,"ProxyUrl":"http://127.0.0.1:1080","ProxyEnabled":true}""",
+    new UTF8Encoding(false));
+
+var qMigratedSettings = new SqliteSettingsStore(
+    new SqliteDatabase(Path.Combine(settingsMigDir, "m3u8.db"), Legacy(settingsMigDir))).Load();
+var qSettingsRenamed = File.Exists(legacySettings + ".migrated") && !File.Exists(legacySettings);
+var qSettingsMigrated = qMigratedSettings.FfmpegPath == @"D:\old\ffmpeg.exe"
+                        && qMigratedSettings.EpisodeConcurrency == 7
+                        && qMigratedSettings.ProxyEnabled
+                        && qMigratedSettings.ProxyUrl == "http://127.0.0.1:1080"
+                        && qMigratedSettings.SegmentConcurrency == 16    // 文件里没写的项 → 默认值
+                        && qSettingsRenamed;
+Console.WriteLine($"  旧 settings.json 迁移: ffmpeg={qMigratedSettings.FfmpegPath}、" +
+                  $"并发={qMigratedSettings.EpisodeConcurrency}、代理={qMigratedSettings.ProxyUrl}、" +
+                  $"旧文件已改名 {qSettingsRenamed}");
+
+// 任务列表：带快照的和不带快照的各一个，存进去再读回来（四张表拆开存、组装回来）
+var taskDbPath = Path.Combine(dbDir, "tasks.db");
+var qTaskIn = new List<SeriesTaskRecord>
+{
+    new()
+    {
+        Id = "t1", Title = "测试剧", SiteName = "测试站", PageUrl = "https://example.com/1-1-1.html",
+        OutputDirectory = @"D:\视频", ResolvedDirectory = @"D:\视频\测试剧 - 测试站",
+        SourceName = "lzm3u8", PreferredSourceId = 3,
+        State = nameof(SeriesTaskState.Completed), Percent = 100, DownloadedBytes = 123456,
+        ReportPath = @"D:\视频\报告.md", Message = "完成", SkippedAdSegments = 3,
+        CreatedAt = DateTimeOffset.Parse("2026-01-02T03:04:05+08:00"),
+        FinishedAt = DateTimeOffset.Parse("2026-01-02T04:05:06+08:00"),
+        EpisodeConcurrency = 3, SegmentConcurrency = 8, PreferHeight = 1080,
+        FfmpegPath = @"D:\tools\ffmpeg.exe", FileNamePattern = "{title}.{number:00}",
+        SeriesSubdirectory = false,
+        Episodes =
+        {
+            new TaskEpisodeRecord
+            {
+                Number = 1, Title = "第01集", Status = nameof(EpisodeDownloadStatus.Completed),
+                Percent = 100, Bytes = 999, OutputPath = @"D:\视频\a.mp4",
+            },
+            new TaskEpisodeRecord
+            {
+                Number = 2, Title = "第02集", Status = nameof(EpisodeDownloadStatus.Failed),
+                Percent = 42.5, Error = "连接超时",
+            },
+        },
+        Snapshot = new SeriesSnapshot
+        {
+            Kind = nameof(SiteKind.Generic), SiteName = "测试站", PageUrl = "https://example.com/1-1-1.html",
+            SeriesId = "42", Title = "测试剧", SourceId = 3,
+            CapturedAt = DateTimeOffset.Parse("2026-01-02T03:04:05+08:00"),
+            Headers = new Dictionary<string, string>
+            {
+                ["Referer"] = "https://example.com/",
+                ["User-Agent"] = "UA/1.0",
+            },
+            Episodes =
+            {
+                new EpisodeMetadata { Number = 1, Title = "第01集", PageUrl = "https://example.com/1-1-1.html", Key = "k1", SourceId = 3 },
+                new EpisodeMetadata { Number = 2, Title = "第02集", PageUrl = "https://example.com/1-1-2.html", SourceId = 3 },
+                new EpisodeMetadata { Number = 3, Title = "第03集", PageUrl = "https://example.com/1-1-3.html", Key = "ep3", SourceId = 3 },
+            },
+        },
+    },
+    new()
+    {
+        Id = "t2", Title = "没快照的剧", SiteName = "测试站", PageUrl = "https://example.com/2-1-1.html",
+        OutputDirectory = @"D:\视频", State = nameof(SeriesTaskState.Paused),
+        CreatedAt = DateTimeOffset.Now,
+    },
+};
+
+var qTaskSaved = new SqliteTaskStore(new SqliteDatabase(taskDbPath, Legacy(dbDir))).Save(qTaskIn);
+var qTaskOut = new SqliteTaskStore(new SqliteDatabase(taskDbPath, Legacy(dbDir))).Load();
+var qT1 = qTaskOut.FirstOrDefault(r => r.Id == "t1");
+var qT2 = qTaskOut.FirstOrDefault(r => r.Id == "t2");
+
+var qTasksRoundTrip = qTaskSaved
+    && qTaskOut.Count == 2
+    && qTaskOut[0].Id == "t1" && qTaskOut[1].Id == "t2"        // 列表顺序要保住
+    && qT1 is {
+        Title: "测试剧", State: "Completed", Percent: 100, DownloadedBytes: 123456,
+        SkippedAdSegments: 3, SeriesSubdirectory: false, EpisodeConcurrency: 3,
+        SegmentConcurrency: 8, PreferHeight: 1080, PreferredSourceId: 3,
+        SourceName: "lzm3u8", ReportPath: not null, FinishedAt: not null,
+    }
+    && qT1.Episodes.Count == 2
+    && qT1.Episodes[0] is { Number: 1, OutputPath: not null, Bytes: 999 }
+    && qT1.Episodes[1] is { Number: 2, Percent: 42.5, Error: "连接超时", OutputPath: null }
+    && qT1.Snapshot is { SeriesId: "42", SourceId: 3 }
+    && qT1.Snapshot.Headers.Count == 2
+    && qT1.Snapshot.Headers["Referer"] == "https://example.com/"
+    && qT1.Snapshot.Episodes.Count == 3
+    && qT1.Snapshot.Episodes[2] is { Number: 3, Key: "ep3" }
+    && qT2 is { State: "Paused", Snapshot: null };
+Console.WriteLine($"  任务存取往返: 存 2 个（1 个带 3 集快照）读回 {qTaskOut.Count} 个、" +
+                  $"第一个 {qT1?.Episodes.Count} 集/快照 {qT1?.Snapshot?.Episodes.Count} 集 → {qTasksRoundTrip}");
+
+// 旧 tasks.json 迁移
+var tasksMigDir = Path.Combine(dbDir, "tasksmig");
+Directory.CreateDirectory(tasksMigDir);
+var legacyTasks = Path.Combine(tasksMigDir, "tasks.json");
+File.WriteAllText(legacyTasks, """
+    [{"Id":"m1","Title":"老任务","SiteName":"老站","PageUrl":"https://old.example.com/1-1-1.html",
+      "OutputDirectory":"D:\\视频","State":"Paused","Percent":42.5,"SkippedAdSegments":2,
+      "CreatedAt":"2026-01-02T03:04:05+08:00",
+      "Episodes":[{"Number":1,"Title":"第01集","Status":"Completed","Percent":100,"Bytes":999,
+                   "OutputPath":"D:\\视频\\老任务.01.mp4"}],
+      "Snapshot":{"Kind":"Generic","SiteName":"老站","PageUrl":"https://old.example.com/1-1-1.html",
+                  "SeriesId":"9","Title":"老任务","Headers":{"Referer":"https://old.example.com/"},
+                  "SourceId":1,"CapturedAt":"2026-01-02T03:04:05+08:00",
+                  "Episodes":[{"Number":1,"Title":"第01集","PageUrl":"https://old.example.com/1-1-1.html",
+                               "Key":"k1","SourceId":1}]}}]
+    """, new UTF8Encoding(false));
+
+var qMigratedTasks = new SqliteTaskStore(
+    new SqliteDatabase(Path.Combine(tasksMigDir, "m3u8.db"), Legacy(tasksMigDir))).Load();
+var qTasksRenamed = File.Exists(legacyTasks + ".migrated") && !File.Exists(legacyTasks);
+var qOldTask = qMigratedTasks.FirstOrDefault();
+var qTasksMigrated = qMigratedTasks.Count == 1
+                     && qOldTask is { Title: "老任务", State: "Paused", Percent: 42.5, SkippedAdSegments: 2 }
+                     && qOldTask.Episodes.Count == 1
+                     && qOldTask.Episodes[0].OutputPath is not null
+                     && qOldTask.Snapshot is { SeriesId: "9", SourceId: 1 }
+                     && qOldTask.Snapshot.Headers["Referer"] == "https://old.example.com/"
+                     && qOldTask.Snapshot.Episodes.Count == 1
+                     && qTasksRenamed;
+Console.WriteLine($"  旧 tasks.json 迁移: 读回 {qMigratedTasks.Count} 个任务（{qOldTask?.Title}、" +
+                  $"{qOldTask?.Episodes.Count} 集、快照 {qOldTask?.Snapshot?.Episodes.Count} 集）、" +
+                  $"旧文件已改名 {qTasksRenamed}");
+
+// 记账规则（DownloadHistoryRecorder：只记「完成 + 有产物路径」的集）：
+// 只有「已完成 + 产物路径非空」的集进历史；失败的不记，完成了却没产物路径的也不记
+var recorderDbPath = Path.Combine(dbDir, "recorder.db");
+var recorderHistory = new SqliteDownloadHistory(new SqliteDatabase(recorderDbPath, Legacy(dbDir)));
+var productFile = Path.Combine(dbDir, "记账剧.01.mp4");
+File.WriteAllText(productFile, new string('x', 2048));
+
+DownloadHistoryRecorder.Record(recorderHistory, "https://example.com/5-1-1.html", "测试站", "记账剧", new[]
+{
+    new EpisodeDownloadReport
+    {
+        Episode = new SiteEpisode { Number = 1, SourceId = 1, PageUrl = "u1", Title = "第01集" },
+        Status = EpisodeDownloadStatus.Completed,
+        OutputPath = productFile,
+    },
+    new EpisodeDownloadReport
+    {
+        Episode = new SiteEpisode { Number = 2, SourceId = 1, PageUrl = "u2", Title = "第02集" },
+        Status = EpisodeDownloadStatus.Failed,               // 失败 → 不记
+        OutputPath = Path.Combine(dbDir, "不该记账.02.mp4"),
+    },
+    new EpisodeDownloadReport
+    {
+        Episode = new SiteEpisode { Number = 3, SourceId = 1, PageUrl = "u3", Title = "第03集" },
+        Status = EpisodeDownloadStatus.Completed,            // 完成了但没有产物路径 → 也不记
+    },
+});
+
+var qRecorded = recorderHistory.FindBySeries("https://example.com/5-1-1.html");
+var qRecorderRule = qRecorded.Count == 1
+                    && qRecorded[0] is {
+                        EpisodeNumber: 1, SeriesTitle: "记账剧", SiteName: "测试站", FileBytes: 2048,
+                    };
+Console.WriteLine($"  记账规则（只记完成且有产物的）: {qRecorded.Count} 条 → {qRecorderRule}");
+
+var okUnified = qUpsert.Count == 3
+                && qUpsert.Select(e => e.EpisodeNumber).SequenceEqual(new[] { 1, 2, 3 })
+                && qEp2.FileBytes == 999
+                && qOther == 1 && qAll == 4
+                && qForget == 0 && qOtherAfter == 1 && qAllAfter == 1
+                && qReopened == 1
+                && migrated.Count == 1
+                && legacyRow is { EpisodeNumber: 7, FileBytes: 12345, SeriesTitle: "老剧", SiteName: "老站" }
+                && legacyRenamed
+                && busyCount == 1 && busyLegacyKept
+                && qDefaultsOk && qRoundTrip && qSettingsMigrated
+                && qTasksRoundTrip && qTasksMigrated && qRecorderRule;
+Console.WriteLine($"  统一库: {(okUnified ? "✔" : "✘")}");
+
 Console.WriteLine();
 var ok = okB && okC && okPaused && okStopped && okResume && okSettled && okRetry
          && okResumeSubset && okFallback && okDuration && encOk && okSingle
          && okRegistry && okNnyy && okNnyyMovie && okGeneric && okEmpty && okWakuredo
          && okNoSystemProxy && okInserted && okInsertedGuard && okVersionCompare
-         && okFetchNew && okDiskFirst && okSnapshot;
+         && okFetchNew && okDiskFirst && okSnapshot && okUnified;
 Console.WriteLine(ok
     ? "自检结果       : ✔ 通过"
     : $"自检结果       : ✘ 失败（阶段B {okB} / 阶段C {okC} / 暂停 {okPaused} / 暂停后静止 {okStopped}" +
@@ -2120,19 +2351,49 @@ Console.WriteLine(ok
       $" / 适配器登记 {okRegistry} / 努努影院 {okNnyy} / 努努电影页 {okNnyyMovie} / 通用兜底 {okGeneric}" +
       $" / 空页面报错 {okEmpty} / 影迷界影院 {okWakuredo} / 直连不走代理 {okNoSystemProxy}" +
       $" / 插播广告识别 {okInserted}(反例 {okInsertedGuard}) / 版本比较 {okVersionCompare}" +
-      $" / 续下更新 {okFetchNew} / 已下载置灰 {okDiskFirst} / 站点快照 {okSnapshot}）");
+      $" / 续下更新 {okFetchNew} / 已下载置灰 {okDiskFirst} / 站点快照 {okSnapshot}" +
+      $" / 统一库 {okUnified}）");
 
 listener.Stop();
 return ok ? 0 : 1;
 
 // ---------------------------------------------------------------- 辅助
 
+/// <summary>
+/// 造一个**旧版**的独立历史库（只有 downloads 一张表），用来验证迁移。
+/// 表结构照着旧版本写死 —— 迁移的输入就是那份历史文件，不能跟着新代码变。
+///
+/// 连接串必须带 <c>Pooling=False</c>：默认池化会把连接收进池里，
+/// **句柄不释放**，于是产品代码那步 <c>File.Move</c>（迁移完把旧文件改名留档）
+/// 永远失败，而异常被吞掉 —— 现象是"数据搬进来了、旧文件还在"。
+/// 这个坑自己踩了两次（另一次是 _diag 诊断里造旧库）。
+/// </summary>
+static void WriteLegacyDatabase(string path) {
+    using var connection = new SqliteConnection($"Data Source={path};Pooling=False");
+    connection.Open();
+    using var cmd = connection.CreateCommand();
+    cmd.CommandText = """
+        CREATE TABLE downloads (
+            page_url        TEXT    NOT NULL,
+            episode_number  INTEGER NOT NULL,
+            site_name       TEXT    NOT NULL DEFAULT '',
+            series_title    TEXT    NOT NULL DEFAULT '',
+            file_path       TEXT,
+            file_bytes      INTEGER NOT NULL DEFAULT 0,
+            downloaded_at   TEXT    NOT NULL,
+            PRIMARY KEY (page_url, episode_number)
+        );
+        INSERT INTO downloads VALUES
+            ('https://legacy.example.com/vodplay/1-1-1.html', 7, '老站', '老剧',
+             'D:\x\老剧.07.mp4', 12345, '2026-01-02T03:04:05+08:00');
+        """;
+    cmd.ExecuteNonQuery();
+}
+
 /// <summary>轮询等待条件成立，超时就抛异常（自检失败要立刻可见）</summary>
-static async Task WaitUntilAsync(Func<Task<bool>> condition, TimeSpan timeout, string what)
-{
+static async Task WaitUntilAsync(Func<Task<bool>> condition, TimeSpan timeout, string what) {
     var deadline = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < deadline)
-    {
+    while (DateTime.UtcNow < deadline) {
         if (await condition()) return;
         await Task.Delay(50);
     }
@@ -2144,8 +2405,7 @@ static async Task WaitUntilAsync(Func<Task<bool>> condition, TimeSpan timeout, s
 /// 造一条只用于"时长探测"的 TS：2 秒一个带 PCR 的包，跨度 <paramref name="seconds"/> 秒。
 /// 自检里的假分片没有 PCR，所以内置探测读不出时长 —— 这个构造件专门把那条路验证掉。
 /// </summary>
-static byte[] BuildTsWithPcr(double seconds)
-{
+static byte[] BuildTsWithPcr(double seconds) {
     const int packet = 188;
     const int pcrPeriodMs = 2000;
     const int ticksPerSecond = 90000;
@@ -2154,8 +2414,7 @@ static byte[] BuildTsWithPcr(double seconds)
     var buffer = new byte[packetCount * packet];
     long pcr = 0;
 
-    for (var n = 0; n < packetCount; n++)
-    {
+    for (var n = 0; n < packetCount; n++) {
         var i = n * packet;
         buffer[i] = 0x47;
         buffer[i + 1] = 0x01;              // PID 0x0100 的负载起始包（探测只看自适应字段）
@@ -2176,11 +2435,9 @@ static byte[] BuildTsWithPcr(double seconds)
     return buffer;
 }
 
-static byte[] BuildFakeTs(int size, byte marker)
-{
+static byte[] BuildFakeTs(int size, byte marker) {
     var buffer = new byte[size];
-    for (var i = 0; i < size; i += 188)
-    {
+    for (var i = 0; i < size; i += 188) {
         buffer[i] = 0x47;
         for (var j = 1; j < 188 && i + j < size; j++) buffer[i + j] = marker;
     }
@@ -2188,8 +2445,7 @@ static byte[] BuildFakeTs(int size, byte marker)
 }
 
 /// <summary>AES-128-CBC + PKCS7 加密（自检里扮演源站的加密分片）</summary>
-static byte[] AesEncryptPkcs7(byte[] plain, byte[] key)
-{
+static byte[] AesEncryptPkcs7(byte[] plain, byte[] key) {
     using var aes = System.Security.Cryptography.Aes.Create();
     aes.Mode = System.Security.Cryptography.CipherMode.CBC;
     aes.Padding = System.Security.Cryptography.PaddingMode.PKCS7;
@@ -2200,10 +2456,8 @@ static byte[] AesEncryptPkcs7(byte[] plain, byte[] key)
 }
 
 /// <summary>解密回明文（用于自检自查构造件是否成立）；填充非法返回 null</summary>
-static byte[]? AesDecryptPkcs7(byte[] cipher, byte[] key)
-{
-    try
-    {
+static byte[]? AesDecryptPkcs7(byte[] cipher, byte[] key) {
+    try {
         using var aes = System.Security.Cryptography.Aes.Create();
         aes.Mode = System.Security.Cryptography.CipherMode.CBC;
         aes.Padding = System.Security.Cryptography.PaddingMode.PKCS7;
@@ -2211,17 +2465,16 @@ static byte[]? AesDecryptPkcs7(byte[] cipher, byte[] key)
         aes.IV = new byte[16];
         using var dec = aes.CreateDecryptor();
         return dec.TransformFinalBlock(cipher, 0, cipher.Length);
-    }
-    catch { return null; }
+    } catch { return null; }
 }
 
 /// <summary>
 /// 内存版下载历史（自检用）。
-/// 真实实现是界面层的 SQLite（<c>SqliteDownloadHistory</c>）—— Core 不引第三方包，
-/// 所以自检只能测到接口这一层；SQL 本身由界面层单独验证。
+/// 真实实现是 <c>SqliteDownloadHistory</c>（阶段 Q 直接测它）；这里这版是用来
+/// 给下载流程**造历史数据**的 —— 比如"历史里说第 5 集下过但文件已不在"这种场景，
+/// 用内存实现比先往真库里写几行再跑要省事。
 /// </summary>
-internal sealed class MemoryHistory : IDownloadHistoryStore
-{
+internal sealed class MemoryHistory : IDownloadHistoryStore {
     private readonly List<DownloadHistoryEntry> _entries;
 
     public MemoryHistory(IEnumerable<DownloadHistoryEntry>? entries = null) =>
@@ -2229,29 +2482,28 @@ internal sealed class MemoryHistory : IDownloadHistoryStore
 
     public void Record(DownloadHistoryEntry entry) => _entries.Add(entry);
 
+    public void Forget(string pageUrl) => _entries.RemoveAll(e => e.PageUrl == pageUrl);
+
     public IReadOnlyList<DownloadHistoryEntry> FindBySeries(string pageUrl) =>
         _entries.Where(e => e.PageUrl == pageUrl).OrderBy(e => e.EpisodeNumber).ToList();
 
-    public IReadOnlyList<DownloadHistoryEntry> All() => _entries;
+    // 每次查询都返回一份新列表 —— 真实实现（SQLite）就是这样的。
+    // 返回内部引用的话，销账会把先前取到的"旧快照"一起清空（自检真的这么挂过一次）。
+    public IReadOnlyList<DownloadHistoryEntry> All() => _entries.ToList();
 }
 
 /// <summary>单线程假 Dispatcher：模拟 WinUI 的 DispatcherQueue.TryEnqueue（异步封送）</summary>
-internal sealed class FakeDispatcher
-{    private readonly BlockingCollection<Action> _queue = new();
+internal sealed class FakeDispatcher {
+    private readonly BlockingCollection<Action> _queue = new();
     private int _executed;
 
-    public FakeDispatcher()
-    {
-        var thread = new Thread(() =>
-        {
-            foreach (var action in _queue.GetConsumingEnumerable())
-            {
-                try { action(); }
-                catch (Exception ex) { Console.Error.WriteLine("UI 线程异常: " + ex.Message); }
+    public FakeDispatcher() {
+        var thread = new Thread(() => {
+            foreach (var action in _queue.GetConsumingEnumerable()) {
+                try { action(); } catch (Exception ex) { Console.Error.WriteLine("UI 线程异常: " + ex.Message); }
                 Interlocked.Increment(ref _executed);
             }
-        })
-        { IsBackground = true, Name = "FakeUI" };
+        }) { IsBackground = true, Name = "FakeUI" };
 
         thread.Start();
     }
@@ -2260,24 +2512,18 @@ internal sealed class FakeDispatcher
 
     public void Post(Action action) => _queue.Add(action);
 
-    public Task InvokeAsync(Action action)
-    {
+    public Task InvokeAsync(Action action) {
         var tcs = new TaskCompletionSource();
-        _queue.Add(() =>
-        {
-            try { action(); tcs.SetResult(); }
-            catch (Exception ex) { tcs.SetException(ex); }
+        _queue.Add(() => {
+            try { action(); tcs.SetResult(); } catch (Exception ex) { tcs.SetException(ex); }
         });
         return tcs.Task;
     }
 
-    public Task<T> InvokeAsync<T>(Func<T> func)
-    {
+    public Task<T> InvokeAsync<T>(Func<T> func) {
         var tcs = new TaskCompletionSource<T>();
-        _queue.Add(() =>
-        {
-            try { tcs.SetResult(func()); }
-            catch (Exception ex) { tcs.SetException(ex); }
+        _queue.Add(() => {
+            try { tcs.SetResult(func()); } catch (Exception ex) { tcs.SetException(ex); }
         });
         return tcs.Task;
     }

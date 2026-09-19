@@ -17,8 +17,7 @@ namespace M3U8Downloader.Core.Sites;
 ///    这样换模板也不用改代码（分页标签「1-10 / 11-16」的链接本来就都在同一份 HTML 里）；
 /// 4. 取流通常需要带 Referer/Origin，因此解析结果里直接给出建议请求头。
 /// </summary>
-public sealed class MacCmsAdapter : ISiteAdapter
-{
+public sealed class MacCmsAdapter : ISiteAdapter {
     public SiteKind Kind => SiteKind.MacCms;
     public string Name => "苹果CMS(MacCMS)";
 
@@ -92,15 +91,13 @@ public sealed class MacCmsAdapter : ISiteAdapter
 
     private static readonly Regex TagStrip = new(@"<[^>]+>", RegexOptions.Compiled);
 
-    public bool CanHandle(Uri url)
-    {
+    public bool CanHandle(Uri url) {
         var p = url.AbsolutePath;
         return PlayPath.IsMatch(p) || PlayPathAlt.IsMatch(p) || PlayPathSlash.IsMatch(p)
             || DetailPath.IsMatch(p) || DetailPathAlt.IsMatch(p);
     }
 
-    public async Task<SiteSeries> ParseAsync(string html, Uri pageUrl, SiteContext ctx, CancellationToken ct = default)
-    {
+    public async Task<SiteSeries> ParseAsync(string html, Uri pageUrl, SiteContext ctx, CancellationToken ct = default) {
         var log = new List<string>();
         var siteName = ExtractSiteName(html, pageUrl);
         var headers = BuildHeaders(pageUrl, ctx.UserAgent);
@@ -117,22 +114,18 @@ public sealed class MacCmsAdapter : ISiteAdapter
 
         var playMatch = PlayPath.Match(pageUrl.AbsolutePath);
         if (!playMatch.Success) playMatch = PlayPathAlt.Match(pageUrl.AbsolutePath);
-        if (!playMatch.Success)
-        {
+        if (!playMatch.Success) {
             playMatch = PlayPathSlash.Match(pageUrl.AbsolutePath);
             slashStyle = playMatch.Success;
         }
 
-        if (playMatch.Success)
-        {
+        if (playMatch.Success) {
             seriesId = playMatch.Groups["id"].Value;
             currentSourceId = int.Parse(playMatch.Groups["sid"].Value);
             currentEpisode = int.Parse(playMatch.Groups["nid"].Value);
             var p = playMatch.Groups["prefix"].Value;
             if (p.Length > 0) pathPrefix = "/" + p;
-        }
-        else
-        {
+        } else {
             // 用户给的是详情页：id 从详情页拿，播放页地址后面合成
             var dm = DetailPath.Match(pageUrl.AbsolutePath);
             if (!dm.Success) dm = DetailPathAlt.Match(pageUrl.AbsolutePath);
@@ -152,18 +145,15 @@ public sealed class MacCmsAdapter : ISiteAdapter
         // 一上来就按详情页 ID 过滤会把本剧的选集链接全部滤掉，最后误报「没有剧集链接」。
         // 改成：先收集 → 投票选出本剧的播放 ID（PickPlayId）→ 再按它过滤。
         var candidates = new List<PlayLink>();
-        foreach (Match a in Anchor.Matches(html))
-        {
+        foreach (Match a in Anchor.Matches(html)) {
             var href = WebUtility.HtmlDecode(a.Groups["href"].Value.Trim());
 
             // 三种形态都认（组名一致，后面的取值代码不用分叉）
             var m = AnyPlayHref.Match(href);
             var slash = false;
-            if (!m.Success)
-            {
+            if (!m.Success) {
                 m = AnyPlayHrefNative.Match(href);
-                if (!m.Success)
-                {
+                if (!m.Success) {
                     m = AnyPlayHrefSlash.Match(href);
                     slash = m.Success;
                 }
@@ -182,8 +172,7 @@ public sealed class MacCmsAdapter : ISiteAdapter
 
         var playId = PickPlayId(candidates, seriesId);
         var found = new Dictionary<(int Sid, int Nid), (string PageUrl, string Text)>();
-        foreach (var c in candidates)
-        {
+        foreach (var c in candidates) {
             if (c.PlayId != playId) continue;   // 滤掉侧边栏「猜你喜欢」里别的剧
 
             // 同一集出现多次时保留靠后的：详情页顶部的「▶ 立即播放」在选集区之前，
@@ -196,8 +185,7 @@ public sealed class MacCmsAdapter : ISiteAdapter
         // 详情页里没有 player_aaaa，当前源无从得知；而默认值 1 遇上「源从 3 起编号」的站
         // （wakuredo 是 3/7/8/11）会让所有集都处于未勾选状态，用户看到的是「一集都没有」。
         // 这里按「模板标记为选中的那条线路 → 编号最小的源」兜底。
-        if (player is null && found.Count > 0 && !found.Keys.Any(k => k.Sid == currentSourceId))
-        {
+        if (player is null && found.Count > 0 && !found.Keys.Any(k => k.Sid == currentSourceId)) {
             currentSourceId = FindSelectedSourceId(html, candidates) ?? found.Keys.Min(k => k.Sid);
             log.Add($"详情页未给出当前播放源，默认选中 sid={currentSourceId}");
         }
@@ -205,22 +193,19 @@ public sealed class MacCmsAdapter : ISiteAdapter
         // 防误判：CanHandle 为了兼容各种伪静态前缀放得比较宽，
         // 像 /news/2026-09-13.html 这种日期路径也会命中。苹果 CMS 的**播放页必然带
         // player_aaaa**，所以这里必须兜住，否则会把日期当剧集产出垃圾结果。
-        if (player is null && playMatch.Success)
-        {
+        if (player is null && playMatch.Success) {
             throw new NotSupportedException(
                 $"该地址形如播放页，但页面里没有 player_aaaa，可能不是苹果CMS(MacCMS)站点：{pageUrl}");
         }
 
         // 既没有播放器配置、也没有任何剧集链接 → 基本可以判定不是苹果 CMS 的播放/详情页
-        if (player is null && found.Count == 0)
-        {
+        if (player is null && found.Count == 0) {
             throw new NotSupportedException(
                 $"页面里既没有 player_aaaa 也没有剧集链接，可能不是苹果CMS(MacCMS)站点：{pageUrl}");
         }
 
         // 详情页里若没有剧集链接，退化为合成播放页地址（按本页用的是哪种 URL 形态）
-        if (found.Count == 0)
-        {
+        if (found.Count == 0) {
             var nativeStyle = DetailPathAlt.IsMatch(pageUrl.AbsolutePath);
             var synthesized = nativeStyle
                 ? new Uri(pageUrl, $"/index.php/vod/play/id/{seriesId}/sid/{currentSourceId}/nid/{currentEpisode}.html").ToString()
@@ -233,8 +218,7 @@ public sealed class MacCmsAdapter : ISiteAdapter
             found[(currentSourceId, currentEpisode)] = (synthesized, "");
         }
 
-        var series = new SiteSeries
-        {
+        var series = new SiteSeries {
             Kind = SiteKind.MacCms,
             SiteName = siteName,
             PageUrl = pageUrl.ToString(),
@@ -245,14 +229,11 @@ public sealed class MacCmsAdapter : ISiteAdapter
         };
         foreach (var kv in headers) series.Headers[kv.Key] = kv.Value;
 
-        foreach (var group in found.GroupBy(k => k.Key.Sid).OrderBy(g => g.Key))
-        {
+        foreach (var group in found.GroupBy(k => k.Key.Sid).OrderBy(g => g.Key)) {
             var source = new SitePlaySource { Id = group.Key };
-            foreach (var item in group.OrderBy(g => g.Key.Nid))
-            {
+            foreach (var item in group.OrderBy(g => g.Key.Nid)) {
                 var nid = item.Key.Nid;
-                source.Episodes.Add(new SiteEpisode
-                {
+                source.Episodes.Add(new SiteEpisode {
                     Number = nid,
                     SourceId = group.Key,
                     PageUrl = item.Value.PageUrl,
@@ -270,8 +251,7 @@ public sealed class MacCmsAdapter : ISiteAdapter
 
         // 当前集直链（列表页一般只给当前集）
         var current = series.AllEpisodes.FirstOrDefault(e => e.SourceId == currentSourceId && e.Number == currentEpisode);
-        if (current is not null && player?.Url is { Length: > 0 } u)
-        {
+        if (current is not null && player?.Url is { Length: > 0 } u) {
             current.PlaylistUrl = WebUtility.HtmlDecode(u);
             log.Add($"当前集直链已就绪（{player.From}）");
         }
@@ -286,8 +266,7 @@ public sealed class MacCmsAdapter : ISiteAdapter
         return series;
     }
 
-    public async Task<string> ResolvePlaylistUrlAsync(SiteEpisode episode, SiteContext ctx, CancellationToken ct = default)
-    {
+    public async Task<string> ResolvePlaylistUrlAsync(SiteEpisode episode, SiteContext ctx, CancellationToken ct = default) {
         if (!string.IsNullOrWhiteSpace(episode.PlaylistUrl)) return episode.PlaylistUrl!;
 
         var html = await ctx.GetHtmlAsync(episode.PageUrl, this, ct).ConfigureAwait(false);
@@ -305,8 +284,7 @@ public sealed class MacCmsAdapter : ISiteAdapter
 
         // 有些站点把 url 指向"解析接口"而不是直链，这里给出明确提示而不是让引擎报莫名的错
         if (!url.Contains(".m3u8", StringComparison.OrdinalIgnoreCase) &&
-            !url.Contains(".mp4", StringComparison.OrdinalIgnoreCase))
-        {
+            !url.Contains(".mp4", StringComparison.OrdinalIgnoreCase)) {
             // 仍然返回，交由下载引擎尝试；调用方可据日志判断
             episode.Title = string.IsNullOrWhiteSpace(episode.Title) ? episode.DisplayTitle : episode.Title;
         }
@@ -335,8 +313,7 @@ public sealed class MacCmsAdapter : ISiteAdapter
     /// 「最少 2 次」是刻意保守：宁可判定失败（上层会合成播放页地址或明确报错），
     /// 也不要凭一条孤零零的 <c>/a/b/c.html</c> 解析出一堆垃圾集号。
     /// </summary>
-    private static string? PickPlayId(IReadOnlyList<PlayLink> candidates, string seriesId)
-    {
+    private static string? PickPlayId(IReadOnlyList<PlayLink> candidates, string seriesId) {
         if (candidates.Count == 0) return null;
         if (candidates.Any(c => string.Equals(c.PlayId, seriesId, StringComparison.Ordinal))) return seriesId;
 
@@ -357,10 +334,8 @@ public sealed class MacCmsAdapter : ISiteAdapter
     /// 紧随其后的选集区就是这条线路的链接，取其中第一条的 sid 即可。
     /// 找不到返回 null，由调用方退回「编号最小的源」。
     /// </summary>
-    private static int? FindSelectedSourceId(string html, IReadOnlyList<PlayLink> candidates)
-    {
-        foreach (Match cls in Regex.Matches(html, @"class\s*=\s*[""'](?<cls>[^""']*)[""']", RegexOptions.IgnoreCase))
-        {
+    private static int? FindSelectedSourceId(string html, IReadOnlyList<PlayLink> candidates) {
+        foreach (Match cls in Regex.Matches(html, @"class\s*=\s*[""'](?<cls>[^""']*)[""']", RegexOptions.IgnoreCase)) {
             var tokens = cls.Groups["cls"].Value.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (!tokens.Contains("line-name", StringComparer.OrdinalIgnoreCase)) continue;
             if (!tokens.Contains("on", StringComparer.OrdinalIgnoreCase)) continue;
@@ -380,20 +355,17 @@ public sealed class MacCmsAdapter : ISiteAdapter
         string? Url, string? UrlNext, string? From, string? SeriesId,
         int SourceId, int EpisodeNumber, int Encrypt, string? VodName, string? VodClass);
 
-    private static PlayerConfig? TryParsePlayer(string html, out string raw)
-    {
+    private static PlayerConfig? TryParsePlayer(string html, out string raw) {
         raw = "";
         if (!TryExtractJsonObject(html, "player_aaaa", out var json)) return null;
         raw = json;
 
-        try
-        {
+        try {
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
             string? vodName = null, vodClass = null;
-            if (root.TryGetProperty("vod_data", out var vd) && vd.ValueKind == JsonValueKind.Object)
-            {
+            if (root.TryGetProperty("vod_data", out var vd) && vd.ValueKind == JsonValueKind.Object) {
                 vodName = GetString(vd, "vod_name");
                 vodClass = GetString(vd, "vod_class");
             }
@@ -408,9 +380,7 @@ public sealed class MacCmsAdapter : ISiteAdapter
                 Encrypt: GetInt(root, "encrypt", 0),
                 VodName: vodName,
                 VodClass: vodClass);
-        }
-        catch (JsonException)
-        {
+        } catch (JsonException) {
             return null;
         }
     }
@@ -419,8 +389,7 @@ public sealed class MacCmsAdapter : ISiteAdapter
     /// 用花括号配对法从 JS 里抠出 JSON 对象。
     /// 比正则可靠：JSON 内含转义斜杠（\/）、嵌套对象，且结尾未必紧跟分号。
     /// </summary>
-    internal static bool TryExtractJsonObject(string html, string marker, out string json)
-    {
+    internal static bool TryExtractJsonObject(string html, string marker, out string json) {
         json = "";
         var i = html.IndexOf(marker, StringComparison.Ordinal);
         if (i < 0) return false;
@@ -432,11 +401,9 @@ public sealed class MacCmsAdapter : ISiteAdapter
         var inString = false;
         var escaped = false;
 
-        for (var k = start; k < html.Length; k++)
-        {
+        for (var k = start; k < html.Length; k++) {
             var c = html[k];
-            if (inString)
-            {
+            if (inString) {
                 if (escaped) escaped = false;
                 else if (c == '\\') escaped = true;
                 else if (c == '"') inString = false;
@@ -445,11 +412,9 @@ public sealed class MacCmsAdapter : ISiteAdapter
 
             if (c == '"') { inString = true; continue; }
             if (c == '{') depth++;
-            else if (c == '}')
-            {
+            else if (c == '}') {
                 depth--;
-                if (depth == 0)
-                {
+                if (depth == 0) {
                     json = html.Substring(start, k - start + 1);
                     return true;
                 }
@@ -468,18 +433,15 @@ public sealed class MacCmsAdapter : ISiteAdapter
     /// 解析 playerconfig.js 里的 <c>MacPlayerConfig.player_list={...}</c>，
     /// 得到「源标识 → 显示名」映射，例如 360zy → 360播放器。
     /// </summary>
-    public static bool TryParsePlayerList(string js, out Dictionary<string, string> map)
-    {
+    public static bool TryParsePlayerList(string js, out Dictionary<string, string> map) {
         map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (!TryExtractJsonObject(js, "player_list", out var json)) return false;
 
-        try
-        {
+        try {
             using var doc = JsonDocument.Parse(json);
             if (doc.RootElement.ValueKind != JsonValueKind.Object) return false;
 
-            foreach (var entry in doc.RootElement.EnumerateObject())
-            {
+            foreach (var entry in doc.RootElement.EnumerateObject()) {
                 if (entry.Value.ValueKind != JsonValueKind.Object) continue;
                 if (!entry.Value.TryGetProperty("show", out var show)) continue;
                 if (show.ValueKind != JsonValueKind.String) continue;
@@ -487,9 +449,7 @@ public sealed class MacCmsAdapter : ISiteAdapter
                 var name = show.GetString();
                 if (!string.IsNullOrWhiteSpace(name)) map[entry.Name] = name!.Trim();
             }
-        }
-        catch (JsonException)
-        {
+        } catch (JsonException) {
             return false;
         }
 
@@ -497,15 +457,13 @@ public sealed class MacCmsAdapter : ISiteAdapter
     }
 
     private async Task<IReadOnlyDictionary<string, string>> GetPlayerListAsync(
-        SiteContext ctx, Uri pageUrl, string html, CancellationToken ct)
-    {
+        SiteContext ctx, Uri pageUrl, string html, CancellationToken ct) {
         var key = pageUrl.Authority;
         if (PlayerListCache.TryGetValue(key, out var cached)) return cached;
 
         IReadOnlyDictionary<string, string> result =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        try
-        {
+        try {
             // 各站放 playerconfig.js 的路径不统一，先从页面的 <script src> 里找，
             // 找不到再退回最常见的 /static/js/playerconfig.js。
             var candidate = FindPlayerConfigUrl(html, pageUrl)
@@ -513,9 +471,7 @@ public sealed class MacCmsAdapter : ISiteAdapter
 
             var js = await ctx.GetHtmlAsync(candidate, this, ct).ConfigureAwait(false);
             if (TryParsePlayerList(js, out var map)) result = map;
-        }
-        catch
-        {
+        } catch {
             // 拿不到就退回「源N」，不影响主流程
         }
 
@@ -524,11 +480,9 @@ public sealed class MacCmsAdapter : ISiteAdapter
     }
 
     /// <summary>从页面里找出播放器配置脚本的地址（形如 playerconfig.js?t=...）</summary>
-    private static string? FindPlayerConfigUrl(string html, Uri pageUrl)
-    {
+    private static string? FindPlayerConfigUrl(string html, Uri pageUrl) {
         foreach (Match m in Regex.Matches(html, @"<script[^>]*\bsrc\s*=\s*[""'](?<src>[^""']+)[""']",
-                     RegexOptions.IgnoreCase))
-        {
+                     RegexOptions.IgnoreCase)) {
             var src = m.Groups["src"].Value;
             if (src.IndexOf("player", StringComparison.OrdinalIgnoreCase) < 0) continue;
             if (!src.Contains(".js", StringComparison.OrdinalIgnoreCase)) continue;
@@ -540,12 +494,10 @@ public sealed class MacCmsAdapter : ISiteAdapter
 
         // 退一步：任何含 player 的 js 都试一次（有些站把它合并进 player.js）
         foreach (Match m in Regex.Matches(html, @"<script[^>]*\bsrc\s*=\s*[""'](?<src>[^""']+)[""']",
-                     RegexOptions.IgnoreCase))
-        {
+                     RegexOptions.IgnoreCase)) {
             var src = m.Groups["src"].Value;
             if (src.IndexOf("player", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                src.Contains(".js", StringComparison.OrdinalIgnoreCase))
-            {
+                src.Contains(".js", StringComparison.OrdinalIgnoreCase)) {
                 var url = ToAbsolute(pageUrl, WebUtility.HtmlDecode(src));
                 if (url.Contains("player.js", StringComparison.OrdinalIgnoreCase)) continue;
                 return url;
@@ -555,8 +507,7 @@ public sealed class MacCmsAdapter : ISiteAdapter
         return null;
     }
 
-    private static string LookupSourceName(IReadOnlyDictionary<string, string> playerList, string? flag)
-    {
+    private static string LookupSourceName(IReadOnlyDictionary<string, string> playerList, string? flag) {
         if (string.IsNullOrWhiteSpace(flag)) return "";
         return playerList.TryGetValue(flag!, out var name) ? name : "";
     }
@@ -568,22 +519,19 @@ public sealed class MacCmsAdapter : ISiteAdapter
     /// </summary>
     private async Task ResolveSourceNamesAsync(
         SiteSeries series, string? currentSourceFlag, string html, Uri pageUrl,
-        SiteContext ctx, List<string> log, CancellationToken ct)
-    {
+        SiteContext ctx, List<string> log, CancellationToken ct) {
         if (series.Sources.Count == 0) return;
 
         var playerList = await GetPlayerListAsync(ctx, pageUrl, html, ct).ConfigureAwait(false);
 
         var current = series.Sources.FirstOrDefault(s => s.Id == series.PreferredSourceId);
-        if (current is not null)
-        {
+        if (current is not null) {
             var name = LookupSourceName(playerList, currentSourceFlag);
             current.Name = string.IsNullOrWhiteSpace(name) ? (currentSourceFlag ?? "") : name;
         }
 
         var pending = series.Sources.Where(s => string.IsNullOrWhiteSpace(s.Name)).ToList();
-        if (pending.Count > 0)
-        {
+        if (pending.Count > 0) {
             // 探测每个源的第 1 集只为拿到它的 from 标识。
             // 有的站有几十个源（实测 kktvs 有 21 个），所以要有并发上限 + 总时间预算，
             // 否则解析会明显变慢；超时的一律退回「源N」，不影响下载。
@@ -591,19 +539,14 @@ public sealed class MacCmsAdapter : ISiteAdapter
             budget.CancelAfter(SourceProbeBudget);
 
             using var gate = new SemaphoreSlim(SourceProbeConcurrency);
-            var tasks = pending.Select(async source =>
-            {
-                try
-                {
+            var tasks = pending.Select(async source => {
+                try {
                     await gate.WaitAsync(budget.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
+                } catch (OperationCanceledException) {
                     return;   // 预算用尽，不再探测
                 }
 
-                try
-                {
+                try {
                     var probe = source.Episodes.OrderBy(e => e.Number).FirstOrDefault();
                     if (probe is null) return;
 
@@ -613,13 +556,9 @@ public sealed class MacCmsAdapter : ISiteAdapter
 
                     var name = LookupSourceName(playerList, flag);
                     source.Name = string.IsNullOrWhiteSpace(name) ? flag : name;
-                }
-                catch
-                {
+                } catch {
                     // 探测失败无所谓，最后统一兜底
-                }
-                finally
-                {
+                } finally {
                     gate.Release();
                 }
             }).ToArray();
@@ -628,10 +567,8 @@ public sealed class MacCmsAdapter : ISiteAdapter
         }
 
         var unnamed = 0;
-        foreach (var s in series.Sources)
-        {
-            if (string.IsNullOrWhiteSpace(s.Name))
-            {
+        foreach (var s in series.Sources) {
+            if (string.IsNullOrWhiteSpace(s.Name)) {
                 s.Name = $"源{s.Id}";
                 unnamed++;
             }
@@ -643,11 +580,9 @@ public sealed class MacCmsAdapter : ISiteAdapter
             log.Add($"{unnamed} 个播放源未能识别名称（已按「源N」显示），不影响下载");
     }
 
-    private static string? GetString(JsonElement obj, string name)
-    {
+    private static string? GetString(JsonElement obj, string name) {
         if (!obj.TryGetProperty(name, out var v)) return null;
-        return v.ValueKind switch
-        {
+        return v.ValueKind switch {
             JsonValueKind.String => v.GetString(),
             JsonValueKind.Number => v.ToString(),
             JsonValueKind.True => "true",
@@ -657,26 +592,22 @@ public sealed class MacCmsAdapter : ISiteAdapter
     }
 
     /// <summary>sid/nid 在部分模板里是字符串、部分是数字，两种都要吃</summary>
-    private static int GetInt(JsonElement obj, string name, int fallback)
-    {
+    private static int GetInt(JsonElement obj, string name, int fallback) {
         if (!obj.TryGetProperty(name, out var v)) return fallback;
-        return v.ValueKind switch
-        {
+        return v.ValueKind switch {
             JsonValueKind.Number => v.TryGetInt32(out var n) ? n : fallback,
             JsonValueKind.String => int.TryParse(v.GetString(), out var n) ? n : fallback,
             _ => fallback,
         };
     }
 
-    private static string ToAbsolute(Uri baseUri, string href)
-    {
+    private static string ToAbsolute(Uri baseUri, string href) {
         if (Uri.TryCreate(href, UriKind.Absolute, out var abs)) return abs.ToString();
         // 注意：不要对路径做 "//" 归一化，某些 CDN 的路径里确实含双斜杠
         return new Uri(baseUri, href).ToString();
     }
 
-    private static string CleanText(string anchorInnerHtml)
-    {
+    private static string CleanText(string anchorInnerHtml) {
         var text = TagStrip.Replace(anchorInnerHtml, " ");
         text = WebUtility.HtmlDecode(text);
         text = Regex.Replace(text, @"\s+", " ").Trim();
@@ -687,8 +618,7 @@ public sealed class MacCmsAdapter : ISiteAdapter
     /// 多数模板的选集按钮只有裸数字（"1"、"2"…），直接拿来当标题在确认列表里很难看，
     /// 这里统一补成「第NN集」；已经是「第01集」这类文本的原样保留。
     /// </summary>
-    private static string NormalizeEpisodeTitle(string? text, int nid)
-    {
+    private static string NormalizeEpisodeTitle(string? text, int nid) {
         var t = text?.Trim() ?? "";
         if (t.Length == 0) return $"第{nid:00}集";
         if (Regex.IsMatch(t, @"^\d+$")) return $"第{nid:00}集";
@@ -702,11 +632,9 @@ public sealed class MacCmsAdapter : ISiteAdapter
     /// 剧名只出现在「交锋_更新至第18集_欧乐影院 - 站点标语」这样的 title 里，
     /// 少了它剧名会退化成剧集 ID（界面上显示成一串数字）。
     /// </summary>
-    private static string? ExtractTitle(string html)
-    {
+    private static string? ExtractTitle(string html) {
         var m = Regex.Match(html, @"<h1[^>]*>(?<t>.*?)</h1>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
-        if (m.Success)
-        {
+        if (m.Success) {
             var t = CleanText(m.Groups["t"].Value);
             if (!string.IsNullOrWhiteSpace(t)) return t;
         }
@@ -725,8 +653,7 @@ public sealed class MacCmsAdapter : ISiteAdapter
         var first = parts.Length > 0 ? parts[0] : title;
 
         // 没有下划线时（「交锋 - 欧乐影院」）再用「 - 」切一刀
-        if (parts.Length <= 1)
-        {
+        if (parts.Length <= 1) {
             first = title
                 .Split(" - ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .FirstOrDefault() ?? title;
@@ -739,26 +666,22 @@ public sealed class MacCmsAdapter : ISiteAdapter
         return string.IsNullOrWhiteSpace(first) ? null : first.Trim();
     }
 
-    private static string? ExtractMeta(string html, string property)
-    {
+    private static string? ExtractMeta(string html, string property) {
         var m = Regex.Match(html,
             $@"<meta[^>]*(?:property|name)\s*=\s*[""']{Regex.Escape(property)}[""'][^>]*content\s*=\s*[""'](?<c>[^""']+)[""']",
             RegexOptions.IgnoreCase);
         return m.Success ? WebUtility.HtmlDecode(m.Groups["c"].Value) : null;
     }
 
-    private static string ExtractSiteName(string html, Uri pageUrl)
-    {
+    private static string ExtractSiteName(string html, Uri pageUrl) {
         var og = ExtractMeta(html, "og:site_name");
         if (!string.IsNullOrWhiteSpace(og)) return og!;
 
         var t = Regex.Match(html, @"<title[^>]*>(?<t>.*?)</title>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
-        if (t.Success)
-        {
+        if (t.Success) {
             var title = WebUtility.HtmlDecode(t.Groups["t"].Value);
             var parts = title.Split(new[] { '-', '_', '|' }, StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length > 0)
-            {
+            if (parts.Length > 0) {
                 var last = parts[^1].Trim();
                 if (last.Length is > 1 and < 20) return last;
             }
@@ -767,8 +690,7 @@ public sealed class MacCmsAdapter : ISiteAdapter
         return pageUrl.Host;
     }
 
-    private static Dictionary<string, string> BuildHeaders(Uri pageUrl, string userAgent) => new(StringComparer.OrdinalIgnoreCase)
-    {
+    private static Dictionary<string, string> BuildHeaders(Uri pageUrl, string userAgent) => new(StringComparer.OrdinalIgnoreCase) {
         ["Referer"] = pageUrl.ToString(),
         ["Origin"] = $"{pageUrl.Scheme}://{pageUrl.Authority}",
         ["User-Agent"] = userAgent,

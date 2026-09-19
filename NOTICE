@@ -26,5 +26,5 @@ This product is built on the following platforms and frameworks,
 which are distributed under their own licenses:
 
   .NET / C#                      MIT License (Microsoft Corporation)
-  Windows App SDK (WinUI 3)      Microsoft Software License Terms
+  Windows App SDK (WinUI)        Microsoft Software License Terms
   Windows SDK                    Microsoft Software License Terms

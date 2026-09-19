@@ -9,8 +9,7 @@ namespace M3U8Downloader.Core;
 /// ⚠️ 分发前请把下面的作者/版权/许可证字段改成你自己的：
 /// 目前项目里没有 LICENSE 文件，<see cref="LicenseName"/> 只是占位。
 /// </summary>
-public static class AppInfo
-{
+public static class AppInfo {
     /// <summary>产品名（同时用于数据目录名）</summary>
     public const string ProductName = "M3U8 视频下载器";
 
@@ -69,10 +68,8 @@ public static class AppInfo
         """;
 
     /// <summary>程序集版本（形如 1.0.0.0，显示时去掉末尾的 .0）</summary>
-    public static string Version
-    {
-        get
-        {
+    public static string Version {
+        get {
             var v = Assembly.GetEntryAssembly()?.GetName().Version
                     ?? Assembly.GetExecutingAssembly().GetName().Version
                     ?? new Version(1, 0, 0);
@@ -85,13 +82,12 @@ public static class AppInfo
         $".NET {Environment.Version}  ·  {RuntimeInformation.OSDescription}  ·  {RuntimeInformation.ProcessArchitecture}";
 
     /// <summary>一键复制的版本信息（用于反馈问题）</summary>
-    public static string BuildDiagnosticText(string? ffmpegStatus = null)
-    {
+    public static string BuildDiagnosticText(string? ffmpegStatus = null) {
         var lines = new List<string>
         {
             $"{ProductName} {Version}",
             RuntimeDescription,
-            $"设置文件：{Settings.AppSettingsStore.SettingsFilePath}",
+            $"数据文件：{Settings.AppSettingsStore.DataFilePath}",
             $"FFmpeg 目录：{Ffmpeg.FfmpegLocator.ManagedDirectory}",
         };
 

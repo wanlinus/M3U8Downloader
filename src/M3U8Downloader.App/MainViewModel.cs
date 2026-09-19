@@ -7,13 +7,11 @@ using M3U8Downloader.Core.Downloads;
 
 namespace M3U8Downloader;
 
-public sealed class MainViewModel : INotifyPropertyChanged
-{
+public sealed class MainViewModel : INotifyPropertyChanged {
     private readonly DispatcherQueue _dispatcher;
     private CancellationTokenSource? _cts;
 
-    public MainViewModel(DispatcherQueue dispatcher)
-    {
+    public MainViewModel(DispatcherQueue dispatcher) {
         _dispatcher = dispatcher;
         OutputDirectory = KnownFolders.Downloads;   // 系统「下载」目录（可能已被用户搬到别的盘）
     }
@@ -57,13 +55,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
     // ---------------- 状态 ----------------
 
     private bool _isBusy;
-    public bool IsBusy
-    {
+    public bool IsBusy {
         get => _isBusy;
-        set
-        {
-            if (Set(ref _isBusy, value))
-            {
+        set {
+            if (Set(ref _isBusy, value)) {
                 OnPropertyChanged(nameof(IsIdle));
                 OnPropertyChanged(nameof(CanStart));
             }
@@ -87,26 +82,22 @@ public sealed class MainViewModel : INotifyPropertyChanged
     // ---------------- 模式切换（由 MainWindow 控制） ----------------
 
     private Microsoft.UI.Xaml.Visibility _singleModeVisibility = Microsoft.UI.Xaml.Visibility.Visible;
-    public Microsoft.UI.Xaml.Visibility SingleModeVisibility
-    {
+    public Microsoft.UI.Xaml.Visibility SingleModeVisibility {
         get => _singleModeVisibility;
         set => Set(ref _singleModeVisibility, value);
     }
 
     private Microsoft.UI.Xaml.Visibility _batchModeVisibility = Microsoft.UI.Xaml.Visibility.Collapsed;
-    public Microsoft.UI.Xaml.Visibility BatchModeVisibility
-    {
+    public Microsoft.UI.Xaml.Visibility BatchModeVisibility {
         get => _batchModeVisibility;
         set => Set(ref _batchModeVisibility, value);
     }
 
     // ---------------- 操作 ----------------
 
-    public async Task StartAsync()
-    {
+    public async Task StartAsync() {
         if (IsBusy) return;
-        if (string.IsNullOrWhiteSpace(Url))
-        {
+        if (string.IsNullOrWhiteSpace(Url)) {
             StatusText = "请先填写 m3u8 地址。";
             return;
         }
@@ -122,15 +113,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (!string.IsNullOrWhiteSpace(Origin)) headers["Origin"] = Origin.Trim();
         if (!string.IsNullOrWhiteSpace(UserAgent)) headers["User-Agent"] = UserAgent.Trim();
 
-        try
-        {
+        try {
             // 下载流程整体在 Core 的 SingleFileDownloadService 里（与站点批量模式共用同一条
             // 流水线：暂存目录 + 清单指纹续传 + 转 MP4 + 产物体检）。
             // 界面在这里只做两件事：把参数递进去、把日志与进度搬上来。
             var service = new SingleFileDownloadService(headers);
 
-            var progress = new Progress<SingleFileProgress>(p =>
-            {
+            var progress = new Progress<SingleFileProgress>(p => {
                 Progress = p.Percent;
                 StatusText = p.Phase;
                 DetailText = p.TotalSegments == 0
@@ -140,8 +129,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                       (p.Eta.HasValue ? $"  ·  剩余约 {p.Eta.Value:hh\\:mm\\:ss}" : "");
             });
 
-            var report = await service.DownloadAsync(new SingleFileDownloadOptions
-            {
+            var report = await service.DownloadAsync(new SingleFileDownloadOptions {
                 Url = Url.Trim(),
                 Headers = headers,
                 OutputDirectory = OutputDirectory,
@@ -153,8 +141,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 FullDecodeCheck = FullDecodeCheck,
             }, progress, Log, _cts.Token);
 
-            switch (report.Outcome?.Status)
-            {
+            switch (report.Outcome?.Status) {
                 case EpisodeOutcomeStatus.Completed:
                     Progress = 100;
                     StatusText = $"下载完成：{report.OutputPath}";
@@ -168,22 +155,17 @@ public sealed class MainViewModel : INotifyPropertyChanged
                     StatusText = report.Error ?? "下载未完成。";
                     break;
             }
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             StatusText = "出错：" + ex.Message;
             Log("✘ 异常：" + ex);
-        }
-        finally
-        {
+        } finally {
             IsBusy = false;
             _cts?.Dispose();
             _cts = null;
         }
     }
 
-    public void Cancel()
-    {
+    public void Cancel() {
         _cts?.Cancel();
         StatusText = "正在取消…";
     }
@@ -193,10 +175,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     /// <summary>给窗口/托盘这些外部代码写日志用（内部会封送回 UI 线程）</summary>
     public void AppendLog(string message) => Log(message);
 
-    private void Log(string message)
-    {
-        _dispatcher.TryEnqueue(() =>
-        {
+    private void Log(string message) {
+        _dispatcher.TryEnqueue(() => {
             Logs.Add($"[{DateTime.Now:HH:mm:ss}] {message}");
             while (Logs.Count > 500) Logs.RemoveAt(0);
         });
@@ -204,8 +184,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null)
-    {
+    private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null) {
         if (EqualityComparer<T>.Default.Equals(field, value)) return false;
         field = value;
         OnPropertyChanged(name);

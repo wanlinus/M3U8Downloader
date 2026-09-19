@@ -5,8 +5,7 @@ using M3U8Downloader.Core.Net;
 namespace M3U8Downloader.Core.Update;
 
 /// <summary>GitHub Release 上发布的一个版本</summary>
-public sealed record ReleaseInfo
-{
+public sealed record ReleaseInfo {
     /// <summary>tag，形如 v1.4.0</summary>
     public required string Tag { get; init; }
 
@@ -39,8 +38,7 @@ public sealed record UpdateCheckResult(
     bool HasUpdate,
     string CurrentVersion,
     ReleaseInfo? Latest,
-    string? Error)
-{
+    string? Error) {
     /// <summary>检查本身失败了（网络不通、被限流等）—— 这不等于"已是最新"</summary>
     public bool Failed => Error is not null;
 }
@@ -55,8 +53,7 @@ public sealed record UpdateCheckResult(
 /// · **代理只在这里用**：GitHub 在国内常常连不上，但用户要是没配代理，
 ///   我们也只是查不到更新而已，不该因此弹一堆错。
 /// </summary>
-public static class UpdateChecker
-{
+public static class UpdateChecker {
     private const string Owner = "wanlinus";
     private const string Repository = "M3U8Downloader";
 
@@ -71,23 +68,17 @@ public static class UpdateChecker
     /// 调用方多半在启动流程里，不该因为查不了更新就把程序带崩。
     /// </summary>
     public static async Task<UpdateCheckResult> CheckAsync(
-        string currentVersion, string? proxyUrl = null, CancellationToken ct = default)
-    {
-        try
-        {
+        string currentVersion, string? proxyUrl = null, CancellationToken ct = default) {
+        try {
             var latest = await FetchLatestAsync(proxyUrl, ct).ConfigureAwait(false);
             if (latest is null)
                 return new UpdateCheckResult(false, currentVersion, null, "GitHub 上没有找到已发布的版本");
 
             var hasUpdate = CompareVersions(latest.Version, currentVersion) > 0;
             return new UpdateCheckResult(hasUpdate, currentVersion, latest, null);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
+        } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
             throw;
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             return new UpdateCheckResult(false, currentVersion, null, ex.Message);
         }
     }
@@ -100,31 +91,24 @@ public static class UpdateChecker
     /// 只会得到一句"目标计算机积极拒绝"，明明直连能成的事却查不到更新。
     /// 这与站点解析那边是同一套策略。
     /// </summary>
-    private static async Task<ReleaseInfo?> FetchLatestAsync(string? proxyUrl, CancellationToken ct)
-    {
-        try
-        {
+    private static async Task<ReleaseInfo?> FetchLatestAsync(string? proxyUrl, CancellationToken ct) {
+        try {
             return await FetchWithAsync(null, ct).ConfigureAwait(false);
-        }
-        catch (Exception) when (!ct.IsCancellationRequested)
-        {
+        } catch (Exception) when (!ct.IsCancellationRequested) {
             var normalized = ProxyHelper.Normalize(proxyUrl);
             if (normalized is null) throw;   // 没配代理，直连失败就是失败
             return await FetchWithAsync(normalized, ct).ConfigureAwait(false);
         }
     }
 
-    private static async Task<ReleaseInfo?> FetchWithAsync(string? proxyUrl, CancellationToken ct)
-    {
-        using var handler = new SocketsHttpHandler
-        {
+    private static async Task<ReleaseInfo?> FetchWithAsync(string? proxyUrl, CancellationToken ct) {
+        using var handler = new SocketsHttpHandler {
             ConnectTimeout = TimeSpan.FromSeconds(8),
             // 显式关掉：不关会退到系统代理（用户的 Clash），见 AGENTS.md 的硬约定
             UseProxy = false,
         };
 
-        if (proxyUrl is not null)
-        {
+        if (proxyUrl is not null) {
             handler.Proxy = new WebProxy(new Uri(proxyUrl)) { BypassProxyOnLocal = true };
             handler.UseProxy = true;
         }
@@ -146,8 +130,7 @@ public static class UpdateChecker
 
         var (downloadUrl, size) = FindAppAsset(root);
 
-        return new ReleaseInfo
-        {
+        return new ReleaseInfo {
             Tag = tag!,
             Version = tag!.TrimStart('v', 'V'),
             Name = GetString(root, "name") ?? tag!,
@@ -163,14 +146,12 @@ public static class UpdateChecker
         };
     }
 
-    /// <summary>在 assets 里找界面版那个 zip（命令行版不参与自动更新）</summary>
-    private static (string? Url, long Size) FindAppAsset(JsonElement root)
-    {
+    /// <summary>在 assets 里找主程序那个 zip</summary>
+    private static (string? Url, long Size) FindAppAsset(JsonElement root) {
         if (!root.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array)
             return (null, 0);
 
-        foreach (var asset in assets.EnumerateArray())
-        {
+        foreach (var asset in assets.EnumerateArray()) {
             var name = GetString(asset, "name") ?? "";
             if (!name.StartsWith("M3U8Downloader-", StringComparison.OrdinalIgnoreCase)) continue;
             if (!name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) continue;

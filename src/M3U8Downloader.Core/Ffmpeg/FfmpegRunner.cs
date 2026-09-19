@@ -4,8 +4,7 @@ using System.Text;
 namespace M3U8Downloader.Core.Ffmpeg;
 
 /// <summary>ffmpeg 命令执行结果</summary>
-public sealed record FfmpegRunResult(bool Success, string? Error)
-{
+public sealed record FfmpegRunResult(bool Success, string? Error) {
     public static readonly FfmpegRunResult Ok = new(true, null);
     public static FfmpegRunResult Fail(string error) => new(false, error);
 }
@@ -16,8 +15,7 @@ public sealed record FfmpegRunResult(bool Success, string? Error)
 /// 只做 remux（<c>-c copy</c>），不重新编码：速度快（几分钟的视频几秒完成）、
 /// 画质无损，也不需要 GPL-only 的编码器。
 /// </summary>
-public static class FfmpegRunner
-{
+public static class FfmpegRunner {
     /// <summary>转封装超时（大文件也要给足时间）</summary>
     public static TimeSpan Timeout { get; set; } = TimeSpan.FromMinutes(20);
 
@@ -26,8 +24,7 @@ public static class FfmpegRunner
     /// <c>-movflags +faststart</c> 会把 moov 移到文件头，便于边下边播与快速拖动。
     /// </summary>
     public static async Task<FfmpegRunResult> RemuxToMp4Async(
-        string ffmpegPath, string inputPath, string outputPath, CancellationToken ct = default)
-    {
+        string ffmpegPath, string inputPath, string outputPath, CancellationToken ct = default) {
         var args = new List<string>
         {
             "-hide_banner",
@@ -45,12 +42,9 @@ public static class FfmpegRunner
 
     /// <summary>跑一次 ffmpeg，返回成功与否 + stderr 摘要</summary>
     public static async Task<FfmpegRunResult> RunAsync(
-        string ffmpegPath, IReadOnlyList<string> args, CancellationToken ct = default)
-    {
-        try
-        {
-            var psi = new ProcessStartInfo(ffmpegPath)
-            {
+        string ffmpegPath, IReadOnlyList<string> args, CancellationToken ct = default) {
+        try {
+            var psi = new ProcessStartInfo(ffmpegPath) {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 RedirectStandardInput = true,
@@ -68,20 +62,16 @@ public static class FfmpegRunner
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(Timeout);
 
-            try
-            {
+            try {
                 await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
+            } catch (OperationCanceledException) {
                 TryKill(process);
                 return FfmpegRunResult.Fail(ct.IsCancellationRequested ? "已取消" : "ffmpeg 执行超时");
             }
 
             var stderr = await stderrTask.ConfigureAwait(false);
 
-            if (process.ExitCode != 0)
-            {
+            if (process.ExitCode != 0) {
                 var detail = Summarize(stderr);
                 return FfmpegRunResult.Fail(string.IsNullOrWhiteSpace(detail)
                     ? $"ffmpeg 退出码 {process.ExitCode}"
@@ -89,15 +79,12 @@ public static class FfmpegRunner
             }
 
             return FfmpegRunResult.Ok;
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             return FfmpegRunResult.Fail($"ffmpeg 调用异常：{ex.Message}");
         }
     }
 
-    private static string Summarize(string stderr)
-    {
+    private static string Summarize(string stderr) {
         if (string.IsNullOrWhiteSpace(stderr)) return "";
 
         var lines = stderr
@@ -115,8 +102,7 @@ public static class FfmpegRunner
     /// 读不出来返回 null（没装 ffprobe、或文件根本打不开）。
     /// </summary>
     public static async Task<ContainerProbe?> TryProbeContainerAsync(
-        string ffmpegPath, string inputPath, CancellationToken ct = default)
-    {
+        string ffmpegPath, string inputPath, CancellationToken ct = default) {
         var probe = FindSibling(ffmpegPath, "ffprobe.exe");
         if (probe is null) return null;
 
@@ -131,25 +117,20 @@ public static class FfmpegRunner
 
         if (!r.Success || string.IsNullOrWhiteSpace(r.Output)) return null;
 
-        try
-        {
+        try {
             using var doc = System.Text.Json.JsonDocument.Parse(r.Output);
             var root = doc.RootElement;
             var result = new ContainerProbe();
 
-            if (root.TryGetProperty("format", out var fmt))
-            {
+            if (root.TryGetProperty("format", out var fmt)) {
                 result.FormatName = GetString(fmt, "format_name");
                 result.DurationSeconds = GetDouble(fmt, "duration");
                 result.BitRate = (long)GetDouble(fmt, "bit_rate");
             }
 
-            if (root.TryGetProperty("streams", out var streams) && streams.ValueKind == System.Text.Json.JsonValueKind.Array)
-            {
-                foreach (var s in streams.EnumerateArray())
-                {
-                    result.Streams.Add(new MediaStreamInfo
-                    {
+            if (root.TryGetProperty("streams", out var streams) && streams.ValueKind == System.Text.Json.JsonValueKind.Array) {
+                foreach (var s in streams.EnumerateArray()) {
+                    result.Streams.Add(new MediaStreamInfo {
                         Index = (int)GetDouble(s, "index"),
                         CodecType = GetString(s, "codec_type"),
                         CodecName = GetString(s, "codec_name"),
@@ -164,9 +145,7 @@ public static class FfmpegRunner
             }
 
             return result;
-        }
-        catch
-        {
+        } catch {
             return null;
         }
     }
@@ -179,16 +158,14 @@ public static class FfmpegRunner
     /// 退出码 0 且无告警才算通过；代价是读一遍文件（几百 MB 约几秒）。
     /// </summary>
     public static async Task<DecodeCheckResult?> RunDecodeCheckAsync(
-        string ffmpegPath, string inputPath, CancellationToken ct = default)
-    {
+        string ffmpegPath, string inputPath, CancellationToken ct = default) {
         var clock = System.Diagnostics.Stopwatch.StartNew();
         var r = await RunCaptureAsync(ffmpegPath,
             new[] { "-hide_banner", "-v", "warning", "-i", inputPath, "-f", "null", "-" },
             ct).ConfigureAwait(false);
         clock.Stop();
 
-        var result = new DecodeCheckResult
-        {
+        var result = new DecodeCheckResult {
             ExitCode = r.ExitCode,
             Elapsed = clock.Elapsed,
         };
@@ -197,8 +174,7 @@ public static class FfmpegRunner
         var categories = new Dictionary<string, int>(StringComparer.Ordinal);
         var lines = (r.Output ?? "").Split('\n', StringSplitOptions.RemoveEmptyEntries);
 
-        foreach (var raw in lines)
-        {
+        foreach (var raw in lines) {
             var line = raw.Trim();
             if (line.Length == 0) continue;
 
@@ -212,8 +188,7 @@ public static class FfmpegRunner
             if (text.Length == 0) continue;
 
             // 输出阶段的告警不算产物的毛病 —— 它描述的是「检查方式自己」，见 IsMuxerStageWarning
-            if (IsMuxerStageWarning(text))
-            {
+            if (IsMuxerStageWarning(text)) {
                 result.IgnoredMuxerWarnings++;
                 continue;
             }
@@ -251,8 +226,7 @@ public static class FfmpegRunner
         text.Contains("to muxer", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>找 ffmpeg 同目录下的兄弟程序（ffprobe）</summary>
-    private static string? FindSibling(string ffmpegPath, string fileName)
-    {
+    private static string? FindSibling(string ffmpegPath, string fileName) {
         var dir = Path.GetDirectoryName(ffmpegPath);
         if (string.IsNullOrEmpty(dir)) return null;
 
@@ -265,8 +239,7 @@ public static class FfmpegRunner
             ? v.GetString() ?? ""
             : "";
 
-    private static double GetDouble(System.Text.Json.JsonElement el, string name)
-    {
+    private static double GetDouble(System.Text.Json.JsonElement el, string name) {
         if (!el.TryGetProperty(name, out var v)) return 0;
         if (v.ValueKind == System.Text.Json.JsonValueKind.Number) return v.GetDouble();
         if (v.ValueKind == System.Text.Json.JsonValueKind.String
@@ -283,14 +256,12 @@ public static class FfmpegRunner
     /// 优先用 ffprobe（同目录），没有就退回用 ffmpeg 自己解析。
     /// </summary>
     public static async Task<double?> TryGetDurationSecondsAsync(
-        string ffmpegPath, string inputPath, CancellationToken ct = default)
-    {
+        string ffmpegPath, string inputPath, CancellationToken ct = default) {
         var dir = Path.GetDirectoryName(ffmpegPath);
 
         // 1) ffprobe：输出干净，直接给秒数
         var probe = string.IsNullOrEmpty(dir) ? null : Path.Combine(dir, "ffprobe.exe");
-        if (probe is not null && File.Exists(probe))
-        {
+        if (probe is not null && File.Exists(probe)) {
             var r = await RunCaptureAsync(probe,
                 new[] { "-v", "error", "-show_entries", "format=duration",
                         "-of", "default=noprint_wrappers=1:nokey=1", inputPath },
@@ -299,8 +270,7 @@ public static class FfmpegRunner
             if (r.Success
                 && double.TryParse(r.Output.Trim(), System.Globalization.NumberStyles.Float,
                     System.Globalization.CultureInfo.InvariantCulture, out var seconds)
-                && seconds > 0)
-            {
+                && seconds > 0) {
                 return seconds;
             }
         }
@@ -319,12 +289,9 @@ public static class FfmpegRunner
 
     /// <summary>跑一次命令并把 stdout + stderr 一起收回来（诊断用，不在意退出码）</summary>
     private static async Task<(bool Success, int ExitCode, string Output)> RunCaptureAsync(
-        string exePath, IReadOnlyList<string> args, CancellationToken ct)
-    {
-        try
-        {
-            var psi = new ProcessStartInfo(exePath)
-            {
+        string exePath, IReadOnlyList<string> args, CancellationToken ct) {
+        try {
+            var psi = new ProcessStartInfo(exePath) {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 RedirectStandardInput = true,
@@ -343,27 +310,21 @@ public static class FfmpegRunner
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromMinutes(5));
 
-            try
-            {
+            try {
                 await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
+            } catch (OperationCanceledException) {
                 TryKill(process);
                 return (false, -1, "");
             }
 
             var text = (await stdoutTask.ConfigureAwait(false)) + "\n" + (await stderrTask.ConfigureAwait(false));
             return (process.ExitCode == 0, process.ExitCode, text);
-        }
-        catch
-        {
+        } catch {
             return (false, -1, "");
         }
     }
 
-    private static void TryKill(Process process)
-    {
+    private static void TryKill(Process process) {
         try { process.Kill(entireProcessTree: true); } catch { }
     }
 }

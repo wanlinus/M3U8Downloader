@@ -1,4 +1,4 @@
-﻿namespace M3U8Downloader.Core;
+namespace M3U8Downloader.Core;
 
 /// <summary>
 /// 不依赖外部工具的"产物时长"估算。
@@ -14,23 +14,17 @@
 ///
 /// 拿不到就返回 null，调用方据此报"读不出时长"而不是假装通过。
 /// </summary>
-public static class MediaDurationProbe
-{
+public static class MediaDurationProbe {
     /// <summary>估算时长（秒）；读不出来返回 null</summary>
-    public static double? TryProbeSeconds(string path)
-    {
-        try
-        {
+    public static double? TryProbeSeconds(string path) {
+        try {
             if (!File.Exists(path)) return null;
-            return Path.GetExtension(path).ToLowerInvariant() switch
-            {
+            return Path.GetExtension(path).ToLowerInvariant() switch {
                 ".ts" or ".m2ts" => TryProbeTsByPcr(path),
                 ".mp4" or ".m4s" or ".m4v" => TryProbeMp4ByMvhd(path),
                 _ => null,
             };
-        }
-        catch
-        {
+        } catch {
             return null;
         }
     }
@@ -43,8 +37,7 @@ public static class MediaDurationProbe
     /// <summary>PCR 是 33 位计数器，到这个数就回绕</summary>
     private const double PcrModulus = 8589934592.0;   // 2^33
 
-    private static double? TryProbeTsByPcr(string path)
-    {
+    private static double? TryProbeTsByPcr(string path) {
         const int packetSize = 188;
         const int pcrFlag = 0x10;         // 自适应字段里 PCR_flag 的位
 
@@ -55,13 +48,11 @@ public static class MediaDurationProbe
         double totalSeconds = 0;
         var samples = 0;
 
-        while (true)
-        {
+        while (true) {
             var read = fs.Read(buffer, 0, buffer.Length);
             if (read <= 0) break;
 
-            for (var i = 0; i + packetSize <= read; i += packetSize)
-            {
+            for (var i = 0; i + packetSize <= read; i += packetSize) {
                 if (buffer[i] != 0x47) continue;
 
                 // 只有带自适应字段的包才可能含 PCR
@@ -82,8 +73,7 @@ public static class MediaDurationProbe
                 var ext = ((buffer[b + 4] & 0x01) << 8) | buffer[b + 5];
                 var pcr = (double)basePart + ext / 300.0;          // 换算到 90 kHz 刻度
 
-                if (lastRaw >= 0)
-                {
+                if (lastRaw >= 0) {
                     var delta = pcr - lastRaw;
                     if (delta < 0) delta += PcrModulus;            // 回绕
                     if (delta > 0 && delta < PcrTicksPerSecond * 60 * 30)  // 单次跳变超过 30 分钟视为异常，不计
@@ -100,8 +90,7 @@ public static class MediaDurationProbe
 
     // ---------------------------------------------------------------- MP4：moov/mvhd
 
-    private static double? TryProbeMp4ByMvhd(string path)
-    {
+    private static double? TryProbeMp4ByMvhd(string path) {
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16);
 
         // 顶层找 moov（faststart 会在文件开头，但也有可能在结尾）
@@ -122,15 +111,12 @@ public static class MediaDurationProbe
         //   version 0: [4..7] creation | [8..11] modification | [12..15] timescale | [16..19] duration
         //   version 1: [4..11] creation | [12..19] modification | [20..23] timescale | [24..31] duration
         var version = header[0];
-        if (version == 1)
-        {
+        if (version == 1) {
             var timescale = ReadUInt32(header, 20);
             var duration = ReadUInt64(header, 24);
             if (timescale == 0) return null;
             return duration / (double)timescale;
-        }
-        else
-        {
+        } else {
             var timescale = ReadUInt32(header, 12);
             var duration = ReadUInt32(header, 16);
             if (timescale == 0) return null;
@@ -138,14 +124,12 @@ public static class MediaDurationProbe
         }
     }
 
-    private static long FindTopLevelBox(FileStream fs, string type)
-    {
+    private static long FindTopLevelBox(FileStream fs, string type) {
         var size = fs.Length;
         long pos = 0;
         var header = new byte[16];
 
-        while (pos + 8 <= size)
-        {
+        while (pos + 8 <= size) {
             fs.Position = pos;
             if (fs.Read(header, 0, 8) < 8) return -1;
 
@@ -153,16 +137,13 @@ public static class MediaDurationProbe
             var boxType = System.Text.Encoding.ASCII.GetString(header, 4, 4);
             var bodyOffset = 8L;
 
-            if (boxSize == 1)
-            {
+            if (boxSize == 1) {
                 // largesize：真正的大小在紧随其后的 8 字节里。
                 // 注意别再回头看 header[0..3] —— 它已经被这 8 字节覆盖了。
                 if (fs.Read(header, 8, 8) < 8) return -1;
                 boxSize = (long)ReadUInt64(header, 8);
                 bodyOffset = 16;
-            }
-            else if (boxSize == 0)
-            {
+            } else if (boxSize == 0) {
                 boxSize = size - pos;
             }
 
@@ -183,33 +164,27 @@ public static class MediaDurationProbe
     /// 之前就是在这里把第一个子 box 的 size 当成了父 box 的大小
     /// （mvhd 的 108 字节被当成整个 moov 的长度），于是永远找不到子 box。
     /// </summary>
-    private static long FindChildBox(FileStream fs, long parentBody, string type)
-    {
+    private static long FindChildBox(FileStream fs, long parentBody, string type) {
         var header = new byte[16];
 
         // 回到父 box 的头，读出它的真实大小
         long boxStart = -1;
-        foreach (var candidate in new[] { parentBody - 16, parentBody - 8 })
-        {
+        foreach (var candidate in new[] { parentBody - 16, parentBody - 8 }) {
             if (candidate < 0) continue;
             fs.Position = candidate;
             if (fs.Read(header, 0, 8) < 8) continue;
 
             long declared = ReadUInt32(header, 0);
             var headerSize = 8L;
-            if (declared == 1)
-            {
+            if (declared == 1) {
                 if (fs.Read(header, 8, 8) < 8) continue;
                 declared = (long)ReadUInt64(header, 8);
                 headerSize = 16;
-            }
-            else if (declared == 0)
-            {
+            } else if (declared == 0) {
                 declared = fs.Length - candidate;
             }
 
-            if (candidate + headerSize == parentBody && declared >= headerSize)
-            {
+            if (candidate + headerSize == parentBody && declared >= headerSize) {
                 boxStart = candidate;
                 break;
             }
@@ -221,22 +196,18 @@ public static class MediaDurationProbe
         if (fs.Read(header, 0, 8) < 8) return -1;
         long parentSize = ReadUInt32(header, 0);
         var parentHeaderSize = 8L;
-        if (parentSize == 1)
-        {
+        if (parentSize == 1) {
             if (fs.Read(header, 8, 8) < 8) return -1;
             parentSize = (long)ReadUInt64(header, 8);
             parentHeaderSize = 16;
-        }
-        else if (parentSize == 0)
-        {
+        } else if (parentSize == 0) {
             parentSize = fs.Length - boxStart;
         }
 
         var pos = boxStart + parentHeaderSize;
         var end = boxStart + parentSize;
 
-        while (pos + 8 <= end)
-        {
+        while (pos + 8 <= end) {
             fs.Position = pos;
             if (fs.Read(header, 0, 8) < 8) return -1;
 
@@ -244,14 +215,11 @@ public static class MediaDurationProbe
             var boxType = System.Text.Encoding.ASCII.GetString(header, 4, 4);
             var bodyOffset = 8L;
 
-            if (boxSize == 1)
-            {
+            if (boxSize == 1) {
                 if (fs.Read(header, 8, 8) < 8) return -1;
                 boxSize = (long)ReadUInt64(header, 8);
                 bodyOffset = 16;
-            }
-            else if (boxSize == 0)
-            {
+            } else if (boxSize == 0) {
                 boxSize = end - pos;
             }
 

@@ -24,8 +24,7 @@ namespace M3U8Downloader.Core.Sites;
 /// 「BF（bfzy）17 集 / IK（ikzy）17 集 / LZ（lzzy）16 集…」这样的源列表交给用户选，
 /// 与苹果 CMS 站点的多源体验保持一致。
 /// </summary>
-public sealed class NnyyAdapter : ISiteAdapter
-{
+public sealed class NnyyAdapter : ISiteAdapter {
     public SiteKind Kind => SiteKind.Nnyy;
     public string Name => "努努影院";
 
@@ -63,14 +62,12 @@ public sealed class NnyyAdapter : ISiteAdapter
     public bool CanHandle(Uri url) =>
         HostPattern.IsMatch(url.Host) && DetailPath.IsMatch(url.AbsolutePath);
 
-    public async Task<SiteSeries> ParseAsync(string html, Uri pageUrl, SiteContext ctx, CancellationToken ct = default)
-    {
+    public async Task<SiteSeries> ParseAsync(string html, Uri pageUrl, SiteContext ctx, CancellationToken ct = default) {
         var match = DetailPath.Match(pageUrl.AbsolutePath);
         var seriesId = match.Groups["id"].Value;
         var siteName = ExtractSiteName(html, pageUrl);
 
-        var series = new SiteSeries
-        {
+        var series = new SiteSeries {
             Kind = Kind,
             SiteName = siteName,
             PageUrl = pageUrl.ToString(),
@@ -84,8 +81,7 @@ public sealed class NnyyAdapter : ISiteAdapter
         series.Headers["Referer"] = pageUrl.ToString();
 
         var episodes = ParseEpisodes(html);
-        if (episodes.Count == 0)
-        {
+        if (episodes.Count == 0) {
             throw new NotSupportedException(
                 "页面里没有找到剧集列表（ep_slug）。努努影院可能改版了，" +
                 "把页面地址反馈一下就能补上。");
@@ -97,32 +93,22 @@ public sealed class NnyyAdapter : ISiteAdapter
         // 每一集的可用源都不一样，只有挨个问一遍才能列出「哪个源有哪些集」。
         // 每集一次小请求（约 2 KB，走代理），并发跑。
         var perEpisode = new EpisodePlays[episodes.Count];
-        using (var gate = new SemaphoreSlim(PlayFetchConcurrency))
-        {
-            var tasks = episodes.Select(async (episode, index) =>
-            {
-                try
-                {
+        using (var gate = new SemaphoreSlim(PlayFetchConcurrency)) {
+            var tasks = episodes.Select(async (episode, index) => {
+                try {
                     await gate.WaitAsync(ct).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
+                } catch (OperationCanceledException) {
                     return;
                 }
 
-                try
-                {
+                try {
                     var plays = await FetchPlaysAsync(pageUrl, seriesId, episode.Slug, ctx, ct).ConfigureAwait(false);
                     perEpisode[index] = new EpisodePlays(episode, plays);
-                }
-                catch
-                {
+                } catch {
                     // 单集取源失败不能拖垮整次识别：那一集就是「没有可用源」，
                     // 其余集照常列出 —— 至少能把能下的先下了。
                     perEpisode[index] = new EpisodePlays(episode, new List<PlayInfo>());
-                }
-                finally
-                {
+                } finally {
                     gate.Release();
                 }
             }).ToArray();
@@ -134,8 +120,7 @@ public sealed class NnyyAdapter : ISiteAdapter
         return series;
     }
 
-    public async Task<string> ResolvePlaylistUrlAsync(SiteEpisode episode, SiteContext ctx, CancellationToken ct = default)
-    {
+    public async Task<string> ResolvePlaylistUrlAsync(SiteEpisode episode, SiteContext ctx, CancellationToken ct = default) {
         var pageUri = new Uri(episode.PageUrl);
         var seriesId = DetailPath.Match(pageUri.AbsolutePath).Groups["id"].Value;
         if (string.IsNullOrEmpty(seriesId))
@@ -152,8 +137,7 @@ public sealed class NnyyAdapter : ISiteAdapter
     // ---------------- 取源与汇总 ----------------
 
     private async Task<List<PlayInfo>> FetchPlaysAsync(
-        Uri pageUri, string seriesId, string slug, SiteContext ctx, CancellationToken ct)
-    {
+        Uri pageUri, string seriesId, string slug, SiteContext ctx, CancellationToken ct) {
         // 页面接口与详情页同源，同样需要代理
         var json = await ctx.GetHtmlAsync(ApiUrl(pageUri, seriesId, slug), this, ct).ConfigureAwait(false);
         return ParsePlays(json);
@@ -166,27 +150,22 @@ public sealed class NnyyAdapter : ISiteAdapter
     /// 把「源 → 集」汇总成 <see cref="SiteSeries.Sources"/>。
     /// 源的先后顺序沿用第一集里的排列（站点自己的推荐顺序）。
     /// </summary>
-    private static void BuildSources(SiteSeries series, EpisodePlays[] perEpisode, Uri pageUrl)
-    {
+    private static void BuildSources(SiteSeries series, EpisodePlays[] perEpisode, Uri pageUrl) {
         var order = new List<string>();
         var map = new Dictionary<string, SitePlaySource>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var item in perEpisode)
-        {
+        foreach (var item in perEpisode) {
             if (item is null) continue;
 
-            foreach (var play in item.Plays)
-            {
+            foreach (var play in item.Plays) {
                 var name = Describe(play);
-                if (!map.TryGetValue(name, out var source))
-                {
+                if (!map.TryGetValue(name, out var source)) {
                     source = new SitePlaySource { Id = map.Count + 1, Name = name };
                     map[name] = source;
                     order.Add(name);
                 }
 
-                source.Episodes.Add(new SiteEpisode
-                {
+                source.Episodes.Add(new SiteEpisode {
                     Number = item.Episode.Number,
                     SourceId = source.Id,
                     PageUrl = pageUrl.ToString(),
@@ -198,8 +177,7 @@ public sealed class NnyyAdapter : ISiteAdapter
             }
         }
 
-        if (order.Count == 0)
-        {
+        if (order.Count == 0) {
             throw new NotSupportedException(
                 "没能从 /_gp/ 接口取到任何一集的播放源。可能是站点改版，或者网络/代理不通" +
                 "（该站点的页面需要代理，分片下载才直连）。");
@@ -217,8 +195,7 @@ public sealed class NnyyAdapter : ISiteAdapter
     }
 
     /// <summary>源名：站点在按钮上显示什么就用什么（"BF"），顺带带上它的资源站代号（"bfzy"）</summary>
-    private static string Describe(PlayInfo play)
-    {
+    private static string Describe(PlayInfo play) {
         var shortName = play.ShortName?.Trim() ?? "";
         var site = play.Site?.Trim() ?? "";
 
@@ -228,30 +205,25 @@ public sealed class NnyyAdapter : ISiteAdapter
     }
 
     /// <summary>从 /_gp/ 的 JSON 里取出所有候选源（保持站点给的顺序）</summary>
-    private static List<PlayInfo> ParsePlays(string json)
-    {
+    private static List<PlayInfo> ParsePlays(string json) {
         var list = new List<PlayInfo>();
-        try
-        {
+        try {
             using var doc = JsonDocument.Parse(json);
             if (!doc.RootElement.TryGetProperty("video_plays", out var plays) ||
-                plays.ValueKind != JsonValueKind.Array)
-            {
+                plays.ValueKind != JsonValueKind.Array) {
                 return list;
             }
 
             // 源简称在 html_content 的按钮文本里（"BF 第1集"），顺序与 video_plays 对应
             var names = new List<string>();
             if (doc.RootElement.TryGetProperty("html_content", out var content) &&
-                content.ValueKind == JsonValueKind.String)
-            {
+                content.ValueKind == JsonValueKind.String) {
                 foreach (Match m in SourceButton.Matches(content.GetString() ?? ""))
                     names.Add(ShortNameFrom(CleanText(m.Groups["text"].Value)));
             }
 
             var index = 0;
-            foreach (var item in plays.EnumerateArray())
-            {
+            foreach (var item in plays.EnumerateArray()) {
                 if (item.ValueKind != JsonValueKind.Object) continue;
                 if (!item.TryGetProperty("play_data", out var url)) continue;
 
@@ -262,9 +234,7 @@ public sealed class NnyyAdapter : ISiteAdapter
                 list.Add(new PlayInfo(text.Trim(), site, index < names.Count ? names[index] : ""));
                 index++;
             }
-        }
-        catch (JsonException)
-        {
+        } catch (JsonException) {
             // 接口返回的不是 JSON（被拦截或改版）：返回空表，由调用方报错
         }
 
@@ -275,8 +245,7 @@ public sealed class NnyyAdapter : ISiteAdapter
     /// 「BF 第1集」→「BF」，「SD HD」→「SD」。
     /// 站点把源名和集数/画质写在同一行按钮上，这里只取源名那一段。
     /// </summary>
-    private static string ShortNameFrom(string text)
-    {
+    private static string ShortNameFrom(string text) {
         var stripped = Regex.Replace(text, @"第\s*\d+\s*[集话期]", "").Trim();
         var first = stripped.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
         return string.IsNullOrWhiteSpace(first) ? stripped : first;
@@ -284,15 +253,13 @@ public sealed class NnyyAdapter : ISiteAdapter
 
     // ---------------- 页面解析 ----------------
 
-    private static List<(string Slug, int Number, string Title)> ParseEpisodes(string html)
-    {
+    private static List<(string Slug, int Number, string Title)> ParseEpisodes(string html) {
         var list = new List<(string, int, string)>();
         var seenNumbers = new HashSet<int>();
         var seenSlugs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var fallback = 0;
 
-        foreach (Match m in PlayButton.Matches(html))
-        {
+        foreach (Match m in PlayButton.Matches(html)) {
             var slug = m.Groups["slug"].Value.Trim();
             if (slug.Length == 0 || !seenSlugs.Add(slug)) continue;
 
@@ -300,15 +267,12 @@ public sealed class NnyyAdapter : ISiteAdapter
             var title = anchor.Success ? CleanText(anchor.Groups["text"].Value) : "";
 
             var number = ParseEpisodeNumber(slug);
-            if (number <= 0)
-            {
+            if (number <= 0) {
                 // 电影页的 slug 是 "hd" / "other" 这种，**根本不含集号** ——
                 // 这时按出现顺序编号。少了这一步，整页一集都解析不出来
                 // （报「页面里没有找到剧集列表」，努努的电影页就是这样）。
                 do { number = ++fallback; } while (!seenNumbers.Add(number));
-            }
-            else if (!seenNumbers.Add(number))
-            {
+            } else if (!seenNumbers.Add(number)) {
                 // 同一个集号出现多次（页面里常有重复的选集区），保留第一次
                 continue;
             }
@@ -320,15 +284,13 @@ public sealed class NnyyAdapter : ISiteAdapter
     }
 
     /// <summary>ep12 → 12；也吃纯数字（有的模板直接写 12）</summary>
-    private static int ParseEpisodeNumber(string slug)
-    {
+    private static int ParseEpisodeNumber(string slug) {
         var m = Regex.Match(slug, @"(\d+)");
         if (!m.Success || !int.TryParse(m.Groups[1].Value, out var number)) return 0;
         return number is > 0 and < 100000 ? number : 0;
     }
 
-    private static string? ExtractTitle(string html)
-    {
+    private static string? ExtractTitle(string html) {
         var m = Regex.Match(html,
             @"<h1[^>]*class\s*=\s*[""'][^""']*product-title[^""']*[""'][^>]*>(?<t>.*?)</h1>",
             RegexOptions.IgnoreCase | RegexOptions.Singleline);
@@ -343,16 +305,13 @@ public sealed class NnyyAdapter : ISiteAdapter
     }
 
     /// <summary>站点名取 &lt;title&gt; 的最后一段：「《交锋》全集在线观看 - 电视剧 - 努努影院」→「努努影院」</summary>
-    private static string ExtractSiteName(string html, Uri pageUrl)
-    {
+    private static string ExtractSiteName(string html, Uri pageUrl) {
         var m = Regex.Match(html, @"<title[^>]*>(?<t>.*?)</title>",
             RegexOptions.IgnoreCase | RegexOptions.Singleline);
-        if (m.Success)
-        {
+        if (m.Success) {
             var title = CleanText(m.Groups["t"].Value);
             var parts = title.Split('-', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            if (parts.Length > 0)
-            {
+            if (parts.Length > 0) {
                 var last = parts[^1];
                 if (last.Length is > 0 and <= 12) return last;
             }
@@ -361,22 +320,19 @@ public sealed class NnyyAdapter : ISiteAdapter
         return pageUrl.Host;
     }
 
-    private static string? TryExtractCover(string html, Uri pageUrl)
-    {
+    private static string? TryExtractCover(string html, Uri pageUrl) {
         // class 与 src 的先后顺序不固定，两种都试
         var m = Regex.Match(html,
             @"<img\b[^>]*class\s*=\s*[""'][^""']*detail-img[^""']*[""'][^>]*src\s*=\s*[""'](?<src>[^""']+)[""']",
             RegexOptions.IgnoreCase | RegexOptions.Singleline);
-        if (!m.Success)
-        {
+        if (!m.Success) {
             m = Regex.Match(html,
                 @"<img\b[^>]*src\s*=\s*[""'](?<src>[^""']+)[""'][^>]*class\s*=\s*[""'][^""']*detail-img",
                 RegexOptions.IgnoreCase | RegexOptions.Singleline);
         }
 
         if (!m.Success) return null;
-        try { return new Uri(pageUrl, m.Groups["src"].Value).ToString(); }
-        catch { return null; }
+        try { return new Uri(pageUrl, m.Groups["src"].Value).ToString(); } catch { return null; }
     }
 
     /// <summary>去标签 + 解码 HTML 实体（剧名里的 <c>&amp;#39;</c> 要还原成撇号）</summary>

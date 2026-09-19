@@ -3,8 +3,7 @@ using System.Text;
 namespace M3U8Downloader.Core.Downloads;
 
 /// <summary>单文件下载参数</summary>
-public sealed class SingleFileDownloadOptions
-{
+public sealed class SingleFileDownloadOptions {
     /// <summary>m3u8 地址（媒体清单或主清单都可以）</summary>
     public required string Url { get; init; }
 
@@ -40,8 +39,7 @@ public sealed class SingleFileDownloadOptions
 }
 
 /// <summary>单文件下载进度</summary>
-public sealed class SingleFileProgress
-{
+public sealed class SingleFileProgress {
     /// <summary>当前阶段（解析 / 下载 / 转封装体检）</summary>
     public string Phase { get; set; } = "准备中";
 
@@ -56,8 +54,7 @@ public sealed class SingleFileProgress
     public TimeSpan Elapsed { get; set; }
     public TimeSpan? Eta { get; set; }
 
-    public string SpeedText => SpeedBytesPerSecond switch
-    {
+    public string SpeedText => SpeedBytesPerSecond switch {
         >= 1024 * 1024 => $"{SpeedBytesPerSecond / 1024 / 1024:0.00} MB/s",
         >= 1024 => $"{SpeedBytesPerSecond / 1024:0.0} KB/s",
         _ => $"{SpeedBytesPerSecond:0} B/s",
@@ -67,8 +64,7 @@ public sealed class SingleFileProgress
 }
 
 /// <summary>单文件下载结果</summary>
-public sealed class SingleFileDownloadReport
-{
+public sealed class SingleFileDownloadReport {
     public required string Url { get; init; }
 
     public string? OutputDirectory { get; set; }
@@ -102,8 +98,7 @@ public sealed class SingleFileDownloadReport
 }
 
 /// <summary>只解析不下载时的分析结果（命令行 --dry-run / --list 用）</summary>
-public sealed class SingleFileAnalysis
-{
+public sealed class SingleFileAnalysis {
     public required HlsMediaPlaylist Media { get; init; }
 
     /// <summary>解析过程的日志</summary>
@@ -120,12 +115,10 @@ public sealed class SingleFileAnalysis
 /// 与站点批量模式走的是同一条流水线（暂存目录 + 清单指纹续传 + 转 MP4 + 产物体检）。
 /// 之前这段编排直接写在界面的 ViewModel 里，导致两条路径的实现与校验强度长期不一致。
 /// </summary>
-public sealed class SingleFileDownloadService
-{
+public sealed class SingleFileDownloadService {
     private readonly Dictionary<string, string> _headers;
 
-    public SingleFileDownloadService(Dictionary<string, string>? headers = null)
-    {
+    public SingleFileDownloadService(Dictionary<string, string>? headers = null) {
         _headers = headers ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     }
 
@@ -137,19 +130,16 @@ public sealed class SingleFileDownloadService
         SingleFileDownloadOptions options,
         IProgress<SingleFileProgress>? progress = null,
         Action<string>? onLog = null,
-        CancellationToken ct = default)
-    {
+        CancellationToken ct = default) {
         var report = new SingleFileDownloadReport { Url = options.Url };
-        void Log(string message)
-        {
+        void Log(string message) {
             report.Log.Add(message);
             onLog?.Invoke(message);
         }
 
         var clock = System.Diagnostics.Stopwatch.StartNew();
 
-        try
-        {
+        try {
             var outputDir = string.IsNullOrWhiteSpace(options.OutputDirectory) ? "." : options.OutputDirectory;
             Directory.CreateDirectory(outputDir);
 
@@ -176,8 +166,7 @@ public sealed class SingleFileDownloadService
             // 下载前先把广告/无效分片分析结果展示出来
             var inspection = SegmentInspector.Inspect(media);
             report.SuspectSegments = inspection.Suspects.Count;
-            if (inspection.Suspects.Count > 0)
-            {
+            if (inspection.Suspects.Count > 0) {
                 Log(new string('-', 60));
                 Log($"⚠ 检测到 {inspection.Suspects.Count} 个疑似插播广告/无效分片：");
                 foreach (var reason in inspection.Reasons) Log("  · " + reason);
@@ -189,9 +178,7 @@ public sealed class SingleFileDownloadService
                     ? "→ 已启用自动跳过，这些分片不会导致任务失败。"
                     : "→ 未启用自动跳过，任务可能因这些分片失败。");
                 Log(new string('-', 60));
-            }
-            else
-            {
+            } else {
                 Log("未发现异目录/重复分片，播放列表看起来是干净的。");
             }
 
@@ -199,8 +186,7 @@ public sealed class SingleFileDownloadService
             var stagingDir = EpisodePipeline.CreateStagingDirectory(outputDir, "single");
             Log($"暂存目录：{stagingDir}");
 
-            var pipeline = new EpisodePipeline(hls, headers, new EpisodePipelineOptions
-            {
+            var pipeline = new EpisodePipeline(hls, headers, new EpisodePipelineOptions {
                 SegmentConcurrency = options.SegmentConcurrency,
                 MaxRetries = options.MaxRetries,
                 TimeoutSeconds = options.TimeoutSeconds,
@@ -209,8 +195,7 @@ public sealed class SingleFileDownloadService
                 FullDecodeCheck = options.FullDecodeCheck,
             }, Log);
 
-            var inner = new Progress<DownloadProgress>(p => progress?.Report(new SingleFileProgress
-            {
+            var inner = new Progress<DownloadProgress>(p => progress?.Report(new SingleFileProgress {
                 Phase = "正在下载分片…",
                 Percent = p.Percent,
                 TotalSegments = p.TotalSegments,
@@ -224,17 +209,14 @@ public sealed class SingleFileDownloadService
                 Eta = p.Eta,
             }));
 
-            var outcome = await pipeline.RunAsync(new EpisodeJob
-            {
+            var outcome = await pipeline.RunAsync(new EpisodeJob {
                 Title = fileName,
                 PlaylistUrl = options.Url,
                 OutputDirectory = outputDir,
                 FileName = fileName,
                 StagingDirectory = stagingDir,
-            }, inner, stage => progress?.Report(new SingleFileProgress
-            {
-                Phase = stage switch
-                {
+            }, inner, stage => progress?.Report(new SingleFileProgress {
+                Phase = stage switch {
                     EpisodeStage.Resolving => "正在解析播放列表…",
                     EpisodeStage.Downloading => "正在下载分片…",
                     _ => "正在转封装并体检产物…",
@@ -250,63 +232,47 @@ public sealed class SingleFileDownloadService
                 $"失败 {outcome.FailedSegments} / 共 {outcome.TotalSegments}");
             Log($"耗时：{outcome.Elapsed:hh\\:mm\\:ss}");
 
-            if (outcome.Success)
-            {
+            if (outcome.Success) {
                 Log($"✔ 输出文件：{outcome.OutputPath}");
                 Log($"  大小：{outcome.OutputBytes / 1024.0 / 1024.0:0.0} MB");
 
-                if (options.WriteReport)
-                {
+                if (options.WriteReport) {
                     var path = TryWriteReportMarkdown(report, outputDir);
-                    if (path is not null)
-                    {
+                    if (path is not null) {
                         report.ReportPath = path;
                         Log($"下载报告已写出：{path}");
                     }
                 }
-            }
-            else if (outcome.Status == EpisodeOutcomeStatus.Canceled)
-            {
+            } else if (outcome.Status == EpisodeOutcomeStatus.Canceled) {
                 Log("已取消。已下载的分片已保留，重新开始会接着下。");
-            }
-            else
-            {
+            } else {
                 Log("✘ " + (outcome.Error ?? "下载未完成。"));
             }
 
             return report;
-        }
-        catch (OperationCanceledException)
-        {
+        } catch (OperationCanceledException) {
             report.Outcome = new EpisodeOutcome { Title = report.FileName ?? "video", Status = EpisodeOutcomeStatus.Canceled };
             Log("已取消。已下载的分片已保留，重新开始会接着下。");
             return report;
-        }
-        catch (Exception ex)
-        {
-            report.Outcome = new EpisodeOutcome
-            {
+        } catch (Exception ex) {
+            report.Outcome = new EpisodeOutcome {
                 Title = report.FileName ?? "video",
                 Status = EpisodeOutcomeStatus.Failed,
                 Error = ex.Message,
             };
             Log("✘ 异常：" + ex.Message);
             return report;
-        }
-        finally
-        {
+        } finally {
             clock.Stop();
         }
     }
 
     /// <summary>解析地址、分析分片，但**不下载**（命令行 --dry-run 用）</summary>
-    public async Task<SingleFileAnalysis> AnalyzeAsync(string url, CancellationToken ct = default)
-    {
+    public async Task<SingleFileAnalysis> AnalyzeAsync(string url, CancellationToken ct = default) {
         using var hls = new HlsDownloader(_headers, 30);
         var (media, parseLogs) = await hls.ResolveMediaPlaylistAsync(url, null, ct).ConfigureAwait(false);
 
-        return new SingleFileAnalysis
-        {
+        return new SingleFileAnalysis {
             Media = media,
             Log = parseLogs,
             Inspection = SegmentInspector.Inspect(media),
@@ -314,25 +280,20 @@ public sealed class SingleFileDownloadService
     }
 
     /// <summary>把文件名里的非法字符换掉；空则回落到 "video"</summary>
-    public static string SanitizeFileName(string name)
-    {
+    public static string SanitizeFileName(string name) {
         foreach (var c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
         return string.IsNullOrWhiteSpace(name) ? "video" : name.Trim();
     }
 
     /// <summary>没给文件名时从地址里推断（取最后一段路径）</summary>
-    public static string ResolveFileName(string? fileName, string url)
-    {
+    public static string ResolveFileName(string? fileName, string url) {
         if (!string.IsNullOrWhiteSpace(fileName)) return SanitizeFileName(fileName);
 
-        try
-        {
+        try {
             var path = new Uri(url).AbsolutePath.TrimEnd('/');
             var last = Path.GetFileNameWithoutExtension(path);
             if (!string.IsNullOrWhiteSpace(last)) return SanitizeFileName(last);
-        }
-        catch
-        {
+        } catch {
             // 地址不是合法 URI 时直接用默认名
         }
 
@@ -343,24 +304,19 @@ public sealed class SingleFileDownloadService
     /// 写出单文件下载报告（Markdown），与产物放在同一个目录里。
     /// 结构对齐站点模式的报告：**校验结论单独成表**，不埋在日志里。
     /// </summary>
-    public static string? TryWriteReportMarkdown(SingleFileDownloadReport report, string outputDirectory)
-    {
-        try
-        {
+    public static string? TryWriteReportMarkdown(SingleFileDownloadReport report, string outputDirectory) {
+        try {
             var name = report.FileName ?? "video";
             var path = Path.Combine(outputDirectory, name + "-下载报告.md");
             File.WriteAllText(path, BuildReportMarkdown(report), Encoding.UTF8);
             return path;
-        }
-        catch
-        {
+        } catch {
             return null;
         }
     }
 
     /// <summary>生成报告正文</summary>
-    public static string BuildReportMarkdown(SingleFileDownloadReport report)
-    {
+    public static string BuildReportMarkdown(SingleFileDownloadReport report) {
         var outcome = report.Outcome;
         var sb = new StringBuilder();
 
@@ -373,20 +329,16 @@ public sealed class SingleFileDownloadService
                       (report.SuspectSegments > 0 ? $"（下载前判定 {report.SuspectSegments} 个疑似）" : ""));
         sb.AppendLine();
 
-        if (outcome is null)
-        {
+        if (outcome is null) {
             sb.AppendLine("未产生结果。");
             return sb.ToString();
         }
 
-        if (outcome.Success)
-        {
+        if (outcome.Success) {
             sb.AppendLine($"- 产物：`{outcome.OutputPath}`（{outcome.Format}，" +
                           $"{outcome.OutputBytes / 1024.0 / 1024.0:0.0} MB）");
             sb.AppendLine($"- 时长：{TimeSpan.FromSeconds(outcome.DurationSeconds):hh\\:mm\\:ss}");
-        }
-        else
-        {
+        } else {
             sb.AppendLine($"- 结果：{(outcome.Status == EpisodeOutcomeStatus.Canceled ? "已取消" : "失败")}");
             sb.AppendLine($"- 原因：{outcome.Error ?? "未说明"}");
             if (!string.IsNullOrWhiteSpace(outcome.StagingDirectory))
@@ -415,8 +367,7 @@ public sealed class SingleFileDownloadService
         sb.AppendLine($"| 全量解码检查（ffmpeg -f null -） | {DescribeDecode(outcome.DecodeCheck)} |");
         sb.AppendLine();
 
-        if (outcome.DecodeCheck is { Passed: false, Issues.Count: > 0 })
-        {
+        if (outcome.DecodeCheck is { Passed: false, Issues.Count: > 0 }) {
             sb.AppendLine("> 解码检查发现的告警：");
             foreach (var issue in outcome.DecodeCheck.Issues) sb.AppendLine($"> - {issue}");
             sb.AppendLine(">");
@@ -425,8 +376,7 @@ public sealed class SingleFileDownloadService
         }
 
         // 输出阶段的提示单独说一句，免得用户以为产物坏了
-        if (outcome.DecodeCheck is { IgnoredMuxerWarnings: > 0 } dc)
-        {
+        if (outcome.DecodeCheck is { IgnoredMuxerWarnings: > 0 } dc) {
             sb.AppendLine($"- 解码检查期间另有 **{dc.IgnoredMuxerWarnings} 条输出阶段的时间戳提示**已忽略：" +
                           "`-f null` 的输出会重新计时，带 B 帧的源必然触发，与产物质量无关。");
             sb.AppendLine();
@@ -455,8 +405,7 @@ public sealed class SingleFileDownloadService
             ? $"✔ 通过（{check.Elapsed.TotalSeconds:0.0}s）"
             : $"⚠ {check.Issues.Count} 类告警（退出码 {check.ExitCode}）";
 
-    private static string DescribeEncryption(HlsMediaPlaylist media)
-    {
+    private static string DescribeEncryption(HlsMediaPlaylist media) {
         var keys = media.Segments.Select(s => s.Key.Method).Distinct().ToList();
         if (keys.Count == 1) return keys[0] == HlsEncryptionMethod.None ? "无加密" : keys[0].ToString();
         return string.Join(" + ", keys);

@@ -6,6 +6,7 @@ using M3U8Downloader.Core;
 using M3U8Downloader.Core.Ffmpeg;
 using M3U8Downloader.Core.Settings;
 using M3U8Downloader.Core.Sites;
+using M3U8Downloader.Core.Storage;
 using M3U8Downloader.Core.Tasks;
 using M3U8Downloader.Core.Update;
 using Windows.Graphics;
@@ -14,8 +15,7 @@ using WinRT.Interop;
 
 namespace M3U8Downloader;
 
-public sealed partial class MainWindow : Window
-{
+public sealed partial class MainWindow : Window {
     private readonly MainViewModel _single;
     private readonly SeriesBatchViewModel _batch;
 
@@ -32,19 +32,15 @@ public sealed partial class MainWindow : Window
     /// </summary>
     public bool MinimizeToTrayOnClose { get; set; } = true;
 
-    public MainWindow()
-    {
+    public MainWindow() {
         // 数据目录（程序目录\data\，不可写时退回 %APPDATA%）要在**任何东西读盘之前**定下来：
         // 并把旧位置的设置/任务/历史搬过来 —— 老用户升级后不会因为换了目录就"全丢了"。
         // 必须在 InitializeComponent 之前：界面构造里就会读设置。
-        try
-        {
+        try {
             var moved = AppPaths.MigrateLegacyData();
             if (moved.Count > 0)
                 _migratedData = string.Join("、", moved);
-        }
-        catch
-        {
+        } catch {
             // 迁移失败不影响启动，只是旧数据留在原处
         }
 
@@ -62,8 +58,7 @@ public sealed partial class MainWindow : Window
         // store：任务列表落盘到 %APPDATA%\M3U8Downloader\tasks.json，重开程序能接着下
         // 诊断日志：把「哪一轮领到了哪几集、何时结束」写进 %APPDATA%\M3U8Downloader\logs\，
         //           排查「暂停了还在下」「继续下载停不下来」这类问题时就靠它
-        _taskManager = new DownloadTaskManager(null, a => DispatcherQueue.TryEnqueue(() => a()), new TaskStore())
-        {
+        _taskManager = new DownloadTaskManager(null, a => DispatcherQueue.TryEnqueue(() => a()), new TaskStore()) {
             Diagnostics = TaskDiagnostics.Create("tasks"),
 
             // 下载历史（SQLite）：记住哪部剧的哪一集下过。
@@ -92,8 +87,7 @@ public sealed partial class MainWindow : Window
 
         // 日志追加后自动滚到底部
         _single.Logs.CollectionChanged += (_, __) => ScrollLogToEnd();
-        Closed += (_, __) =>
-        {
+        Closed += (_, __) => {
             // 关窗前把当前进度写进盘：下次打开才能接着下，而不是从头再来
             _taskManager.SaveNow();
             _batch.Dispose();
@@ -114,27 +108,22 @@ public sealed partial class MainWindow : Window
     /// 启动时把上次的任务列表读回来，未完成的自动排队续传。
     /// 已完成的任务只恢复显示，不会重新下载。
     /// </summary>
-    private async void RestorePreviousTasks()
-    {
+    private async void RestorePreviousTasks() {
         // 数据是从旧位置搬过来的 —— 一并说出来，免得用户以为数据丢了
         var migration = _migratedData is { Length: > 0 }
             ? $"；数据目录已改到程序目录下的 data\\（从旧位置搬来了 {_migratedData}）"
             : "";
 
-        try
-        {
+        try {
             var count = await _taskManager.RestoreAsync();
-            if (count == 0)
-            {
+            if (count == 0) {
                 if (migration.Length > 0) _tasks.SetNotice(migration.TrimStart('；'));
                 return;
             }
 
             _tasks.SetNotice($"已恢复上次的 {count} 个任务；没下完的会接着下（已完成的集不会重下）{migration}");
             ShowTasksPanel();
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             _tasks.SetNotice("恢复上次任务失败：" + ex.Message);
         }
     }
@@ -144,8 +133,7 @@ public sealed partial class MainWindow : Window
     private AppSettings _settings = AppSettings.Default;
 
     /// <summary>把设置套用到各面板的默认值上</summary>
-    private async void ApplySettings(AppSettings settings)
-    {
+    private async void ApplySettings(AppSettings settings) {
         _settings = settings;
 
         var outputDir = string.IsNullOrWhiteSpace(settings.DefaultOutputDirectory)
@@ -167,14 +155,11 @@ public sealed partial class MainWindow : Window
 
         // 有 ffmpeg 才能把产物转成 MP4；没有就保留 TS（报告里会说明）。
         // 单文件模式与站点批量模式走同一条流水线，所以两边都要拿到这个路径。
-        try
-        {
+        try {
             var status = await FfmpegLocator.DetectAsync(settings);
             _batch.FfmpegPath = status.FfmpegPath;
             _single.FfmpegPath = status.FfmpegPath;
-        }
-        catch
-        {
+        } catch {
             _batch.FfmpegPath = settings.FfmpegPath;
             _single.FfmpegPath = settings.FfmpegPath;
         }
@@ -189,52 +174,42 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private ContentDialog? _openDialog;
 
-    private async void OnOpenSettings(object sender, RoutedEventArgs e)
-    {
+    private async void OnOpenSettings(object sender, RoutedEventArgs e) {
         if (_openDialog is not null) return;
 
-        var dialog = new SettingsDialog(WindowNative.GetWindowHandle(this), AppSettingsStore.Load())
-        {
+        var dialog = new SettingsDialog(WindowNative.GetWindowHandle(this), AppSettingsStore.Load()) {
             XamlRoot = Content.XamlRoot,
         };
 
         _openDialog = dialog;
-        try
-        {
+        try {
             var result = await dialog.ShowAsync();
             if (result != ContentDialogResult.Primary || !dialog.Saved) return;
 
             var settings = dialog.Result;
-            if (!AppSettingsStore.Save(settings))
-            {
-                _single.StatusText = "设置保存失败（无法写入 " + AppSettingsStore.SettingsFilePath + "）";
+            if (!AppSettingsStore.Save(settings)) {
+                _single.StatusText = "设置保存失败（无法写入 " + AppSettingsStore.DataFilePath + "）";
                 return;
             }
 
             ApplySettings(settings);
-            _single.StatusText = $"设置已保存：{AppSettingsStore.SettingsFilePath}";
-        }
-        catch (Exception ex)
-        {
+            _single.StatusText = $"设置已保存：{AppSettingsStore.DataFilePath}";
+        } catch (Exception ex) {
             // 对话框本身出问题也不该把程序带走
             _single.StatusText = "打开设置失败：" + ex.Message;
-        }
-        finally
-        {
+        } finally {
             _openDialog = null;
         }
     }
 
-    private async void OnOpenAbout(object sender, RoutedEventArgs e)
-    {
+    private async void OnOpenAbout(object sender, RoutedEventArgs e) {
         if (_openDialog is not null) return;
 
         var dialog = new AboutDialog { XamlRoot = Content.XamlRoot };
 
         // 「关于」里点「立即更新」时，交给主窗口执行 ——
         // 进度弹窗、收尾脚本、退出程序都归这边管
-        dialog.AutoUpdateRequested += async (_, latest) =>
-        {
+        dialog.AutoUpdateRequested += async (_, latest) => {
             UpdateInstaller.Trace("主窗口收到自动更新请求");
 
             // 关键：先手动清掉守卫。
@@ -246,38 +221,28 @@ public sealed partial class MainWindow : Window
         };
 
         _openDialog = dialog;
-        try
-        {
+        try {
             await dialog.ShowAsync();
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             _single.StatusText = "打开关于失败：" + ex.Message;
-        }
-        finally
-        {
+        } finally {
             _openDialog = null;
         }
     }
 
     /// <summary>根据命令行参数决定初始模式</summary>
-    private void ApplyStartupMode()
-    {
-        try
-        {
+    private void ApplyStartupMode() {
+        try {
             var args = App.StartupArgs;
             var wantsBatch = args.Any(a => a.Equals("--batch", StringComparison.OrdinalIgnoreCase)
                                         || a.Equals("--mode=batch", StringComparison.OrdinalIgnoreCase));
-            if (wantsBatch)
-            {
+            if (wantsBatch) {
                 OnModeBatch(this, new RoutedEventArgs());
             }
-        }
-        catch { }
+        } catch { }
     }
 
-    private void ScrollLogToEnd()
-    {
+    private void ScrollLogToEnd() {
         if (LogScroll is null) return;
         LogScroll.UpdateLayout();
         LogScroll.ChangeView(null, LogScroll.ScrollableHeight, null, true);
@@ -285,8 +250,7 @@ public sealed partial class MainWindow : Window
 
     // ==================== 模式切换 ====================
 
-    private void OnModeSingle(object sender, RoutedEventArgs e)
-    {
+    private void OnModeSingle(object sender, RoutedEventArgs e) {
         SingleModeButton.IsChecked = true;
         BatchModeButton.IsChecked = false;
         TaskModeButton.IsChecked = false;
@@ -295,8 +259,7 @@ public sealed partial class MainWindow : Window
         TaskPanel.Visibility = Visibility.Collapsed;
     }
 
-    private void OnModeBatch(object sender, RoutedEventArgs e)
-    {
+    private void OnModeBatch(object sender, RoutedEventArgs e) {
         SingleModeButton.IsChecked = false;
         BatchModeButton.IsChecked = true;
         TaskModeButton.IsChecked = false;
@@ -307,8 +270,7 @@ public sealed partial class MainWindow : Window
 
     private void OnModeTasks(object sender, RoutedEventArgs e) => ShowTasksPanel();
 
-    private void ShowTasksPanel()
-    {
+    private void ShowTasksPanel() {
         SingleModeButton.IsChecked = false;
         BatchModeButton.IsChecked = false;
         TaskModeButton.IsChecked = true;
@@ -322,10 +284,8 @@ public sealed partial class MainWindow : Window
     private void OnClearFinishedTasks(object sender, RoutedEventArgs e) => _taskManager.ClearFinished();
 
     /// <summary>打开诊断日志目录（排查"暂停了还在下""继续下载停不下来"这类问题时用）</summary>
-    private async void OnOpenTaskLogs(object sender, RoutedEventArgs e)
-    {
-        try
-        {
+    private async void OnOpenTaskLogs(object sender, RoutedEventArgs e) {
+        try {
             var path = _taskManager.Diagnostics.FilePath;
             var dir = path is { Length: > 0 }
                 ? Path.GetDirectoryName(path)!
@@ -333,9 +293,7 @@ public sealed partial class MainWindow : Window
 
             Directory.CreateDirectory(dir);
             await Windows.System.Launcher.LaunchFolderPathAsync(dir);
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             _tasks.SetNotice("打开日志目录失败：" + ex.Message);
         }
     }
@@ -343,8 +301,7 @@ public sealed partial class MainWindow : Window
     private static SeriesTask? TaskOf(object sender) =>
         (sender as FrameworkElement)?.DataContext as SeriesTask;
 
-    private void OnTaskCancel(object sender, RoutedEventArgs e)
-    {
+    private void OnTaskCancel(object sender, RoutedEventArgs e) {
         if (TaskOf(sender) is { } task) _taskManager.Cancel(task);
     }
 
@@ -352,23 +309,18 @@ public sealed partial class MainWindow : Window
     /// 暂停：停下这一轮下载，已下载的分片留在暂存目录里。
     /// 之后点「继续下载」会重新解析站点、只补没下完的集。
     /// </summary>
-    private void OnTaskPause(object sender, RoutedEventArgs e)
-    {
+    private void OnTaskPause(object sender, RoutedEventArgs e) {
         if (TaskOf(sender) is { } task) _taskManager.Pause(task);
     }
 
     /// <summary>继续下载：重新解析站点，只补下没完成的集</summary>
-    private async void OnTaskResume(object sender, RoutedEventArgs e)
-    {
+    private async void OnTaskResume(object sender, RoutedEventArgs e) {
         if (TaskOf(sender) is not { } task) return;
 
-        try
-        {
+        try {
             if (!await _taskManager.ResumeAsync(task))
                 task.Message ??= "没有需要继续下载的分集。";
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             task.Message = "继续下载失败：" + ex.Message;
         }
     }
@@ -382,27 +334,23 @@ public sealed partial class MainWindow : Window
     /// 2. 弹窗期间在后台刷新一次，把站点新更新的集补进勾选框。
     /// 老任务（没存过快照）退回联网解析。
     /// </summary>
-    private async void OnTaskFetchNew(object sender, RoutedEventArgs e)
-    {
+    private async void OnTaskFetchNew(object sender, RoutedEventArgs e) {
         if (TaskOf(sender) is not { } task) return;
 
-        try
-        {
+        try {
             task.Message = "正在检查站点更新…";
 
             var preview = await _taskManager.PreviewFromSnapshotAsync(task);
             var hasSnapshot = preview is not null;
 
-            if (preview is null)
-            {
+            if (preview is null) {
                 // 首次续下（老任务没存过快照）：只能联网解析一次，顺便把快照补上
                 preview = await _taskManager.PreviewFetchNewAsync(task);
                 if (preview is null) return;
             }
 
             // 站点上的集在磁盘上都有文件了 —— 没什么可补的，直接说清楚
-            if (preview.PendingCount == 0)
-            {
+            if (preview.PendingCount == 0) {
                 task.Message = $"站点上的 {preview.Candidates.Count} 集都已在磁盘上，没有要补的。";
                 await ShowInfoAsync("续下更新", task.Message, offerSettings: false);
                 return;
@@ -410,13 +358,11 @@ public sealed partial class MainWindow : Window
 
             // 快照版才需要后台刷新（联网版拿到的已经是最新的）
             var selected = await ShowFetchNewPickerAsync(task, preview, refresh: hasSnapshot);
-            if (selected is null)
-            {
+            if (selected is null) {
                 task.Message = "已取消续下。";
                 return;
             }
-            if (selected.Count == 0)
-            {
+            if (selected.Count == 0) {
                 task.Message = "没有勾选任何一集。";
                 return;
             }
@@ -425,14 +371,10 @@ public sealed partial class MainWindow : Window
             if (!await _taskManager.ResumeAsync(task, includeNewEpisodes: true,
                     preview: preview, onlyNumbers: selected))
                 task.Message ??= "没有需要续下的集。";
-        }
-        catch (SiteProxyRequiredException ex)
-        {
+        } catch (SiteProxyRequiredException ex) {
             task.Message = "续下失败：这个站点需要代理。";
             await ShowParseFailureAsync(ex.Message, needsProxy: true);
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             task.Message = "续下失败：" + ex.Message;
             await ShowInfoAsync("续下失败", ex.Message, offerSettings: false);
         }
@@ -446,8 +388,7 @@ public sealed partial class MainWindow : Window
     /// true = 弹窗期间后台刷新一次集列表（快照秒开的那条路径）。
     /// </param>
     private async Task<IReadOnlySet<int>?> ShowFetchNewPickerAsync(SeriesTask task, FetchNewPreview preview,
-        bool refresh = false)
-    {
+        bool refresh = false) {
         if (_openDialog is not null) return null;
 
         var dialog = new FetchNewDialog(task.Title, preview) { XamlRoot = Content.XamlRoot };
@@ -460,19 +401,14 @@ public sealed partial class MainWindow : Window
         // 不 await：先让弹窗显示出来，刷新结果到了再补进列表
         if (refresh) _ = RefreshPickerAsync(task, dialog);
 
-        try
-        {
+        try {
             return await dialog.ShowAsync() == ContentDialogResult.Primary
                 ? dialog.SelectedNumbers
                 : null;
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             task.Message = "勾选框打开失败：" + ex.Message;
             return null;
-        }
-        finally
-        {
+        } finally {
             _openDialog = null;
         }
     }
@@ -482,14 +418,11 @@ public sealed partial class MainWindow : Window
     /// 刷新失败**不影响**已经列出的集 —— 照旧能勾能下。
     /// 同一段逻辑既服务自动刷新（弹窗时），也服务手动刷新（用户点按钮）。
     /// </summary>
-    private async Task RefreshPickerAsync(SeriesTask task, FetchNewDialog dialog)
-    {
-        try
-        {
+    private async Task RefreshPickerAsync(SeriesTask task, FetchNewDialog dialog) {
+        try {
             var result = await _taskManager.RefreshEpisodesSnapshotAsync(task);
 
-            void Apply()
-            {
+            void Apply() {
                 if (result.NewCandidates.Count == 0)
                     dialog.SetRefreshStatus($"已是最新（站点共 {result.TotalOnSite} 集）");
                 else
@@ -499,21 +432,16 @@ public sealed partial class MainWindow : Window
 
             // 回调可能在后台线程，界面更新要封送回 UI 线程
             DispatcherQueue.TryEnqueue(Apply);
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             DispatcherQueue.TryEnqueue(() => dialog.SetRefreshStatus(
                 "没能从站点拉到集列表，用的是本地保存的数据（照样可以勾选下载）：" + ex.Message));
-        }
-        finally
-        {
+        } finally {
             // 手动刷新时按钮要恢复可点
             DispatcherQueue.TryEnqueue(() => dialog.SetRefreshing(false));
         }
     }
 
-    private void OnTaskRemove(object sender, RoutedEventArgs e)
-    {
+    private void OnTaskRemove(object sender, RoutedEventArgs e) {
         if (TaskOf(sender) is { } task) _taskManager.Remove(task);
     }
 
@@ -521,35 +449,27 @@ public sealed partial class MainWindow : Window
     /// 重试失败的分集：**在原任务上重试**，不再新建一个任务
     /// （早先的做法会往列表里插入一条重复的任务，同一个任务看起来出现两份）。
     /// </summary>
-    private async void OnTaskRetryFailed(object sender, RoutedEventArgs e)
-    {
+    private async void OnTaskRetryFailed(object sender, RoutedEventArgs e) {
         if (TaskOf(sender) is not { } task) return;
 
-        try
-        {
+        try {
             var retried = await _taskManager.RetryFailedAsync(task);
-            if (retried is null)
-            {
+            if (retried is null) {
                 task.Message = "没有需要重试的分集。";
                 return;
             }
 
             OnModeTasks(sender, e);
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             task.Message = "重试失败：" + ex.Message;
         }
     }
 
-    private async void OnTaskOpenReport(object sender, RoutedEventArgs e)
-    {
+    private async void OnTaskOpenReport(object sender, RoutedEventArgs e) {
         if (TaskOf(sender) is not { ReportPath: { Length: > 0 } path } task) return;
 
-        try
-        {
-            if (File.Exists(path))
-            {
+        try {
+            if (File.Exists(path)) {
                 // 报告是 Markdown，交给系统默认关联程序打开
                 await Windows.System.Launcher.LaunchFileAsync(
                     await Windows.Storage.StorageFile.GetFileFromPathAsync(path));
@@ -557,74 +477,57 @@ public sealed partial class MainWindow : Window
             }
 
             task.Message = $"报告文件不存在：{path}";
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             task.Message = "打开报告失败：" + ex.Message;
         }
     }
 
-    private async void OnTaskOpenFolder(object sender, RoutedEventArgs e)
-    {
+    private async void OnTaskOpenFolder(object sender, RoutedEventArgs e) {
         if (TaskOf(sender) is not { } task) return;
 
-        try
-        {
+        try {
             // 打开的是**实际产物目录**（…\交锋 - 努努影院），而不是用户填的根目录 ——
             // 点「打开目录」就是想看下好的视频在哪
             var dir = task.DisplayDirectory;
-            if (!Directory.Exists(dir))
-            {
+            if (!Directory.Exists(dir)) {
                 // 目录还没建出来（任务还在排队），退而打开上级
                 dir = Path.GetDirectoryName(dir) ?? dir;
             }
-            if (Directory.Exists(dir))
-            {
+            if (Directory.Exists(dir)) {
                 await Windows.System.Launcher.LaunchFolderPathAsync(dir);
-            }
-            else
-            {
+            } else {
                 task.Message = $"目录不存在：{task.DisplayDirectory}";
             }
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             task.Message = "打开目录失败：" + ex.Message;
         }
     }
 
     // ==================== 单文件下载 ====================
 
-    private async void OnSingleStart(object sender, RoutedEventArgs e)
-    {
+    private async void OnSingleStart(object sender, RoutedEventArgs e) {
         SingleStartButton.IsEnabled = false;
-        try
-        {
+        try {
             await _single.StartAsync();
-        }
-        finally
-        {
+        } finally {
             SingleStartButton.IsEnabled = _single.CanStart;
         }
     }
 
     private void OnSingleCancel(object sender, RoutedEventArgs e) => _single.Cancel();
 
-    private async void OnPickSingleFolder(object sender, RoutedEventArgs e)
-    {
+    private async void OnPickSingleFolder(object sender, RoutedEventArgs e) {
         var path = await PickFolderAsync();
         if (path != null) _single.OutputDirectory = path;
     }
 
     // ==================== 站点批量下载 ====================
 
-    private async void OnParseSeries(object sender, RoutedEventArgs e)
-    {
+    private async void OnParseSeries(object sender, RoutedEventArgs e) {
         // 不再弹窗打断：多个播放源时，上方工具栏的「视频源」下拉里直接选
         await _batch.ParseAsync();
 
-        if (_batch.HasSeries)
-        {
+        if (_batch.HasSeries) {
             // 识别成功后让结果区淡入：列表是整批出现的，没有过渡会显得很突兀
             PlayResultsEntrance();
             return;
@@ -647,10 +550,8 @@ public sealed partial class MainWindow : Window
     /// 查不到、网络不通、GitHub 被墙 —— 全都什么都不说：用户没主动问，
     /// 弹一个"检查更新失败"纯属打扰。要主动看结果请用「关于 → 检查更新」。
     /// </summary>
-    private async Task CheckForUpdatesOnStartupAsync()
-    {
-        try
-        {
+    private async Task CheckForUpdatesOnStartupAsync() {
+        try {
             // 等界面先出来，别和启动流程抢资源
             await Task.Delay(3000);
 
@@ -659,9 +560,7 @@ public sealed partial class MainWindow : Window
             if (!result.HasUpdate || result.Latest is null) return;
 
             await ShowUpdateAvailableAsync(result.Latest, result.CurrentVersion);
-        }
-        catch
-        {
+        } catch {
             // 静默检查，失败就算了
         }
     }
@@ -673,16 +572,13 @@ public sealed partial class MainWindow : Window
     /// 得靠一个脱离主进程的脚本等我们退出后再动，写错一次就是把用户的程序弄坏。
     /// 收益只是省下"解压覆盖"这一步，不值得 —— 打开页面让用户自己下更稳。
     /// </summary>
-    private async Task ShowUpdateAvailableAsync(ReleaseInfo latest, string currentVersion)
-    {
+    private async Task ShowUpdateAvailableAsync(ReleaseInfo latest, string currentVersion) {
         if (_openDialog is not null) return;   // 同时只能有一个 ContentDialog
 
-        var dialog = new ContentDialog
-        {
+        var dialog = new ContentDialog {
             XamlRoot = Content.XamlRoot,
             Title = $"发现新版本 {latest.Tag}",
-            Content = new TextBlock
-            {
+            Content = new TextBlock {
                 TextWrapping = TextWrapping.Wrap,
                 Text = $"当前版本 {currentVersion}，最新版本 {latest.Tag}" +
                        (latest.DownloadSizeText.Length > 0 ? $"（约 {latest.DownloadSizeText}）" : "") +
@@ -697,16 +593,11 @@ public sealed partial class MainWindow : Window
 
         _openDialog = dialog;
         var result = ContentDialogResult.None;
-        try
-        {
+        try {
             result = await dialog.ShowAsync();
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             _single.StatusText = "提示框打开失败：" + ex.Message;
-        }
-        finally
-        {
+        } finally {
             _openDialog = null;
         }
 
@@ -723,10 +614,8 @@ public sealed partial class MainWindow : Window
     /// 而 Windows 不允许覆盖正在使用的 exe/dll。所以真正的替换交给一个短命进程，
     /// 等我们退出之后再动手（见 <see cref="UpdateInstaller"/> 的说明）。
     /// </summary>
-    private async Task RunAutoUpdateAsync(ReleaseInfo latest)
-    {
-        if (_openDialog is not null)
-        {
+    private async Task RunAutoUpdateAsync(ReleaseInfo latest) {
+        if (_openDialog is not null) {
             UpdateInstaller.Trace("RunAutoUpdateAsync 被 _openDialog 守卫挡掉，放弃");
             return;
         }
@@ -736,16 +625,14 @@ public sealed partial class MainWindow : Window
         var progressBar = new ProgressBar { Minimum = 0, Maximum = 100, Value = 0 };
         var statusText = new TextBlock { FontSize = 12, TextWrapping = TextWrapping.Wrap, Text = "正在连接…" };
         var panel = new StackPanel { Spacing = 10, Width = 380 };
-        panel.Children.Add(new TextBlock
-        {
+        panel.Children.Add(new TextBlock {
             TextWrapping = TextWrapping.Wrap,
             Text = $"正在下载 {latest.Tag}。下载期间可以照常用，中途取消不影响当前版本。",
         });
         panel.Children.Add(progressBar);
         panel.Children.Add(statusText);
 
-        var dialog = new ContentDialog
-        {
+        var dialog = new ContentDialog {
             XamlRoot = Content.XamlRoot,
             Title = "正在更新",
             Content = panel,
@@ -761,10 +648,8 @@ public sealed partial class MainWindow : Window
 
         // 刻意不 await：要让进度条在对话框显示期间持续刷新
         var shown = dialog.ShowAsync().AsTask();
-        try
-        {
-            var progress = new Progress<UpdateDownloadProgress>(p =>
-            {
+        try {
+            var progress = new Progress<UpdateDownloadProgress>(p => {
                 progressBar.Value = p.Percent;
                 statusText.Text = p.Text;
             });
@@ -780,25 +665,18 @@ public sealed partial class MainWindow : Window
             UpdateInstaller.LaunchUpdater(dir, targetDir, exeName);
 
             ready = true;
-        }
-        catch (OperationCanceledException)
-        {
+        } catch (OperationCanceledException) {
             statusText.Text = "已取消。";
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             error = ex.Message;
-        }
-        finally
-        {
+        } finally {
             try { dialog.Hide(); } catch { /* 已经关了 */ }
             _openDialog = null;
         }
 
         try { await shown; } catch { /* 关窗时的取消异常，忽略 */ }
 
-        if (error is not null)
-        {
+        if (error is not null) {
             await ShowInfoAsync("更新失败", $"{error}\n\n也可以到发布页手动下载：{latest.HtmlUrl}", false);
             return;
         }
@@ -812,10 +690,8 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>用系统默认浏览器打开链接</summary>
-    private static void OpenInBrowser(string url)
-    {
-        try { _ = Windows.System.Launcher.LaunchUriAsync(new Uri(url)); }
-        catch { /* 打不开就算了，地址已经在弹窗里给过 */ }
+    private static void OpenInBrowser(string url) {
+        try { _ = Windows.System.Launcher.LaunchUriAsync(new Uri(url)); } catch { /* 打不开就算了，地址已经在弹窗里给过 */ }
     }
 
     /// <summary>
@@ -831,12 +707,10 @@ public sealed partial class MainWindow : Window
     /// 判据用 IsRoundFinished 而不是 IsFinished：后者把**暂停与取消**也算"结束"，
     /// 用它的话用户一点暂停就弹这个窗，像是程序在催他什么。
     /// </summary>
-    private void CheckSkippedAdsNotice()
-    {
+    private void CheckSkippedAdsNotice() {
         if (_openDialog is not null) return;   // 正开着一个弹窗就别插队
 
-        foreach (var task in _taskManager.Tasks)
-        {
+        foreach (var task in _taskManager.Tasks) {
             if (!task.HasSkippedAds || !task.IsRoundFinished) continue;
             if (!_adNoticeShown.Add(task.Id)) continue;   // 这个任务已经提示过
 
@@ -867,12 +741,10 @@ public sealed partial class MainWindow : Window
     /// 全程受 <see cref="_openDialog"/> 保护：WinUI 同时只允许一个 ContentDialog，
     /// 第二次 ShowAsync 会直接抛异常，而调用方多半是 async void，没人接就崩。
     /// </summary>
-    private async Task ShowInfoAsync(string title, string message, bool offerSettings)
-    {
+    private async Task ShowInfoAsync(string title, string message, bool offerSettings) {
         if (_openDialog is not null) return;
 
-        var dialog = new ContentDialog
-        {
+        var dialog = new ContentDialog {
             XamlRoot = Content.XamlRoot,
             Title = title,
             Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
@@ -883,18 +755,13 @@ public sealed partial class MainWindow : Window
 
         _openDialog = dialog;
         var openSettings = false;
-        try
-        {
+        try {
             var result = await dialog.ShowAsync();
             openSettings = offerSettings && result == ContentDialogResult.Primary;
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             // 弹窗自身出问题也不该把程序带走；状态栏里已经写了原因
             _single.StatusText = "提示框打开失败：" + ex.Message;
-        }
-        finally
-        {
+        } finally {
             // 必须先释放再开设置，否则 OnOpenSettings 会被自己的守卫挡掉
             _openDialog = null;
         }
@@ -909,15 +776,13 @@ public sealed partial class MainWindow : Window
     /// 事后装好 FFmpeg 再想转，原来的流程里没有任何补救手段（只能整部重下）。
     /// 这个按钮就是那条补救路径 —— 不重下，只是就地换个封装。
     /// </summary>
-    private async void OnTaskRemuxMp4(object sender, RoutedEventArgs e)
-    {
+    private async void OnTaskRemuxMp4(object sender, RoutedEventArgs e) {
         if (sender is not FrameworkElement { DataContext: SeriesTask task }) return;
         if (sender is not Button button) return;
 
         // 没装 FFmpeg 就先把他引到设置里，而不是点了一下什么都没发生
         var ffmpegPath = _batch.FfmpegPath ?? _single.FfmpegPath;
-        if (string.IsNullOrWhiteSpace(ffmpegPath) || !File.Exists(ffmpegPath))
-        {
+        if (string.IsNullOrWhiteSpace(ffmpegPath) || !File.Exists(ffmpegPath)) {
             await ShowInfoAsync("需要 FFmpeg",
                 "转 MP4 需要 FFmpeg，但当前没有检测到。\n\n" +
                 "请到「设置 → FFmpeg」点一次「自动下载 FFmpeg」，" +
@@ -927,8 +792,7 @@ public sealed partial class MainWindow : Window
         }
 
         button.IsEnabled = false;
-        try
-        {
+        try {
             // Progress 在主线程创建，回调会自动封送回 UI 线程
             var progress = new Progress<string>(m => task.Message = m);
             using var cts = new CancellationTokenSource();
@@ -944,18 +808,12 @@ public sealed partial class MainWindow : Window
                 outcome.Failed > 0 ? "转 MP4 完成（有失败）" : "转 MP4 完成",
                 outcome.Describe() + detail,
                 offerSettings: false);
-        }
-        catch (OperationCanceledException)
-        {
+        } catch (OperationCanceledException) {
             task.Message = "转 MP4 已取消。";
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             task.Message = "转 MP4 失败：" + ex.Message;
             await ShowInfoAsync("转 MP4 失败", ex.Message, offerSettings: false);
-        }
-        finally
-        {
+        } finally {
             button.IsEnabled = true;
         }
     }
@@ -966,12 +824,9 @@ public sealed partial class MainWindow : Window
     /// 用代码构造 Storyboard 而不是 XAML 资源：省掉 NameScope 解析那一层不确定性
     /// （动画找不到目标时是静默不播放，很难查）。Opacity 是合成动画，不占 UI 线程。
     /// </summary>
-    private void PlayResultsEntrance()
-    {
-        try
-        {
-            var animation = new DoubleAnimation
-            {
+    private void PlayResultsEntrance() {
+        try {
+            var animation = new DoubleAnimation {
                 From = 0,
                 To = 1,
                 Duration = new Duration(TimeSpan.FromMilliseconds(350)),
@@ -984,9 +839,7 @@ public sealed partial class MainWindow : Window
             var storyboard = new Storyboard();
             storyboard.Children.Add(animation);
             storyboard.Begin();
-        }
-        catch
-        {
+        } catch {
             // 动画播不出来不影响功能
         }
     }
@@ -995,8 +848,7 @@ public sealed partial class MainWindow : Window
     /// 「加入下载队列」：把当前这部剧交给任务队列，然后**清空当前页面**并跳到「下载任务」。
     /// 队列在后台串行执行，所以这里立刻返回，用户可以马上贴下一个地址。
     /// </summary>
-    private void OnBatchStart(object sender, RoutedEventArgs e)
-    {
+    private void OnBatchStart(object sender, RoutedEventArgs e) {
         var task = _batch.EnqueueTo(_taskManager);
         if (task is null) return;
 
@@ -1013,8 +865,7 @@ public sealed partial class MainWindow : Window
     private void OnApplySelection(object sender, RoutedEventArgs e)
         => _batch.ApplySelectionSpec(SelectionSpecBox.Text);
 
-    private async void OnPickBatchFolder(object sender, RoutedEventArgs e)
-    {
+    private async void OnPickBatchFolder(object sender, RoutedEventArgs e) {
         var path = await PickFolderAsync();
         if (path != null) _batch.OutputDirectory = path;
     }
@@ -1025,33 +876,25 @@ public sealed partial class MainWindow : Window
     /// 隐藏到托盘：窗口、进程、下载任务全都留着，只是窗口看不见了。
     /// 「点关闭只隐藏」的拦截在 App 里（AppWindow.Closing），这里只负责藏起来。
     /// </summary>
-    public void HideToTray()
-    {
-        try
-        {
+    public void HideToTray() {
+        try {
             // 先把进度写盘：窗口看不见了，用户随时可能直接关机
             _taskManager.SaveNow();
 
             // H.NotifyIcon 的 WindowExtensions：显式关掉效率模式 ——
             // 后台还在跑 AES 解密、TS 合并、ffmpeg 校验，降频会拖慢这些步骤
             this.Hide(enableEfficiencyMode: false);
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             LogFromTray("隐藏到托盘失败：" + ex.Message);
         }
     }
 
     /// <summary>从托盘把窗口叫回来并置前</summary>
-    public void ShowFromTray()
-    {
-        try
-        {
+    public void ShowFromTray() {
+        try {
             this.Show(disableEfficiencyMode: false);
             Activate();
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             LogFromTray("恢复窗口失败：" + ex.Message);
         }
     }
@@ -1061,10 +904,8 @@ public sealed partial class MainWindow : Window
 
     // ==================== 公共 ====================
 
-    private async Task<string?> PickFolderAsync()
-    {
-        try
-        {
+    private async Task<string?> PickFolderAsync() {
+        try {
             var picker = new FolderPicker();
             picker.SuggestedStartLocation = PickerLocationId.Downloads;
             picker.FileTypeFilter.Add("*");
@@ -1074,9 +915,7 @@ public sealed partial class MainWindow : Window
 
             var folder = await picker.PickSingleFolderAsync();
             return folder?.Path;
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             _single.StatusText = "选择目录失败：" + ex.Message;
             return null;
         }

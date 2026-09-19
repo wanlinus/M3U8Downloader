@@ -21,7 +21,12 @@ M3U8Downloader/
 │   │   ├── HlsDownloader.cs          # 下载引擎 ★核心
 │   │   ├── KnownFolders.cs           # 系统「下载」目录（支持被用户移盘）
 │   │   ├── AppInfo.cs                # 版本/版权/许可证/第三方声明
-│   │   ├── Settings/                 # 设置模型与落盘（%APPDATA%）
+│   │   ├── Settings/                 # 设置模型（落盘在统一库里）
+│   │   ├── Storage/                  # ★统一库：设置 / 任务 / 历史的 SQLite 实现
+│   │   │   ├── SqliteDatabase.cs     # 连接、建表、旧文件迁移
+│   │   │   ├── SqliteSettingsStore.cs# settings 表（一行一列一项）
+│   │   │   ├── SqliteTaskStore.cs    # tasks / task_episodes / 快照 四张表
+│   │   │   └── SqliteDownloadHistory.cs # downloads 表（upsert + 销账）
 │   │   ├── Net/ProxyHelper.cs        # 代理构造、地址规范化、连通性测试
 │   │   ├── Ffmpeg/                   # FFmpeg 探测与自动下载安装
 │   │   ├── Staging/                  # 暂存目录 + 清单指纹（断点续传的判据）
@@ -38,8 +43,8 @@ M3U8Downloader/
 │   │   └── Tasks/
 │   │       ├── DownloadTaskManager.cs  # 下载任务队列（串行执行 + UI 线程封送 + 续传）
 │   │       ├── TaskDiagnostics.cs      # 诊断日志（排查"停不下来"这类问题）
-│   │       ├── TaskStore.cs            # 任务列表落盘（重开程序恢复进度）
-│   │       ├── DownloadHistory.cs      # 下载历史协议（实现由界面层提供）
+│   │       ├── TaskStore.cs            # 任务列表存取入口（实现在 Storage/SqliteTaskStore）
+│   │       ├── DownloadHistory.cs      # 下载历史协议与记录模型（实现见 Storage/）
 │   │       └── EpisodeFileScanner.cs   # 扫目录判断"这集下过没有"（磁盘优先）
 │   ├── M3U8Downloader.App/           # WinUI 图形界面
 │   │   ├── MainWindow.xaml(.cs)      # 三模式界面 + 设置/关于入口
@@ -48,11 +53,8 @@ M3U8Downloader/
 │   │   ├── TaskListViewModel.cs      # 下载任务面板（汇总 / 实时速度）
 │   │   ├── EpisodeItemViewModel.cs   # 剧集项（可绑定勾选状态）
 │   │   ├── FetchNewDialog.xaml(.cs)  # 续下更新的勾选框（已下载的置灰）
-│   │   ├── SqliteDownloadHistory.cs  # 下载历史的 SQLite 实现（界面层唯一引包处）
 │   │   ├── SettingsDialog.xaml(.cs)  # 设置（FFmpeg / 代理 / 下载默认值）
 │   │   └── AboutDialog.xaml(.cs)     # 关于（版本 / 版权 / 许可证 / 第三方声明）
-│   └── M3U8Downloader.Cli/           # 命令行版
-│       └── Program.cs
 ├── tests/
 │   └── M3U8Downloader.SelfTest/      # 无界面自检（本地 HLS 服务器跑全链路）
 ├── scripts/
@@ -235,35 +237,55 @@ MP4 读 `moov → mvhd` 的 duration/timescale。两边都读不出来时会明�
 
 ### 存储分工
 
-| 数据 | 位置 | 实现 |
+| 数据 | 位置 | 说明 |
 | --- | --- | --- |
-| 设置 | `<数据目录>\settings.json` | Core（JSON，原子替换写入） |
-| 任务列表 | `<数据目录>\tasks.json` | Core（JSON，原子替换写入） |
-| 下载历史 | `<数据目录>\downloads.db` | **界面层**（SQLite） |
-| 诊断日志 | `<数据目录>\logs\` | Core（每条一次启动一个文件） |
+| 设置 / 任务列表 / 下载历史 | `<数据目录>\m3u8.db` | SQLite，实现在 `Core/Storage/` |
+| 诊断日志 | `<数据目录>\logs\` | Core（每次启动一个文件） |
+
+三样数据**在同一个库里**，对应这些表：`settings`、`tasks` + `task_episodes`、
+`task_snapshots` + `snapshot_episodes`、`downloads`，另有 `meta` 存 schema 版本与迁移标记。
+
+- `SqliteDatabase` —— 连接（`Pooling=false`、每次开连接设 `busy_timeout=3000`）、建表、旧文件迁移；
+- `SqliteSettingsStore` —— **一行一列一项**（不是 key-value），读的时候缺列/为 NULL 一律退回
+  代码里的默认值，所以加设置项不需要写迁移；
+- `SqliteTaskStore` —— 任务 / 集 / 快照拆成四张表，`Save` 是"整表重写放一个事务"
+  （中途失败整体回滚，比写 `.tmp` 再改名更稳），列表顺序靠 `sort_order`；
+- `SqliteDownloadHistory` —— 按 `(page_url, episode_number)` upsert（重下同一集只覆盖旧行），
+  用户把任务**移除**时按 `page_url` 整部销掉（任务都没了，账留着只会在下次续下时凭空冒出
+  "曾下载过"）——「清理已完成」不销账，那只是收拾列表，视频还在盘上，
+  账要留着解释"文件已不在"。
+
+早先这三样是**三个文件**（`settings.json` / `tasks.json` / `downloads.db`），只有历史那份用了
+SQLite。合并的理由、代价与迁移方式写在 `AGENTS.md` 的「存储」一节；一句话版本是：
+**存储实现只此一份，自检能直接测到真货**（以前实现挂在界面层，自检只碰得到替身，
+SQL 得另起 `_diag` 项目兜），代价是三个入口各多带一个 `e_sqlite3.dll`（1.9 MB）。
+
+两个实现上的注意点：**连接串要关掉连接池**（默认池化会让库文件被程序长期占用，
+用户想删、想备份、想拿工具打开都会被"文件正在被使用"挡住）；**所有读写都要自己吞异常**，
+存储坏了绝不该影响下载（设置退回默认值、任务读成空表、历史少一条账，程序照常跑）。
+销账是磁盘 I/O 且由按钮触发，得扔到线程池上做，不能压在 UI 线程。
 
 `<数据目录>` 由 `Core/AppPaths.cs` 统一决定，**优先程序目录下的 `data\`**：本程序是
 "解压即用"的便携形态，整个文件夹拷到别的机器或 U 盘时，任务、设置、历史一起跟过去。
 程序目录不可写时（`Program Files`、只读介质、被策略锁住）自动退回
 `%APPDATA%\M3U8Downloader\`，旧位置的数据在首次启动时由 `MigrateLegacyData()` 复制过来
-（是复制不是移动，搬错了旧的那份还在）。
+（是复制不是移动，搬错了旧的那份还在）—— 但**库已经存在时那三个旧文件会整个跳过**：
+库是权威，而旧文件在迁移后已经不在 `data\` 里了（改名成了 `.migrated`），
+不判断就会每次启动都抄一份没人读的废文件回来。
 
 两个要点：**探测结果只算一次并缓存**（`Lazy`）—— 设置、任务、历史必须落在同一个目录，
 各自探测一次一旦出现分歧，就会变成"设置读到了 A、历史写到 B"；**能不能用要真写一次才知道**
 —— 只读介质上目录可能早就存在，只判断 `Directory.Exists` 是不够的。
 
+**旧文件的去向**：`SqliteDatabase` 建表之后就检查迁移 —— 库里没有对应数据才搬，
+搬完把旧文件改名成 `*.migrated` **留档不删**；搬失败（旧库损坏、JSON 坏了）原样留着，
+下次启动再试。迁移来源是可注入的（`SqliteDatabase.LegacySources`），
+**自检必须传临时目录**，否则验证迁移会把用户真实的数据搬走。
+
 `ffmpeg\` 不在这里：它有 300MB 量级、且属于可再下载的第三方二进制，沿用
 `FfmpegLocator` 自己的"程序目录优先、`%LOCALAPPDATA%` 回退"逻辑（用 Local 而非 Roaming，
 免得被域环境同步）。
 
-下载历史是唯一用 SQLite 的：按 `(page_url, episode_number)` 联合主键 upsert（重下同一集
-只覆盖旧行，不会攒重复），按剧查询。实现放在 `M3U8Downloader.App` 里，Core 只定义
-`IDownloadHistoryStore` 协议 —— **Core 零第三方依赖是硬约定**，一旦引包，
-命令行、自检、界面都会被带上 `e_sqlite3` 原生库。
-
-两个实现上的注意点：连接串要关掉连接池（默认池化会让 `downloads.db` 被程序长期占用，
-用户想删、想备份、想拿工具打开都会被"文件正在被使用"挡住）；所有读写都要自己吞异常，
-历史记不上绝不该影响下载。
 
 ---
 

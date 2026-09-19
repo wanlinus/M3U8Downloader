@@ -11,11 +11,9 @@ namespace M3U8Downloader.Core;
 /// （指向另一个日期目录、且该目录的 key.key 已 404），导致下载器恒定失败 12 片。
 /// 本检查器在下载前就把这些分片识别出来并剔除，避免任务失败。
 /// </summary>
-public sealed class SegmentInspector
-{
+public sealed class SegmentInspector {
     /// <summary>判定结果</summary>
-    public sealed class Report
-    {
+    public sealed class Report {
         public int TotalSegments { get; set; }
         /// <summary>主流目录（正常分片所在目录）</summary>
         public string? MainDirectory { get; set; }
@@ -32,8 +30,7 @@ public sealed class SegmentInspector
     /// </summary>
     /// <param name="playlist">媒体清单</param>
     /// <param name="foreignDirThreshold">异目录占比低于该值时才认定为广告（0.5 = 半数以下）</param>
-    public static Report Inspect(HlsMediaPlaylist playlist, double foreignDirThreshold = 0.5)
-    {
+    public static Report Inspect(HlsMediaPlaylist playlist, double foreignDirThreshold = 0.5) {
         var report = new Report { TotalSegments = playlist.Segments.Count };
         if (playlist.Segments.Count == 0) return report;
 
@@ -48,13 +45,10 @@ public sealed class SegmentInspector
         var mainCount = byDir[0].Count;
         report.MainDirectory = mainDir;
 
-        foreach (var g in byDir.Skip(1))
-        {
+        foreach (var g in byDir.Skip(1)) {
             // 少数分片落在其他目录 —— 插播广告的典型特征
-            if ((double)g.Count / playlist.Segments.Count <= foreignDirThreshold)
-            {
-                foreach (var seg in g.Segments)
-                {
+            if ((double)g.Count / playlist.Segments.Count <= foreignDirThreshold) {
+                foreach (var seg in g.Segments) {
                     seg.Validity = SegmentValidity.SuspectForeign;
                     seg.ValidityNote = $"来自其他目录（{ShortDir(g.Directory)}），非主流目录 {ShortDir(mainDir)}";
                 }
@@ -68,10 +62,8 @@ public sealed class SegmentInspector
             .GroupBy(s => s.Uri)
             .ToDictionary(g => g.Key, g => g.Count());
 
-        foreach (var seg in playlist.Segments)
-        {
-            if (uriCount[seg.Uri] >= 3 && seg.Validity == SegmentValidity.SuspectForeign)
-            {
+        foreach (var seg in playlist.Segments) {
+            if (uriCount[seg.Uri] >= 3 && seg.Validity == SegmentValidity.SuspectForeign) {
                 // 同一个异目录分片在列表里出现 3 次以上（分别在开头/中部/结尾），
                 // 这是广告循环插入的铁证，强化标记
                 seg.ValidityNote += $"；且同一分片重复出现 {uriCount[seg.Uri]} 次（广告循环插入特征）";
@@ -83,10 +75,8 @@ public sealed class SegmentInspector
             .Where(s => uriCount[s.Uri] >= 3 && s.Validity == SegmentValidity.Unknown)
             .ToList();
         if (repeated.Count > 0 &&
-            repeated.Count <= playlist.Segments.Count * foreignDirThreshold)
-        {
-            foreach (var seg in repeated)
-            {
+            repeated.Count <= playlist.Segments.Count * foreignDirThreshold) {
+            foreach (var seg in repeated) {
                 seg.Validity = SegmentValidity.SuspectForeign;
                 seg.ValidityNote = $"同一分片重复出现 {uriCount[seg.Uri]} 次（疑似循环插播广告）";
             }
@@ -97,15 +87,13 @@ public sealed class SegmentInspector
         var encryptedCount = playlist.Segments.Count(s => s.Key.IsEncrypted);
         var isMostlyEncrypted = encryptedCount > playlist.Segments.Count * 0.5;
 
-        foreach (var seg in playlist.Segments)
-        {
+        foreach (var seg in playlist.Segments) {
             if (seg.Validity == SegmentValidity.Unknown) continue;
             if (isMostlyEncrypted && !seg.Key.IsEncrypted)
                 seg.ValidityNote += "；该片为明文段，与整条加密流不一致";
         }
 
-        if (isMostlyEncrypted)
-        {
+        if (isMostlyEncrypted) {
             var plainSegs = playlist.Segments.Where(s => !s.Key.IsEncrypted).ToList();
             if (plainSegs.Count > 0)
                 report.Reasons.Add($"整条流为 {encryptedCount} 片加密，但有 {plainSegs.Count} 片被声明为明文（METHOD=NONE）。");
@@ -152,15 +140,13 @@ public sealed class SegmentInspector
     ///   · 落单分片必须**连续成段**，且每段都被 #EXT-X-DISCONTINUITY 夹住
     ///     —— 编号跳变与时间戳断层两个信号同时命中才动手。
     /// </summary>
-    private static void DetectNumberingGap(HlsMediaPlaylist playlist, Report report)
-    {
+    private static void DetectNumberingGap(HlsMediaPlaylist playlist, Report report) {
         var segments = playlist.Segments;
         if (segments.Count < MinSegmentsForNumbering) return;
 
         // 1) 取尾随数字
         var numbered = new List<(HlsSegment Seg, long Number)>(segments.Count);
-        foreach (var seg in segments)
-        {
+        foreach (var seg in segments) {
             if (TryGetTrailingNumber(seg.Uri, out var n)) numbered.Add((seg, n));
         }
         if (numbered.Count < segments.Count * 0.9) return;
@@ -171,8 +157,7 @@ public sealed class SegmentInspector
         var bestStart = 0;
         var bestLen = 1;
         var runStart = 0;
-        for (var i = 1; i <= sorted.Count; i++)
-        {
+        for (var i = 1; i <= sorted.Count; i++) {
             var continues = i < sorted.Count && sorted[i].Number == sorted[i - 1].Number + 1;
             if (continues) continue;
 
@@ -191,15 +176,13 @@ public sealed class SegmentInspector
 
         // 4) 落单的必须连续成段，且每段都被 DISCONTINUITY 夹住
         var runs = new List<(int Start, int End)>();
-        for (var i = 0; i < segments.Count; i++)
-        {
+        for (var i = 0; i < segments.Count; i++) {
             if (!outsiders.Contains(segments[i])) continue;
             if (runs.Count > 0 && runs[^1].End == i - 1) runs[^1] = (runs[^1].Start, i);
             else runs.Add((i, i));
         }
 
-        foreach (var (start, end) in runs)
-        {
+        foreach (var (start, end) in runs) {
             // 段首那片自己要带断层标记，段后紧邻的那片也要带 —— 一前一后把它夹住
             var leading = segments[start].Discontinuity;
             var trailing = end + 1 < segments.Count && segments[end + 1].Discontinuity;
@@ -207,8 +190,7 @@ public sealed class SegmentInspector
         }
 
         // 5) 通过：标记为插播
-        foreach (var seg in outsiders)
-        {
+        foreach (var seg in outsiders) {
             seg.Validity = SegmentValidity.SuspectInserted;
             seg.ValidityNote = "分片编号跳出了正片的连续编号带，且两侧都有编码断层标记，疑似同目录插播广告";
         }
@@ -223,17 +205,14 @@ public sealed class SegmentInspector
     /// 少于 3 位数字不予采信 —— "seg1.ts" 这种顺序号区分度太低，
     /// 拿它去找"编号带"只会把正常分片也卷进来。
     /// </summary>
-    private static bool TryGetTrailingNumber(string uri, out long number)
-    {
+    private static bool TryGetTrailingNumber(string uri, out long number) {
         number = 0;
 
         string name;
-        try
-        {
+        try {
             var path = new Uri(uri).AbsolutePath;
             name = path[(path.LastIndexOf('/') + 1)..];
-        }
-        catch { return false; }
+        } catch { return false; }
 
         var dot = name.LastIndexOf('.');
         if (dot > 0) name = name[..dot];
@@ -257,8 +236,7 @@ public sealed class SegmentInspector
         HlsMediaPlaylist playlist,
         Func<string, CancellationToken, Task<HttpResponseMessage>> getAsync,
         Report report,
-        CancellationToken ct = default)
-    {
+        CancellationToken ct = default) {
         // 收集所有被怀疑分片引用的密钥地址
         var suspectKeyUris = report.Suspects
             .Where(s => s.Key.IsEncrypted && s.Key.Uri != null)
@@ -268,23 +246,17 @@ public sealed class SegmentInspector
 
         if (suspectKeyUris.Count == 0) return;
 
-        foreach (var keyUri in suspectKeyUris)
-        {
+        foreach (var keyUri in suspectKeyUris) {
             ct.ThrowIfCancellationRequested();
             bool ok;
-            try
-            {
+            try {
                 using var resp = await getAsync(keyUri, ct);
                 ok = resp.IsSuccessStatusCode;
-            }
-            catch (OperationCanceledException) { throw; }
-            catch { ok = false; }
+            } catch (OperationCanceledException) { throw; } catch { ok = false; }
 
-            if (!ok)
-            {
+            if (!ok) {
                 var affected = report.Suspects.Where(s => s.Key.Uri == keyUri).ToList();
-                foreach (var seg in affected)
-                {
+                foreach (var seg in affected) {
                     seg.Validity = SegmentValidity.Undecryptable;
                     seg.ValidityNote = $"密钥不可获取（{keyUri} 返回错误），该分片必然解密失败";
                 }
@@ -297,14 +269,12 @@ public sealed class SegmentInspector
     /// 判断某个分片解密后是否为合法 MPEG-TS。
     /// TS 包固定 188 字节，首字节必须是同步字节 0x47。
     /// </summary>
-    public static bool LooksLikeValidTs(byte[] data)
-    {
+    public static bool LooksLikeValidTs(byte[] data) {
         if (data.Length < 188) return false;
         if (data[0] != 0x47) return false;
         // 抽查若干个包起点
         int checks = Math.Min(20, data.Length / 188);
-        for (int i = 1; i <= checks; i++)
-        {
+        for (int i = 1; i <= checks; i++) {
             int off = i * 188;
             if (off >= data.Length) break;
             if (data[off] != 0x47) return false;
@@ -317,13 +287,11 @@ public sealed class SegmentInspector
     /// 用于在「PKCS7 填充」与「无填充」等多种解密结果中挑选正确的那一个 ——
     /// 严格版会把仅尾部填充不同的正确结果误判掉。
     /// </summary>
-    public static bool LooksLikeTs(byte[] data)
-    {
+    public static bool LooksLikeTs(byte[] data) {
         if (data.Length < 188) return false;
         if (data[0] != 0x47) return false;
         // 校验开头 4 个包位置是否同步（不要求全文件，容忍少量异常）
-        for (int i = 1; i <= 3; i++)
-        {
+        for (int i = 1; i <= 3; i++) {
             int off = i * 188;
             if (off >= data.Length) break;
             if (data[off] != 0x47) return false;
@@ -331,10 +299,8 @@ public sealed class SegmentInspector
         return true;
     }
 
-    private static string GetDirectory(string uri)
-    {
-        try
-        {
+    private static string GetDirectory(string uri) {
+        try {
             var p = new Uri(uri).AbsolutePath;
             var i = p.LastIndexOf('/');
 
@@ -343,12 +309,10 @@ public sealed class SegmentInspector
             // 目录聚类会把除第一片以外的所有分片误判成插播广告并整批跳过。
             if (i < 0) return uri;
             return i == 0 ? "/" : p[..i];
-        }
-        catch { return uri; }
+        } catch { return uri; }
     }
 
-    private static string ShortDir(string dir)
-    {
+    private static string ShortDir(string dir) {
         var parts = dir.Split('/', StringSplitOptions.RemoveEmptyEntries);
         return parts.Length <= 3 ? dir : "…/" + string.Join('/', parts[^3..]);
     }

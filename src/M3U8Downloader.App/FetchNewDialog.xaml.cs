@@ -14,17 +14,13 @@ namespace M3U8Downloader;
 /// 只有用户自己知道（热播剧一天补两集，他可能只想先看更新的那集）。
 /// 所以先把候选列出来让他勾，勾了哪些就下哪些。
 /// </summary>
-public sealed partial class FetchNewDialog : ContentDialog
-{
-    public FetchNewDialog(string seriesTitle, FetchNewPreview preview)
-    {
+public sealed partial class FetchNewDialog : ContentDialog {
+    public FetchNewDialog(string seriesTitle, FetchNewPreview preview) {
         InitializeComponent();
 
-        foreach (var candidate in preview.Candidates)
-        {
+        foreach (var candidate in preview.Candidates) {
             var item = new FetchNewItem(candidate);
-            item.PropertyChanged += (_, e) =>
-            {
+            item.PropertyChanged += (_, e) => {
                 if (e.PropertyName == nameof(FetchNewItem.IsSelected)) UpdateSelection();
             };
             Items.Add(item);
@@ -57,13 +53,11 @@ public sealed partial class FetchNewDialog : ContentDialog
     }
 
     /// <summary>把"多久以前"说成人话</summary>
-    private static string DescribeAge(DateTimeOffset at)
-    {
+    private static string DescribeAge(DateTimeOffset at) {
         var span = DateTimeOffset.Now - at;
         if (span < TimeSpan.Zero) span = TimeSpan.Zero;
 
-        return span.TotalMinutes switch
-        {
+        return span.TotalMinutes switch {
             < 2 => "刚刚",
             < 60 => $"{(int)span.TotalMinutes} 分钟前",
             < 24 * 60 => $"{(int)span.TotalHours} 小时前",
@@ -82,13 +76,10 @@ public sealed partial class FetchNewDialog : ContentDialog
     /// 后台刷新发现新集时补进列表（调用方负责封送到 UI 线程）。
     /// 新集默认勾上 —— 点「续下更新」的人要的就是它们。
     /// </summary>
-    public void AppendEpisodes(IReadOnlyList<FetchNewCandidate> candidates, string status)
-    {
-        foreach (var candidate in candidates)
-        {
+    public void AppendEpisodes(IReadOnlyList<FetchNewCandidate> candidates, string status) {
+        foreach (var candidate in candidates) {
             var item = new FetchNewItem(candidate);
-            item.PropertyChanged += (_, e) =>
-            {
+            item.PropertyChanged += (_, e) => {
                 if (e.PropertyName == nameof(FetchNewItem.IsSelected)) UpdateSelection();
             };
             item.IsSelected = item.IsNew && item.IsSelectable;
@@ -100,8 +91,7 @@ public sealed partial class FetchNewDialog : ContentDialog
     }
 
     /// <summary>显示后台刷新到了什么（"已是最新" / "连不上站点，用的是本地数据"）</summary>
-    public void SetRefreshStatus(string text)
-    {
+    public void SetRefreshStatus(string text) {
         RefreshStatusText.Text = text;
         RefreshStatusText.Visibility = string.IsNullOrWhiteSpace(text)
             ? Visibility.Collapsed
@@ -112,8 +102,7 @@ public sealed partial class FetchNewDialog : ContentDialog
     public event EventHandler? RefreshRequested;
 
     /// <summary>刷新期间把按钮禁掉并改文案，避免连点</summary>
-    public void SetRefreshing(bool refreshing)
-    {
+    public void SetRefreshing(bool refreshing) {
         _refreshing = refreshing;
         RefreshButton.IsEnabled = !refreshing;
         RefreshButton.Content = refreshing ? "刷新中…" : "刷新集列表";
@@ -121,8 +110,7 @@ public sealed partial class FetchNewDialog : ContentDialog
 
     private bool _refreshing;
 
-    private void OnRefresh(object sender, RoutedEventArgs e)
-    {
+    private void OnRefresh(object sender, RoutedEventArgs e) {
         if (_refreshing) return;
 
         SetRefreshing(true);
@@ -130,8 +118,7 @@ public sealed partial class FetchNewDialog : ContentDialog
         RefreshRequested?.Invoke(this, EventArgs.Empty);
     }
 
-    private void UpdateSelection()
-    {
+    private void UpdateSelection() {
         var selected = Items.Count(i => i.IsSelected);
         var selectable = Items.Count(i => i.IsSelectable);
         SelectionText.Text = selectable > 0
@@ -142,31 +129,26 @@ public sealed partial class FetchNewDialog : ContentDialog
         IsPrimaryButtonEnabled = selected > 0;
     }
 
-    private void OnSelectNewOnly(object sender, RoutedEventArgs e)
-    {
+    private void OnSelectNewOnly(object sender, RoutedEventArgs e) {
         foreach (var item in Items) item.IsSelected = item.IsNew && item.IsSelectable;
         UpdateSelection();
     }
 
-    private void OnSelectAll(object sender, RoutedEventArgs e)
-    {
+    private void OnSelectAll(object sender, RoutedEventArgs e) {
         // 「全选」只选能选的（没下载过的）—— 已下载的有文件在，重下没有意义
         foreach (var item in Items) item.IsSelected = item.IsSelectable;
         UpdateSelection();
     }
 
-    private void OnSelectNone(object sender, RoutedEventArgs e)
-    {
+    private void OnSelectNone(object sender, RoutedEventArgs e) {
         foreach (var item in Items) item.IsSelected = false;
         UpdateSelection();
     }
 }
 
 /// <summary>勾选框里的一行。Core 的候选记录是纯数据，这里补一层可通知的勾选状态。</summary>
-public sealed class FetchNewItem : INotifyPropertyChanged
-{
-    public FetchNewItem(FetchNewCandidate candidate)
-    {
+public sealed class FetchNewItem : INotifyPropertyChanged {
+    public FetchNewItem(FetchNewCandidate candidate) {
         Number = candidate.Number;
         Title = candidate.Title;
         IsNew = candidate.IsNew;
@@ -199,11 +181,9 @@ public sealed class FetchNewItem : INotifyPropertyChanged
     private bool _isSelected;
 
     /// <summary>双向绑到 CheckBox —— 没有 INotifyPropertyChanged 的话勾选状态不会回写</summary>
-    public bool IsSelected
-    {
+    public bool IsSelected {
         get => _isSelected;
-        set
-        {
+        set {
             // 已下载的集永远勾不上：界面已禁用，这里再挡一道，
             // 免得「全选」之类的批量操作把它勾上
             if (IsDownloaded) value = false;

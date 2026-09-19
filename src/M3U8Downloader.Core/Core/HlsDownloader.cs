@@ -23,8 +23,7 @@ namespace M3U8Downloader.Core;
 /// 「清单走代理、分片走直连」，出口 IP 不一致还可能触发部分站点的防盗链。
 /// 代理只用于「获取 FFmpeg」这一件需要翻墙的事。
 /// </summary>
-public sealed class HlsDownloader : IDisposable
-{
+public sealed class HlsDownloader : IDisposable {
     private readonly HttpClient _http;
 
     /// <summary>代理客户端；没配代理时为 null</summary>
@@ -45,8 +44,7 @@ public sealed class HlsDownloader : IDisposable
     /// <summary>「已改用代理」这类消息写到哪里（可选）</summary>
     public Action<string>? Log { get; set; }
 
-    public HlsDownloader(Dictionary<string, string>? headers = null, int timeoutSeconds = 30, string? proxyUrl = null)
-    {
+    public HlsDownloader(Dictionary<string, string>? headers = null, int timeoutSeconds = 30, string? proxyUrl = null) {
         var directHandler = CreateHandler();
         _http = new HttpClient(directHandler) { Timeout = TimeSpan.FromSeconds(timeoutSeconds) };
         ApplyHeaders(_http, headers);
@@ -54,8 +52,7 @@ public sealed class HlsDownloader : IDisposable
         // 代理地址：显式传入 → 设置里填的。**默认不启用**，
         // 只有在某台主机直连不通时才会被用到（见 HttpGetAsync）
         _proxyUrl = ProxyHelper.Normalize(proxyUrl ?? TryReadProxyFromSettings());
-        if (_proxyUrl is not null)
-        {
+        if (_proxyUrl is not null) {
             var proxyHandler = CreateHandler();
             proxyHandler.Proxy = new WebProxy(new Uri(_proxyUrl)) { BypassProxyOnLocal = true };
             proxyHandler.UseProxy = true;
@@ -65,8 +62,7 @@ public sealed class HlsDownloader : IDisposable
         }
     }
 
-    private static SocketsHttpHandler CreateHandler() => new()
-    {
+    private static SocketsHttpHandler CreateHandler() => new() {
         AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
         MaxConnectionsPerServer = 64,
         // 连不上就早点回退到代理，别让用户干等
@@ -80,25 +76,20 @@ public sealed class HlsDownloader : IDisposable
         UseProxy = false,
     };
 
-    private static string? TryReadProxyFromSettings()
-    {
-        try { return Settings.AppSettingsStore.Load().ProxyUrl; }
-        catch { return null; }
+    private static string? TryReadProxyFromSettings() {
+        try { return Settings.AppSettingsStore.Load().ProxyUrl; } catch { return null; }
     }
 
-    private static void ApplyHeaders(HttpClient client, Dictionary<string, string>? headers)
-    {
+    private static void ApplyHeaders(HttpClient client, Dictionary<string, string>? headers) {
         client.DefaultRequestHeaders.UserAgent.ParseAdd(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36");
         client.DefaultRequestHeaders.Accept.ParseAdd("*/*");
 
         if (headers is null) return;
 
-        foreach (var (k, v) in headers)
-        {
+        foreach (var (k, v) in headers) {
             if (string.IsNullOrWhiteSpace(k) || string.IsNullOrWhiteSpace(v)) continue;
-            if (k.Equals("User-Agent", StringComparison.OrdinalIgnoreCase))
-            {
+            if (k.Equals("User-Agent", StringComparison.OrdinalIgnoreCase)) {
                 client.DefaultRequestHeaders.UserAgent.Clear();
                 client.DefaultRequestHeaders.UserAgent.ParseAdd(v);
                 continue;
@@ -114,21 +105,18 @@ public sealed class HlsDownloader : IDisposable
     /// 统一的 GET。直连优先；某台主机直连不通就记住它，之后同一主机直接走代理。
     /// 与站点解析同一套策略：通畅时零代理开销，不通时自动兜底。
     /// </summary>
-    private async Task<HttpResponseMessage> HttpGetAsync(string url, HttpCompletionOption mode, CancellationToken ct)
-    {
+    private async Task<HttpResponseMessage> HttpGetAsync(string url, HttpCompletionOption mode, CancellationToken ct) {
         var host = TryGetHost(url);
         var canFallback = host is not null && _httpProxy is not null;
 
         if (canFallback && _proxyRequiredHosts.ContainsKey(host!))
             return await _httpProxy!.GetAsync(url, mode, ct).ConfigureAwait(false);
 
-        try
-        {
+        try {
             var resp = await _http.GetAsync(url, mode, ct).ConfigureAwait(false);
 
             // 连上了但被「按 IP 拒绝」：也换代理再试一次
-            if (canFallback && ShouldRetryViaProxy(resp.StatusCode))
-            {
+            if (canFallback && ShouldRetryViaProxy(resp.StatusCode)) {
                 resp.Dispose();
                 var proxied = await _httpProxy!.GetAsync(url, mode, ct).ConfigureAwait(false);
                 MarkProxyRequired(host!);
@@ -136,9 +124,7 @@ public sealed class HlsDownloader : IDisposable
             }
 
             return resp;
-        }
-        catch (Exception ex) when (canFallback && IsConnectivityFailure(ex, ct))
-        {
+        } catch (Exception ex) when (canFallback && IsConnectivityFailure(ex, ct)) {
             // 直连不通、代理能通 → 记下这台主机；代理也不通就会抛出去（说明不是被墙）
             var resp = await _httpProxy!.GetAsync(url, mode, ct).ConfigureAwait(false);
             MarkProxyRequired(host!);
@@ -151,25 +137,21 @@ public sealed class HlsDownloader : IDisposable
     /// 所以传的是"怎么造这个请求"而不是请求本身）。
     /// </summary>
     private async Task<HttpResponseMessage> HttpSendAsync(
-        Func<HttpRequestMessage> createRequest, string url, HttpCompletionOption mode, CancellationToken ct)
-    {
+        Func<HttpRequestMessage> createRequest, string url, HttpCompletionOption mode, CancellationToken ct) {
         var host = TryGetHost(url);
         var canFallback = host is not null && _httpProxy is not null;
 
-        if (canFallback && _proxyRequiredHosts.ContainsKey(host!))
-        {
+        if (canFallback && _proxyRequiredHosts.ContainsKey(host!)) {
             using var proxied = createRequest();
             return await _httpProxy!.SendAsync(proxied, mode, ct).ConfigureAwait(false);
         }
 
-        try
-        {
+        try {
             HttpResponseMessage resp;
             using (var direct = createRequest())
                 resp = await _http.SendAsync(direct, mode, ct).ConfigureAwait(false);
 
-            if (canFallback && ShouldRetryViaProxy(resp.StatusCode))
-            {
+            if (canFallback && ShouldRetryViaProxy(resp.StatusCode)) {
                 resp.Dispose();
                 using var proxied = createRequest();
                 var retried = await _httpProxy!.SendAsync(proxied, mode, ct).ConfigureAwait(false);
@@ -178,9 +160,7 @@ public sealed class HlsDownloader : IDisposable
             }
 
             return resp;
-        }
-        catch (Exception ex) when (canFallback && IsConnectivityFailure(ex, ct))
-        {
+        } catch (Exception ex) when (canFallback && IsConnectivityFailure(ex, ct)) {
             using var proxied = createRequest();
             var resp = await _httpProxy!.SendAsync(proxied, mode, ct).ConfigureAwait(false);
             MarkProxyRequired(host!);
@@ -201,8 +181,7 @@ public sealed class HlsDownloader : IDisposable
             or HttpStatusCode.UnavailableForLegalReasons
             or HttpStatusCode.TooManyRequests;
 
-    private void MarkProxyRequired(string host)
-    {
+    private void MarkProxyRequired(string host) {
         if (_proxyRequiredHosts.TryAdd(host, true))
             Log?.Invoke($"{host} 直连不通，已改用代理下载（{_proxyUrl}）。");
     }
@@ -214,12 +193,10 @@ public sealed class HlsDownloader : IDisposable
     /// 是不是「网络根本不通」（而不是站点返回了 4xx/5xx）。
     /// 只有这一类才值得换代理重试 —— 站点自己报错时换代理纯属白费。
     /// </summary>
-    private static bool IsConnectivityFailure(Exception ex, CancellationToken ct)
-    {
+    private static bool IsConnectivityFailure(Exception ex, CancellationToken ct) {
         if (ct.IsCancellationRequested) return false;   // 用户取消，不是网络问题
 
-        for (var e = ex; e is not null; e = e.InnerException)
-        {
+        for (var e = ex; e is not null; e = e.InnerException) {
             if (e is HttpRequestException or SocketException or TaskCanceledException) return true;
         }
 
@@ -231,8 +208,7 @@ public sealed class HlsDownloader : IDisposable
     /// 返回内容与「重定向后的最终地址」——后者必须用作解析相对路径的基准，
     /// 否则经 CDN 跳转的清单会把分片地址解析到错误的域上。
     /// </summary>
-    public async Task<(string Text, string FinalUrl)> FetchPlaylistAsync(string url, CancellationToken ct = default)
-    {
+    public async Task<(string Text, string FinalUrl)> FetchPlaylistAsync(string url, CancellationToken ct = default) {
         using var resp = await HttpGetAsync(url, HttpCompletionOption.ResponseContentRead, ct)
             .ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
@@ -261,8 +237,7 @@ public sealed class HlsDownloader : IDisposable
     /// 实测某源站第 11 集 1400 片里恰好有 87 片（≈1/16）栽在这里，
     /// 表现为"每 16 片失败 1 片"的诡异规律。
     /// </summary>
-    internal static bool LooksLikeHtml(ReadOnlySpan<byte> data)
-    {
+    internal static bool LooksLikeHtml(ReadOnlySpan<byte> data) {
         var head = data.Length > 512 ? data[..512] : data;
         // 跳过前导空白与 BOM
         int i = 0;
@@ -287,8 +262,7 @@ public sealed class HlsDownloader : IDisposable
 
     /// <summary>解析地址；若是主清单则自动挑选最高清晰度，返回媒体清单</summary>
     public async Task<(HlsMediaPlaylist Media, List<string> Log)> ResolveMediaPlaylistAsync(
-        string url, string? preferredVariantUri = null, CancellationToken ct = default)
-    {
+        string url, string? preferredVariantUri = null, CancellationToken ct = default) {
         var log = new List<string>();
         var (text, finalUrl) = await FetchPlaylistAsync(url, ct).ConfigureAwait(false);
 
@@ -299,8 +273,7 @@ public sealed class HlsDownloader : IDisposable
 
         var parsed = M3U8Parser.Parse(text, finalUrl);
 
-        if (parsed.IsMaster)
-        {
+        if (parsed.IsMaster) {
             log.Add($"检测到主清单（清晰度列表），共 {parsed.Variants.Count} 个变体。");
 
             var chosen = preferredVariantUri != null
@@ -334,8 +307,7 @@ public sealed class HlsDownloader : IDisposable
         HlsMediaPlaylist playlist,
         DownloadOptions options,
         IProgress<DownloadProgress>? progress = null,
-        CancellationToken ct = default)
-    {
+        CancellationToken ct = default) {
         var result = new DownloadResult();
         var sw = Stopwatch.StartNew();
 
@@ -349,38 +321,31 @@ public sealed class HlsDownloader : IDisposable
         var inspectorReport = SegmentInspector.Inspect(playlist);
         foreach (var r in inspectorReport.Reasons) result.Messages.Add(r);
 
-        if (options.AutoSkipInvalidSegments && inspectorReport.Suspects.Count > 0)
-        {
+        if (options.AutoSkipInvalidSegments && inspectorReport.Suspects.Count > 0) {
             await SegmentInspector.VerifyKeyAvailabilityAsync(playlist,
                 (keyUrl, token) => HttpGetAsync(keyUrl, HttpCompletionOption.ResponseHeadersRead, token),
                 inspectorReport, ct);
         }
 
         var skipSet = new HashSet<int>();
-        if (options.AutoSkipInvalidSegments)
-        {
-            foreach (var s in inspectorReport.Suspects)
-            {
+        if (options.AutoSkipInvalidSegments) {
+            foreach (var s in inspectorReport.Suspects) {
                 s.Validity = s.Validity == SegmentValidity.Undecryptable
                     ? SegmentValidity.Undecryptable
                     : SegmentValidity.Skipped;
                 skipSet.Add(s.Index);
             }
-            if (skipSet.Count > 0)
-            {
+            if (skipSet.Count > 0) {
                 var ratio = (double)skipSet.Count / segments.Count;
                 result.Messages.Add($"已自动跳过 {skipSet.Count} 个疑似插播广告/无效分片（占 {ratio:P0}）。");
 
                 // 跳过比例过高通常意味着识别有误（或整条流都不对），必须让用户看见
-                if (ratio > 0.3)
-                {
+                if (ratio > 0.3) {
                     result.Messages.Add(
                         $"⚠ 跳过比例偏高（{skipSet.Count}/{segments.Count}），产物可能不完整，请核对原播放列表。");
                 }
             }
-        }
-        else
-        {
+        } else {
             foreach (var s in inspectorReport.Suspects) s.Validity = SegmentValidity.Ok;
             result.Messages.Add($"检测到 {inspectorReport.Suspects.Count} 个疑似广告分片，但未启用自动跳过。");
         }
@@ -397,8 +362,7 @@ public sealed class HlsDownloader : IDisposable
         // ---------- 2b. 暂存清单：防止复用"上一次不同播放列表"留下的旧分片 ----------
         // 源站可能每次请求都重新生成列表（例如随机插入广告），于是"分片序号 ↔ 内容"
         // 的对应关系会变；直接续传就会拼出错位的文件，而且大小看着还挺正常。
-        var manifest = new StagingManifest
-        {
+        var manifest = new StagingManifest {
             PlaylistUrl = playlist.SourceUrl,
             OutputPath = options.OutputPath,
             SegmentCount = segments.Count,
@@ -413,15 +377,12 @@ public sealed class HlsDownloader : IDisposable
         var states = new SegmentState[segments.Count];
         int alreadyDone = 0;
         long alreadyBytes = 0;
-        for (int i = 0; i < segments.Count; i++)
-        {
+        for (int i = 0; i < segments.Count; i++) {
             states[i] = new SegmentState { Index = i };
             var path = SegmentPath(options.TempDirectory, i);
-            if (File.Exists(path))
-            {
+            if (File.Exists(path)) {
                 var len = new FileInfo(path).Length;
-                if (len > 0)
-                {
+                if (len > 0) {
                     states[i].Completed = true;
                     states[i].Bytes = len;
                     alreadyDone++;
@@ -440,28 +401,23 @@ public sealed class HlsDownloader : IDisposable
         var lastSpeedTicks = Stopwatch.StartNew();
         var lastSpeedBytes = totalBytes;
 
-        void Report(string? message = null)
-        {
+        void Report(string? message = null) {
             DownloadProgress snapshot;
-            lock (progressLock)
-            {
+            lock (progressLock) {
                 double speed = 0;
                 var elapsed = lastSpeedTicks.Elapsed.TotalSeconds;
-                if (elapsed >= 0.5)
-                {
+                if (elapsed >= 0.5) {
                     speed = (totalBytes - lastSpeedBytes) / elapsed;
                     lastSpeedTicks.Restart();
                     lastSpeedBytes = totalBytes;
                 }
                 var remaining = segments.Count - (completed + failed + skipSet.Count);
                 TimeSpan? eta = null;
-                if (speed > 1024 && remaining > 0)
-                {
+                if (speed > 1024 && remaining > 0) {
                     var avgSegBytes = completed > 0 ? (double)totalBytes / completed : 300_000;
                     eta = TimeSpan.FromSeconds(remaining * avgSegBytes / speed);
                 }
-                snapshot = new DownloadProgress
-                {
+                snapshot = new DownloadProgress {
                     TotalSegments = segments.Count,
                     CompletedSegments = completed,
                     FailedSegments = failed,
@@ -487,39 +443,31 @@ public sealed class HlsDownloader : IDisposable
         var failureSamples = new List<string>();
         var failureLock = new object();
 
-        void NoteFailure(int index, string reason, string uri)
-        {
-            lock (failureLock)
-            {
+        void NoteFailure(int index, string reason, string uri) {
+            lock (failureLock) {
                 failureReasons[reason] = failureReasons.TryGetValue(reason, out var n) ? n + 1 : 1;
                 if (failureSamples.Count < 5)
                     failureSamples.Add($"#{index} {Path.GetFileName(new Uri(uri).AbsolutePath)} → {reason}");
             }
         }
 
-        try
-        {
+        try {
             await Parallel.ForEachAsync(
                 pending,
-                new ParallelOptions
-                {
+                new ParallelOptions {
                     MaxDegreeOfParallelism = Math.Max(1, options.Concurrency),
                     CancellationToken = ct,
                 },
-                async (index, token) =>
-                {
-                    try
-                    {
+                async (index, token) => {
+                    try {
                         var seg = segments[index];
                         var data = await DownloadSegmentWithRetryAsync(seg, options, fallbackKey, keyCache, token,
                                 reason => NoteFailure(index, reason, seg.Uri))
                             .ConfigureAwait(false);
 
-                        if (data is { Length: > 0 })
-                        {
+                        if (data is { Length: > 0 }) {
                             // 分片级校验：解不出合法 TS 就换另一个密钥再试一次
-                            if (!SegmentInspector.LooksLikeValidTs(data))
-                            {
+                            if (!SegmentInspector.LooksLikeValidTs(data)) {
                                 var retried = TryWithAlternateKey(seg, data, fallbackKey, keyCache);
                                 if (retried != null && SegmentInspector.LooksLikeValidTs(retried))
                                     data = retried;
@@ -528,34 +476,24 @@ public sealed class HlsDownloader : IDisposable
                             var path = SegmentPath(options.TempDirectory, index);
                             await File.WriteAllBytesAsync(path, data, token).ConfigureAwait(false);
 
-                            lock (progressLock)
-                            {
+                            lock (progressLock) {
                                 states[index].Completed = true;
                                 states[index].Bytes = data.Length;
                                 completed++;
                                 totalBytes += data.Length;
                             }
-                        }
-                        else
-                        {
+                        } else {
                             lock (progressLock) failed++;
                         }
-                    }
-                    catch (OperationCanceledException)
-                    {
+                    } catch (OperationCanceledException) {
                         // 取消不计入失败
-                    }
-                    catch
-                    {
+                    } catch {
                         lock (progressLock) failed++;
-                    }
-                    finally
-                    {
+                    } finally {
                         Report();
                     }
                 }).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) { }
+        } catch (OperationCanceledException) { }
 
         // ---------- 5. 合并 ----------
         var finalCompleted = states.Count(s => s.Completed);
@@ -569,15 +507,13 @@ public sealed class HlsDownloader : IDisposable
         result.SkippedSegmentIndices.AddRange(skipSet.OrderBy(i => i));
 
         // 把失败原因写进结果：只报"有 N 个分片失败"是没法排查的
-        lock (failureLock)
-        {
+        lock (failureLock) {
             result.FailureReasons.AddRange(
                 failureReasons.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key}（{kv.Value} 片）"));
             result.FailureSamples.AddRange(failureSamples);
         }
 
-        if (ct.IsCancellationRequested)
-        {
+        if (ct.IsCancellationRequested) {
             result.Success = false;
             result.Error = "下载已取消（已下载的分片保留，可继续）。";
             result.Elapsed = sw.Elapsed;
@@ -591,8 +527,7 @@ public sealed class HlsDownloader : IDisposable
         var missingOnDisk = new List<int>();
         var sizeMismatch = new List<int>();
 
-        for (var i = 0; i < segments.Count; i++)
-        {
+        for (var i = 0; i < segments.Count; i++) {
             if (skipSet.Contains(i) || !states[i].Completed) continue;
 
             var path = SegmentPath(options.TempDirectory, i);
@@ -602,8 +537,7 @@ public sealed class HlsDownloader : IDisposable
             if (states[i].Bytes > 0 && onDisk != states[i].Bytes) sizeMismatch.Add(i);
         }
 
-        if (missingOnDisk.Count > 0 || sizeMismatch.Count > 0)
-        {
+        if (missingOnDisk.Count > 0 || sizeMismatch.Count > 0) {
             var detail = sizeMismatch.Count > 0
                 ? $"，另有 {sizeMismatch.Count} 个分片大小与记录不符"
                 : "";
@@ -622,8 +556,7 @@ public sealed class HlsDownloader : IDisposable
         // 合并必须"一个分片都不少"：把要拼进去的分片字节数加起来与实际产物比对。
         // 合并用的是纯字节拼接（不重封装），所以字节数不等就说明确实漏了或多了。
         var expectBytes = 0L;
-        for (var i = 0; i < segments.Count; i++)
-        {
+        for (var i = 0; i < segments.Count; i++) {
             if (skipSet.Contains(i) || !states[i].Completed) continue;
             expectBytes += new FileInfo(SegmentPath(options.TempDirectory, i)).Length;
         }
@@ -636,14 +569,10 @@ public sealed class HlsDownloader : IDisposable
 
         // 合并结果校验：TS 产物做**全量**逐包对齐检查
         var alignmentOk = true;
-        if (outInfo.Exists && outInfo.Length > 0)
-        {
-            if (playlist.IsFmp4)
-            {
+        if (outInfo.Exists && outInfo.Length > 0) {
+            if (playlist.IsFmp4) {
                 result.Messages.Add("fMP4 产物：跳过 MPEG-TS 包对齐校验（由「合并字节数核对」覆盖）。");
-            }
-            else
-            {
+            } else {
                 alignmentOk = await VerifyTsAlignmentAsync(options.OutputPath, ct).ConfigureAwait(false);
                 result.Messages.Add(alignmentOk
                     ? "合并产物校验通过（全量逐包检查，188 字节对齐完好）。"
@@ -652,14 +581,12 @@ public sealed class HlsDownloader : IDisposable
         }
 
         result.Success = result.FailedSegments == 0 && result.OutputBytes > 0 && alignmentOk && bytesMatch;
-        if (!result.Success && result.FailedSegments > 0)
-        {
+        if (!result.Success && result.FailedSegments > 0) {
             var detail = result.FailureReasons.Count > 0
                 ? "：" + string.Join("；", result.FailureReasons)
                 : "";
             result.Error = $"有 {result.FailedSegments} 个分片下载失败{detail}";
-        }
-        else if (result.OutputBytes == 0)
+        } else if (result.OutputBytes == 0)
             result.Error = "输出文件为空。";
         else if (!alignmentOk)
             result.Error = "产物未通过 TS 包对齐校验（可能拼接错位）。";
@@ -678,26 +605,20 @@ public sealed class HlsDownloader : IDisposable
     private async Task<byte[]?> DownloadSegmentWithRetryAsync(
         HlsSegment segment, DownloadOptions options, byte[]? fallbackKey,
         Dictionary<string, byte[]> keyCache, CancellationToken ct,
-        Action<string>? onFailure = null)
-    {
+        Action<string>? onFailure = null) {
         // 末尾一次失败的原因要留给调用方统计：分片失败最怕"只知道失败、不知道为什么"
         var lastReason = "(未尝试)";
 
-        for (int attempt = 0; attempt <= options.MaxRetries; attempt++)
-        {
+        for (int attempt = 0; attempt <= options.MaxRetries; attempt++) {
             if (ct.IsCancellationRequested) return null;
-            if (attempt > 0)
-            {
+            if (attempt > 0) {
                 var delay = options.RetryBaseDelayMs * (int)Math.Pow(2, attempt - 1);
-                try { await Task.Delay(delay, ct).ConfigureAwait(false); }
-                catch (OperationCanceledException) { return null; }
+                try { await Task.Delay(delay, ct).ConfigureAwait(false); } catch (OperationCanceledException) { return null; }
             }
 
-            try
-            {
+            try {
                 var (raw, failReason) = await FetchBytesAsync(segment, ct).ConfigureAwait(false);
-                if (raw == null || raw.Length == 0)
-                {
+                if (raw == null || raw.Length == 0) {
                     lastReason = failReason ?? "返回空内容";
                     continue;
                 }
@@ -705,10 +626,7 @@ public sealed class HlsDownloader : IDisposable
                 var decoded = TryDecrypt(segment, raw, fallbackKey, keyCache);
                 if (decoded == null) lastReason = "解密后不是合法的 TS（密钥/填充策略都不匹配）";
                 return decoded ?? raw;
-            }
-            catch (OperationCanceledException) { return null; }
-            catch (Exception ex)
-            {
+            } catch (OperationCanceledException) { return null; } catch (Exception ex) {
                 lastReason = $"异常 {ex.GetType().Name}：{ex.Message}";
             }
         }
@@ -723,8 +641,7 @@ public sealed class HlsDownloader : IDisposable
     /// 或分片自带密钥取不到而备用密钥可用。
     /// </summary>
     private static byte[]? TryWithAlternateKey(
-        HlsSegment segment, byte[] raw, byte[]? fallbackKey, Dictionary<string, byte[]> keyCache)
-    {
+        HlsSegment segment, byte[] raw, byte[]? fallbackKey, Dictionary<string, byte[]> keyCache) {
         if (fallbackKey == null) return null;
 
         byte[]? ownKey = null;
@@ -737,13 +654,10 @@ public sealed class HlsDownloader : IDisposable
         return null;
     }
 
-    private async Task<(byte[]? Data, string? FailReason)> FetchBytesAsync(HlsSegment segment, CancellationToken ct)
-    {
-        using var resp = await HttpSendAsync(() =>
-        {
+    private async Task<(byte[]? Data, string? FailReason)> FetchBytesAsync(HlsSegment segment, CancellationToken ct) {
+        using var resp = await HttpSendAsync(() => {
             var request = new HttpRequestMessage(HttpMethod.Get, segment.Uri);
-            if (segment.ByteRangeLength.HasValue && segment.ByteRangeOffset.HasValue)
-            {
+            if (segment.ByteRangeLength.HasValue && segment.ByteRangeOffset.HasValue) {
                 request.Headers.Range = new RangeHeaderValue(
                     segment.ByteRangeOffset.Value,
                     segment.ByteRangeOffset.Value + segment.ByteRangeLength.Value - 1);
@@ -760,8 +674,7 @@ public sealed class HlsDownloader : IDisposable
         var mediaType = resp.Content.Headers.ContentType?.MediaType;
         if (mediaType is not null
             && (mediaType.Contains("html", StringComparison.OrdinalIgnoreCase)
-                || mediaType.Contains("json", StringComparison.OrdinalIgnoreCase)))
-        {
+                || mediaType.Contains("json", StringComparison.OrdinalIgnoreCase))) {
             return (null, $"HTTP 200 但 Content-Type 是 {mediaType}，不是分片数据");
         }
 
@@ -773,8 +686,7 @@ public sealed class HlsDownloader : IDisposable
 
         var declared = resp.Content.Headers.ContentLength;
         if (declared.HasValue && declared.Value > 0 && data.Length != declared.Value
-            && !segment.ByteRangeLength.HasValue)
-        {
+            && !segment.ByteRangeLength.HasValue) {
             return (null, $"响应被截断：声明 {declared.Value} 字节，实际收到 {data.Length} 字节");
         }
 
@@ -791,8 +703,7 @@ public sealed class HlsDownloader : IDisposable
         List<HlsSegment> segments,
         Dictionary<string, byte[]> keyCache,
         HashSet<string> unavailableKeys,
-        CancellationToken ct)
-    {
+        CancellationToken ct) {
         var keyUris = segments
             .Where(s => s.Key.IsEncrypted && s.Key.Uri != null)
             .GroupBy(s => s.Key.Uri!)
@@ -801,33 +712,25 @@ public sealed class HlsDownloader : IDisposable
             .ToList();
 
         byte[]? best = null;
-        foreach (var uri in keyUris)
-        {
+        foreach (var uri in keyUris) {
             ct.ThrowIfCancellationRequested();
             if (keyCache.ContainsKey(uri) || unavailableKeys.Contains(uri)) continue;
 
-            try
-            {
+            try {
                 using var resp = await HttpGetAsync(uri, HttpCompletionOption.ResponseContentRead, ct)
                     .ConfigureAwait(false);
-                if (!resp.IsSuccessStatusCode)
-                {
+                if (!resp.IsSuccessStatusCode) {
                     unavailableKeys.Add(uri);
                     continue;
                 }
                 var key = await resp.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
-                if (key.Length is 16 or 24 or 32)
-                {
+                if (key.Length is 16 or 24 or 32) {
                     keyCache[uri] = key;
                     best ??= key;
-                }
-                else
-                {
+                } else {
                     unavailableKeys.Add(uri);
                 }
-            }
-            catch (OperationCanceledException) { throw; }
-            catch { unavailableKeys.Add(uri); }
+            } catch (OperationCanceledException) { throw; } catch { unavailableKeys.Add(uri); }
         }
 
         return best;
@@ -840,15 +743,12 @@ public sealed class HlsDownloader : IDisposable
     /// 3. 自带密钥不可得时，回退到同播放列表中的备用密钥。
     /// </summary>
     private static byte[]? TryDecrypt(
-        HlsSegment segment, byte[] raw, byte[]? fallbackKey, Dictionary<string, byte[]> keyCache)
-    {
-        if (!segment.Key.IsEncrypted)
-        {
+        HlsSegment segment, byte[] raw, byte[]? fallbackKey, Dictionary<string, byte[]> keyCache) {
+        if (!segment.Key.IsEncrypted) {
             // 声明为明文。若内容本身就是合法 TS，直接用；
             // 否则可能是源站错误声明了 NONE，尝试用备用密钥解一次。
             if (SegmentInspector.LooksLikeValidTs(raw)) return raw;
-            if (fallbackKey != null)
-            {
+            if (fallbackKey != null) {
                 var alt = TryDecryptWithKey(segment, raw, fallbackKey);
                 if (alt != null && SegmentInspector.LooksLikeValidTs(alt)) return alt;
             }
@@ -871,8 +771,7 @@ public sealed class HlsDownloader : IDisposable
     /// 处理，每片会丢掉 4~15 字节，导致拼接后 188 字节 TS 包整体错位、
     /// 产物看似完整实则无法正常播放。
     /// </summary>
-    private static byte[]? TryDecryptWithKey(HlsSegment segment, byte[] raw, byte[]? key)
-    {
+    private static byte[]? TryDecryptWithKey(HlsSegment segment, byte[] raw, byte[]? key) {
         if (key == null) return null;
 
         var iv = GetIv(segment);
@@ -881,19 +780,16 @@ public sealed class HlsDownloader : IDisposable
 
         // 策略 1：PKCS7 填充（HLS 最常见）
         var padded = AesCbcDecrypt(raw, key, iv, keySize, PaddingMode.PKCS7);
-        if (padded != null)
-        {
+        if (padded != null) {
             var unpadded = TryUnpadPkcs7(padded);
             if (unpadded != null && SegmentInspector.LooksLikeTs(unpadded)) return unpadded;
         }
 
         // 策略 2：无填充，并截断到 188 的整数倍（保证 TS 包对齐）
         var none = AesCbcDecrypt(raw, key, iv, keySize, PaddingMode.None);
-        if (none != null)
-        {
+        if (none != null) {
             var aligned = none.Length - (none.Length % 188);
-            if (aligned > 0)
-            {
+            if (aligned > 0) {
                 var cut = aligned == none.Length ? none : none[..aligned];
                 if (SegmentInspector.LooksLikeTs(cut)) return cut;
             }
@@ -906,8 +802,7 @@ public sealed class HlsDownloader : IDisposable
     }
 
     /// <summary>按密钥字节长度取得 128/192/256 位对应的 KeySize</summary>
-    private static int GetKeySize(byte[] key) => key.Length switch
-    {
+    private static int GetKeySize(byte[] key) => key.Length switch {
         16 => 128,
         24 => 192,
         32 => 256,
@@ -919,10 +814,8 @@ public sealed class HlsDownloader : IDisposable
     /// 按「密钥实际字节长度」而不是 METHOD 字符串决定算法强度 ——
     /// 部分源站把 AES-192/256 错标成 AES-128，照字符串走会解不出来。
     /// </summary>
-    private static byte[]? AesCbcDecrypt(byte[] data, byte[] key, byte[] iv, int keySize, PaddingMode padding)
-    {
-        try
-        {
+    private static byte[]? AesCbcDecrypt(byte[] data, byte[] key, byte[] iv, int keySize, PaddingMode padding) {
+        try {
             using var aes = Aes.Create();
             aes.Mode = CipherMode.CBC;
             aes.Padding = padding;
@@ -937,30 +830,24 @@ public sealed class HlsDownloader : IDisposable
             using var dec = aes.CreateDecryptor();
             var outBuf = new byte[usable + 16];
             int written;
-            try
-            {
+            try {
                 written = dec.TransformBlock(data, 0, usable, outBuf, 0);
                 var final = dec.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
-                if (final.Length > 0)
-                {
+                if (final.Length > 0) {
                     Array.Copy(final, 0, outBuf, written, final.Length);
                     written += final.Length;
                 }
-            }
-            catch (CryptographicException)
-            {
+            } catch (CryptographicException) {
                 // PKCS7 填充非法 —— 说明该分片其实没有填充
                 return null;
             }
 
             return outBuf[..written];
-        }
-        catch (CryptographicException) { return null; }
+        } catch (CryptographicException) { return null; }
     }
 
     /// <summary>校验并去掉 PKCS7 填充，不是合法填充则返回 null</summary>
-    private static byte[]? TryUnpadPkcs7(byte[] data)
-    {
+    private static byte[]? TryUnpadPkcs7(byte[] data) {
         if (data.Length == 0 || data.Length % 16 != 0) return null;
         var pad = data[^1];
         if (pad is 0 or > 16 || pad > data.Length) return null;
@@ -973,8 +860,7 @@ public sealed class HlsDownloader : IDisposable
     /// 计算 IV：优先用播放列表显式给出的 IV；
     /// 否则按 HLS 规范用媒体序号（16 字节大端）作为 IV。
     /// </summary>
-    private static byte[] GetIv(HlsSegment segment)
-    {
+    private static byte[] GetIv(HlsSegment segment) {
         if (segment.Key.IV != null) return segment.Key.IV;
         var iv = new byte[16];
         // 用媒体序号（MEDIA-SEQUENCE + 索引），而不是单纯的列表索引 ——
@@ -988,15 +874,12 @@ public sealed class HlsDownloader : IDisposable
     // ==================== 合并与校验 ====================
 
     private static async Task MergeAsync(
-        DownloadOptions options, List<HlsSegment> segments, HashSet<int> skipSet, CancellationToken ct)
-    {
+        DownloadOptions options, List<HlsSegment> segments, HashSet<int> skipSet, CancellationToken ct) {
         // 先写临时文件，成功后再替换，避免中断破坏已有产物
         var tempOut = options.OutputPath + ".part";
         await using (var fs = new FileStream(tempOut, FileMode.Create, FileAccess.Write, FileShare.None,
-            1 << 20, useAsync: true))
-        {
-            for (int i = 0; i < segments.Count; i++)
-            {
+            1 << 20, useAsync: true)) {
+            for (int i = 0; i < segments.Count; i++) {
                 ct.ThrowIfCancellationRequested();
                 if (skipSet.Contains(i)) continue;
                 var path = SegmentPath(options.TempDirectory, i);
@@ -1020,14 +903,11 @@ public sealed class HlsDownloader : IDisposable
     /// - 清单不一致（列表被重新生成过）→ 丢弃旧分片重新下载；
     /// - 有分片但没有清单（旧版本残留）→ 同样丢弃，因为无法确认对应关系。
     /// </summary>
-    private static string? PrepareStaging(string tempDirectory, StagingManifest current)
-    {
-        try
-        {
+    private static string? PrepareStaging(string tempDirectory, StagingManifest current) {
+        try {
             var existing = StagingStore.TryLoad(tempDirectory);
 
-            if (existing is null)
-            {
+            if (existing is null) {
                 var stray = StagingStore.ClearSegments(tempDirectory);
                 StagingStore.Save(tempDirectory, current);
                 return stray > 0
@@ -1035,8 +915,7 @@ public sealed class HlsDownloader : IDisposable
                     : null;
             }
 
-            if (!string.Equals(existing.Fingerprint, current.Fingerprint, StringComparison.OrdinalIgnoreCase))
-            {
+            if (!string.Equals(existing.Fingerprint, current.Fingerprint, StringComparison.OrdinalIgnoreCase)) {
                 var removed = StagingStore.ClearSegments(tempDirectory);
                 StagingStore.Save(tempDirectory, current);
                 return $"检测到播放列表已重新生成（分片序号与内容的对应关系已变化），" +
@@ -1046,9 +925,7 @@ public sealed class HlsDownloader : IDisposable
             // 指纹一致：保留清单，分片可安全复用
             StagingStore.Save(tempDirectory, current);
             return null;
-        }
-        catch
-        {
+        } catch {
             return null;
         }
     }
@@ -1059,8 +936,7 @@ public sealed class HlsDownloader : IDisposable
     /// 只有"下载无失败 + 产物校验通过"才会走到这里；
     /// 任何一步出错都**保留**暂存目录，便于排查或下次续传。
     /// </summary>
-    private static void CleanupStaging(string tempDirectory, DownloadOptions options, DownloadResult result)
-    {
+    private static void CleanupStaging(string tempDirectory, DownloadOptions options, DownloadResult result) {
         if (!options.DeleteTempOnSuccess) return;
 
         if (StagingStore.TryRemoveStagingDirectory(tempDirectory))
@@ -1075,12 +951,10 @@ public sealed class HlsDownloader : IDisposable
     /// 早期实现只抽查"头、中、尾各 3 个字节"—— 中间任何位置错位都发现不了，
     /// 那种校验基本没有意义。实测 400MB 全量扫描约 1 秒，代价可以接受。
     /// </summary>
-    private static async Task<bool> VerifyTsAlignmentAsync(string path, CancellationToken ct)
-    {
+    private static async Task<bool> VerifyTsAlignmentAsync(string path, CancellationToken ct) {
         const int packetSize = 188;
 
-        try
-        {
+        try {
             await using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
                 1 << 20, useAsync: true);
 
@@ -1093,8 +967,7 @@ public sealed class HlsDownloader : IDisposable
             var buffer = new byte[packetSize * 4096];
             long offset = 0;
 
-            while (offset < size)
-            {
+            while (offset < size) {
                 ct.ThrowIfCancellationRequested();
 
                 var want = (int)Math.Min(buffer.Length, size - offset);
@@ -1102,8 +975,7 @@ public sealed class HlsDownloader : IDisposable
                     throwOnEndOfStream: false, ct).ConfigureAwait(false);
                 if (read <= 0) break;
 
-                for (var i = 0; i + packetSize <= read; i += packetSize)
-                {
+                for (var i = 0; i + packetSize <= read; i += packetSize) {
                     if (buffer[i] != 0x47) return false;
                 }
 
@@ -1111,9 +983,7 @@ public sealed class HlsDownloader : IDisposable
             }
 
             return offset == size;
-        }
-        catch
-        {
+        } catch {
             return false;
         }
     }
@@ -1121,8 +991,7 @@ public sealed class HlsDownloader : IDisposable
     private static string SegmentPath(string tempDir, int index) =>
         Path.Combine(tempDir, $"seg_{index:D6}.ts");
 
-    private static int ParseHeight(string? resolution)
-    {
+    private static int ParseHeight(string? resolution) {
         if (string.IsNullOrEmpty(resolution)) return 0;
         var parts = resolution.Split('x', 'X');
         return parts.Length == 2 && int.TryParse(parts[1], out var h) ? h : 0;
@@ -1131,26 +1000,19 @@ public sealed class HlsDownloader : IDisposable
     private static string FormatDuration(double seconds) =>
         TimeSpan.FromSeconds(seconds).ToString(@"hh\:mm\:ss");
 
-    private static string DecodeText(byte[] bytes)
-    {
+    private static string DecodeText(byte[] bytes) {
         // 先按 UTF-8 严格解码，失败则按 GBK 兜底（部分小站用 GBK）
-        try
-        {
+        try {
             return new System.Text.UTF8Encoding(false, true).GetString(bytes);
-        }
-        catch
-        {
-            try
-            {
+        } catch {
+            try {
                 System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
                 return System.Text.Encoding.GetEncoding("GBK").GetString(bytes);
-            }
-            catch { return System.Text.Encoding.UTF8.GetString(bytes); }
+            } catch { return System.Text.Encoding.UTF8.GetString(bytes); }
         }
     }
 
-    public void Dispose()
-    {
+    public void Dispose() {
         if (_disposed) return;
         _disposed = true;
         _http.Dispose();

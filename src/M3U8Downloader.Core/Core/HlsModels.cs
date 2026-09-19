@@ -1,8 +1,7 @@
 namespace M3U8Downloader.Core;
 
 /// <summary>HLS 加密方式</summary>
-public enum HlsEncryptionMethod
-{
+public enum HlsEncryptionMethod {
     None,
     Aes128,
     Aes192,
@@ -14,8 +13,7 @@ public enum HlsEncryptionMethod
 /// 一个 #EXT-X-KEY 生效区间。播放列表中可能出现多个 KEY 声明，
 /// 每个分片归属于它之前最近的那个 KEY。
 /// </summary>
-public sealed class HlsKeyInfo
-{
+public sealed class HlsKeyInfo {
     public HlsEncryptionMethod Method { get; init; } = HlsEncryptionMethod.None;
 
     /// <summary>密钥地址（已解析为绝对地址）。Method=None 时为 null。</summary>
@@ -36,8 +34,7 @@ public sealed class HlsKeyInfo
 }
 
 /// <summary>分片类型判定，用于识别无效/广告分片</summary>
-public enum SegmentValidity
-{
+public enum SegmentValidity {
     /// <summary>尚未检测</summary>
     Unknown,
     /// <summary>正常分片</summary>
@@ -60,8 +57,7 @@ public enum SegmentValidity
 }
 
 /// <summary>单个媒体分片</summary>
-public sealed class HlsSegment
-{
+public sealed class HlsSegment {
     /// <summary>在播放列表中的序号（0 基）</summary>
     public int Index { get; set; }
 
@@ -108,8 +104,7 @@ public sealed class HlsSegment
 }
 
 /// <summary>媒体播放列表（含分片列表）</summary>
-public sealed class HlsMediaPlaylist
-{
+public sealed class HlsMediaPlaylist {
     public required string SourceUrl { get; init; }
     public int Version { get; set; }
     public double TargetDuration { get; set; }
@@ -124,8 +119,7 @@ public sealed class HlsMediaPlaylist
 }
 
 /// <summary>主播放列表中的一个清晰度变体</summary>
-public sealed class HlsVariant
-{
+public sealed class HlsVariant {
     public required string Uri { get; init; }
     public long Bandwidth { get; set; }
     public long AverageBandwidth { get; set; }
@@ -133,10 +127,8 @@ public sealed class HlsVariant
     public string? Codecs { get; set; }
     public string? Name { get; set; }
 
-    public string DisplayName
-    {
-        get
-        {
+    public string DisplayName {
+        get {
             var parts = new List<string>();
             if (!string.IsNullOrEmpty(Resolution)) parts.Add(Resolution!);
             if (Bandwidth > 0) parts.Add($"{Bandwidth / 1000} kbps");
@@ -147,8 +139,7 @@ public sealed class HlsVariant
 }
 
 /// <summary>解析结果：可能是主清单，也可能是媒体清单</summary>
-public sealed class HlsParseResult
-{
+public sealed class HlsParseResult {
     public required string SourceUrl { get; init; }
     public List<HlsVariant> Variants { get; } = new();
     public HlsMediaPlaylist? Media { get; set; }

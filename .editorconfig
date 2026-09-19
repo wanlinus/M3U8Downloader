@@ -1,0 +1,34 @@
+root = true
+
+# 本项目的代码风格：大括号跟在同一行（K&R / Java 风格）。
+# 维护者是 Java 出身，明确要求按 Java 的排版习惯来 —— 这与 C# 生态默认的
+# Allman（大括号另起一行）不同，属于**刻意的选择**，别当成笔误"顺手改回去"。
+#
+# 只影响排版，编译器完全不在乎大括号在哪；改完跑一遍自检即可确认没碰坏东西。
+# 一键重排：dotnet format whitespace <项目或解决方案>
+
+[*.cs]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# 大括号：类型 / 方法 / 属性 / 控制流 / 初始化器 / lambda 统统跟在上一行末尾
+csharp_new_line_before_open_brace = none
+
+# } else {、} catch {、} finally { —— Java 就是这么写的
+csharp_new_line_before_else = false
+csharp_new_line_before_catch = false
+csharp_new_line_before_finally = false
+
+# 初始化器与匿名类型里的成员各占一行，但开括号仍跟在 new Xxx 后面
+csharp_new_line_before_members_in_object_initializers = true
+csharp_new_line_before_members_in_anonymous_types = true
+
+# { return; } 这种一行块保持一行，别拆开
+csharp_preserve_single_line_blocks = true
+
+# using 按系统优先排序
+dotnet_sort_system_directives_first = true

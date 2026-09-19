@@ -1,7 +1,4 @@
-using System.Text;
-using System.Text.Encodings.Web;
-using System.Text.Json;
-using System.Text.Json.Serialization;
+using M3U8Downloader.Core.Storage;
 
 namespace M3U8Downloader.Core.Tasks;
 
@@ -16,8 +13,7 @@ namespace M3U8Downloader.Core.Tasks;
 /// 每集下载前现解析一次（<c>SeriesDownloader</c> 里的 ResolvePlaylistUrlAsync）。
 /// 所以只要留下播放页地址与站点集标识，这些元数据就一直可用。
 /// </summary>
-public sealed class EpisodeMetadata
-{
+public sealed class EpisodeMetadata {
     /// <summary>集号（1 基）</summary>
     public int Number { get; set; }
 
@@ -45,8 +41,7 @@ public sealed class EpisodeMetadata
 /// 而适配器是**按每集的 PageUrl 的 host** 挑的（<c>SiteResolver.ResolvePlaylistUrlAsync</c>），
 /// 所以只要有 PageUrl + Key 就能重新解析出直链，不用存会过期的 m3u8 直链。
 /// </summary>
-public sealed class SeriesSnapshot
-{
+public sealed class SeriesSnapshot {
     /// <summary>站点类型名（存枚举名而不是值，改枚举也不会读坏旧文件）</summary>
     public string Kind { get; set; } = nameof(Sites.SiteKind.Generic);
 
@@ -69,8 +64,7 @@ public sealed class SeriesSnapshot
 }
 
 /// <summary>任务里一集的持久化记录</summary>
-public sealed class TaskEpisodeRecord
-{
+public sealed class TaskEpisodeRecord {
     public int Number { get; set; }
     public string Title { get; set; } = "";
 
@@ -89,8 +83,7 @@ public sealed class TaskEpisodeRecord
 /// <summary>
 /// 一个下载任务的持久化记录。程序重启后据此把任务列表和断点位置恢复回来。
 /// </summary>
-public sealed class SeriesTaskRecord
-{
+public sealed class SeriesTaskRecord {
     public string Id { get; set; } = "";
     public string Title { get; set; } = "";
     public string SiteName { get; set; } = "";
@@ -140,84 +133,49 @@ public sealed class SeriesTaskRecord
 }
 
 /// <summary>
-/// 任务列表的落盘仓库。
+/// 任务列表的落盘入口。
 ///
-/// 位置：数据目录下的 <c>tasks.json</c> —— 默认是**程序目录\data\**（便携，拷走即带走任务），
-/// 程序目录不可写时退回 <c>%APPDATA%\M3U8Downloader\</c>（见 <see cref="AppPaths"/>）。
-/// 写入方式：先写 <c>.tmp</c> 再原子替换，避免中途断电留下半个 JSON。
+/// **任务存在统一库（<c>data\m3u8.db</c>）里**了 —— <c>tasks</c> / <c>task_episodes</c> /
+/// <c>task_snapshots</c> / <c>snapshot_episodes</c> 四张表，不再是独立的 <c>tasks.json</c>。
+/// 具体怎么落库见 <see cref="Storage.SqliteTaskStore"/>。
+///
+/// 这里保留类名与 <see cref="Load"/> / <see cref="Save"/> / <see cref="Clear"/> 三个方法，
+/// 是因为调用方（<c>DownloadTaskManager</c>、自检）只关心"存/取一整个列表"这件事；
+/// 换成接口注入会把它们一起牵动，而"任务列表只有一个存储"这个前提没变。
 ///
 /// 为什么要把整个任务列表（含每一集的进度与产物路径）都存下来：
 /// 关掉程序再打开时，用户不需要重新贴地址、重新下已经下好的集；
 /// 未完成的集靠暂存目录里的分片 + 清单指纹继续下（见 StagingManifest）。
 /// </summary>
-public sealed class TaskStore
-{
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        WriteIndented = true,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        // 中文不要被转义成 \uXXXX，方便用户自己打开文件看一眼
-        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-    };
+public sealed class TaskStore {
+    private readonly SqliteTaskStore _store;
 
-    public TaskStore(string? filePath = null) => FilePath = filePath ?? DefaultFilePath;
+    /// <summary>用数据目录里的统一库</summary>
+    public TaskStore() : this(SqliteDatabase.Default) { }
+
+    /// <summary>指定库文件路径 —— 自检与一次性诊断用</summary>
+    public TaskStore(string filePath) : this(new SqliteDatabase(filePath)) { }
+
+    /// <summary>指定库实例（要用非默认的迁移来源时走这个）</summary>
+    public TaskStore(SqliteDatabase database) => _store = new SqliteTaskStore(database);
 
     /// <summary>存放任务列表的目录（= 数据目录）</summary>
     public static string DefaultDirectory => AppPaths.DataDirectory;
 
-    /// <summary>任务列表文件</summary>
-    public static string DefaultFilePath => AppPaths.TasksFile;
+    /// <summary>数据文件（就是那个库）</summary>
+    public static string DefaultFilePath => AppPaths.DatabaseFile;
 
-    public string FilePath { get; }
+    /// <summary>库文件路径</summary>
+    public string FilePath => _store.FilePath;
 
     /// <summary>
     /// 读取任务记录。任何异常都返回空表 —— 任务列表坏了也不该让程序起不来。
     /// </summary>
-    public List<SeriesTaskRecord> Load()
-    {
-        try
-        {
-            if (!File.Exists(FilePath)) return new List<SeriesTaskRecord>();
+    public List<SeriesTaskRecord> Load() => _store.Load();
 
-            var json = File.ReadAllText(FilePath, Encoding.UTF8);
-            if (string.IsNullOrWhiteSpace(json)) return new List<SeriesTaskRecord>();
+    /// <summary>整体写入（一个事务）；返回是否成功（失败不抛，由调用方决定是否提示）</summary>
+    public bool Save(IEnumerable<SeriesTaskRecord> records) => _store.Save(records);
 
-            var records = JsonSerializer.Deserialize<List<SeriesTaskRecord>>(json, JsonOptions);
-            return records ?? new List<SeriesTaskRecord>();
-        }
-        catch
-        {
-            return new List<SeriesTaskRecord>();
-        }
-    }
-
-    /// <summary>原子写入；返回是否成功（失败不抛，由调用方决定是否提示）</summary>
-    public bool Save(IEnumerable<SeriesTaskRecord> records)
-    {
-        try
-        {
-            var dir = Path.GetDirectoryName(FilePath);
-            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-
-            var temp = FilePath + ".tmp";
-            var json = JsonSerializer.Serialize(records.ToList(), JsonOptions);
-            File.WriteAllText(temp, json, new UTF8Encoding(false));
-            File.Move(temp, FilePath, overwrite: true);
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    /// <summary>清空任务列表文件（用户点「清理已完成」并把列表清空时用）</summary>
-    public void Clear()
-    {
-        try
-        {
-            if (File.Exists(FilePath)) File.Delete(FilePath);
-        }
-        catch { }
-    }
+    /// <summary>清空任务列表（用户点「清理已完成」并把列表清空时用）</summary>
+    public void Clear() => _store.Clear();
 }

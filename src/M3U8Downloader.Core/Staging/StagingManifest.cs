@@ -15,8 +15,7 @@ namespace M3U8Downloader.Core.Staging;
 /// 因此把清单和分片放在同一个暂存目录里，续传前先比对指纹：
 /// 指纹不一致就丢弃旧分片重新下载。
 /// </summary>
-public sealed class StagingManifest
-{
+public sealed class StagingManifest {
     /// <summary>清单格式版本</summary>
     public int Version { get; set; } = 1;
 
@@ -57,12 +56,10 @@ public sealed class StagingManifest
 }
 
 /// <summary>暂存目录的读写与清理。所有删除操作都限定在"我们自己生成的文件"范围内。</summary>
-public static class StagingStore
-{
+public static class StagingStore {
     public const string ManifestFileName = "manifest.json";
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
+    private static readonly JsonSerializerOptions JsonOptions = new() {
         WriteIndented = true,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
@@ -89,12 +86,10 @@ public static class StagingStore
     public static string ManifestPath(string dir) => Path.Combine(dir, ManifestFileName);
 
     /// <summary>对分片 URI 列表求指纹（顺序敏感：顺序变了就说明对应关系变了）</summary>
-    public static string Fingerprint(IEnumerable<string> segmentUris)
-    {
+    public static string Fingerprint(IEnumerable<string> segmentUris) {
         var sb = new StringBuilder();
         var count = 0;
-        foreach (var uri in segmentUris)
-        {
+        foreach (var uri in segmentUris) {
             sb.Append(uri).Append('\n');
             count++;
         }
@@ -104,10 +99,8 @@ public static class StagingStore
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
-    public static StagingManifest? TryLoad(string directory)
-    {
-        try
-        {
+    public static StagingManifest? TryLoad(string directory) {
+        try {
             var path = ManifestPath(directory);
             if (!File.Exists(path)) return null;
 
@@ -115,17 +108,13 @@ public static class StagingStore
             return string.IsNullOrWhiteSpace(json)
                 ? null
                 : JsonSerializer.Deserialize<StagingManifest>(json, JsonOptions);
-        }
-        catch
-        {
+        } catch {
             return null;
         }
     }
 
-    public static void Save(string directory, StagingManifest manifest)
-    {
-        try
-        {
+    public static void Save(string directory, StagingManifest manifest) {
+        try {
             Directory.CreateDirectory(directory);
             manifest.UpdatedAt = DateTimeOffset.Now;
 
@@ -133,9 +122,7 @@ public static class StagingStore
             var temp = path + ".tmp";
             File.WriteAllText(temp, JsonSerializer.Serialize(manifest, JsonOptions), new UTF8Encoding(false));
             File.Move(temp, path, overwrite: true);
-        }
-        catch
-        {
+        } catch {
             // 清单写不进去不该让下载失败：退化成"每次都重新下"而已
         }
     }
@@ -146,22 +133,17 @@ public static class StagingStore
         || TempSuffixes.Any(s => name.EndsWith(s, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>只删除由本程序生成的分片/临时文件，绝不动用户自己的东西</summary>
-    public static int ClearSegments(string directory)
-    {
+    public static int ClearSegments(string directory) {
         var removed = 0;
-        try
-        {
+        try {
             if (!Directory.Exists(directory)) return 0;
 
-            foreach (var file in Directory.EnumerateFiles(directory))
-            {
+            foreach (var file in Directory.EnumerateFiles(directory)) {
                 if (!IsOurTemporaryFile(Path.GetFileName(file))) continue;
 
                 try { File.Delete(file); removed++; } catch { }
             }
-        }
-        catch
-        {
+        } catch {
             // 尽力而为
         }
         return removed;
@@ -173,10 +155,8 @@ public static class StagingStore
     /// 安全约束：目录里若还残留"不是我们生成的文件"，就**不删目录**、只清自己的分片，
     /// 避免误删用户放进来的东西。
     /// </summary>
-    public static bool TryRemoveStagingDirectory(string directory)
-    {
-        try
-        {
+    public static bool TryRemoveStagingDirectory(string directory) {
+        try {
             if (!Directory.Exists(directory)) return true;
 
             // 先判断有没有外来文件；有就保守处理，只清分片
@@ -187,8 +167,7 @@ public static class StagingStore
                                && !IsOurTemporaryFile(name))
                 .ToList();
 
-            if (foreign.Count > 0)
-            {
+            if (foreign.Count > 0) {
                 ClearSegments(directory);
                 return false;
             }
@@ -196,17 +175,14 @@ public static class StagingStore
             ClearSegments(directory);
 
             // 清单等"我们自己的文件"也要删掉 —— 否则目录非空，Directory.Delete 会抛异常
-            foreach (var name in OwnedNames)
-            {
+            foreach (var name in OwnedNames) {
                 var path = Path.Combine(directory, name);
                 try { if (File.Exists(path)) File.Delete(path); } catch { }
             }
 
             Directory.Delete(directory, recursive: false);
             return true;
-        }
-        catch
-        {
+        } catch {
             return false;
         }
     }

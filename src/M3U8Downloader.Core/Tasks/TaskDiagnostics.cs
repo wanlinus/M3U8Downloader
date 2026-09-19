@@ -17,8 +17,7 @@ namespace M3U8Downloader.Core.Tasks;
 /// - 只写状态变化类的事件，不写每个分片，更不写分片内容；
 /// - 文件超过 4 MB 就停止写入，避免长期挂着下载把磁盘写满。
 /// </summary>
-public sealed class TaskDiagnostics
-{
+public sealed class TaskDiagnostics {
     private const long MaxBytes = 4 * 1024 * 1024;
 
     private readonly object _gate = new();
@@ -26,8 +25,7 @@ public sealed class TaskDiagnostics
     private readonly string _name;
     private bool _stopped;
 
-    private TaskDiagnostics(string name, string path)
-    {
+    private TaskDiagnostics(string name, string path) {
         _name = name;
         _path = path;
     }
@@ -43,11 +41,9 @@ public sealed class TaskDiagnostics
     /// 默认是关闭的：自检、命令行会各自创建 <see cref="DownloadTaskManager"/> 实例，
     /// 每跑一次就凭空多一个日志文件 —— 这种副作用必须由使用方主动要求才发生。
     /// </summary>
-    public static TaskDiagnostics Create(string name)
-    {
+    public static TaskDiagnostics Create(string name) {
         var path = "";
-        try
-        {
+        try {
             var dir = AppPaths.LogsDirectory;
             Directory.CreateDirectory(dir);
 
@@ -56,9 +52,7 @@ public sealed class TaskDiagnostics
             File.Delete(probe);
 
             path = Path.Combine(dir, $"{name}-{DateTime.Now:yyyyMMdd-HHmmss}.log");
-        }
-        catch
-        {
+        } catch {
             return new TaskDiagnostics(name, "") { Enabled = false };
         }
 
@@ -69,17 +63,13 @@ public sealed class TaskDiagnostics
     public static TaskDiagnostics Disabled { get; } = new("", "") { Enabled = false };
 
     /// <summary>写一行。任何异常都吞掉：诊断日志绝不能影响下载。</summary>
-    public void Write(string message)
-    {
+    public void Write(string message) {
         if (!Enabled || _stopped) return;
 
-        try
-        {
-            lock (_gate)
-            {
+        try {
+            lock (_gate) {
                 var info = new FileInfo(_path);
-                if (info.Exists && info.Length > MaxBytes)
-                {
+                if (info.Exists && info.Length > MaxBytes) {
                     _stopped = true;
                     return;
                 }
@@ -87,9 +77,7 @@ public sealed class TaskDiagnostics
                 var line = $"{DateTime.Now:HH:mm:ss.fff}  {message}{Environment.NewLine}";
                 File.AppendAllText(_path, line, new UTF8Encoding(false));
             }
-        }
-        catch
-        {
+        } catch {
             // 写不进去就算了
         }
     }

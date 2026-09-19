@@ -13,15 +13,13 @@ namespace M3U8Downloader;
 /// 「站点批量下载」模式的视图模型：
 /// 粘贴播放页地址 → 识别站点 → 列出剧集 → 勾选 → 批量下载。
 /// </summary>
-public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
-{
+public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable {
     private readonly DispatcherQueue _dispatcher;
     private readonly SeriesDownloader _downloader;
     private CancellationTokenSource? _cts;
     private SiteSeries? _series;
 
-    public SeriesBatchViewModel(DispatcherQueue dispatcher)
-    {
+    public SeriesBatchViewModel(DispatcherQueue dispatcher) {
         _dispatcher = dispatcher;
         _downloader = new SeriesDownloader();
         OutputDirectory = KnownFolders.Downloads;   // 系统「下载」目录，实际文件会再套一层「剧名」目录
@@ -30,18 +28,15 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
     // ---------------- 输入 ----------------
 
     private string _pageUrl = "";
-    public string PageUrl
-    {
+    public string PageUrl {
         get => _pageUrl;
         set { if (Set(ref _pageUrl, value)) OnPropertyChanged(nameof(CanParse)); }
     }
 
     private string _outputDirectory = "";
-    public string OutputDirectory
-    {
+    public string OutputDirectory {
         get => _outputDirectory;
-        set
-        {
+        set {
             if (!Set(ref _outputDirectory, value)) return;
 
             // 手动改（输入框 / 「选择…」/ 设置同步）时，它就是新的根目录；
@@ -104,13 +99,10 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
     private SourceOption? _selectedSource;
 
     private int _selectedSourceId;
-    public int SelectedSourceId
-    {
+    public int SelectedSourceId {
         get => _selectedSourceId;
-        private set
-        {
-            if (Set(ref _selectedSourceId, value))
-            {
+        private set {
+            if (Set(ref _selectedSourceId, value)) {
                 OnPropertyChanged(nameof(SourceSummary));
                 OnPropertyChanged(nameof(HasMultipleSources));
                 OnPropertyChanged(nameof(MultipleSourcesVisibility));
@@ -128,11 +120,9 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
     /// 界面上「视频源」下拉框的当前选项（双向绑定）。
     /// 选中即切换：只勾选该源的剧集，并把列表换成该源。
     /// </summary>
-    public SourceOption? SelectedSource
-    {
+    public SourceOption? SelectedSource {
         get => _selectedSource;
-        set
-        {
+        set {
             if (ReferenceEquals(_selectedSource, value)) return;
             _selectedSource = value;
             OnPropertyChanged(nameof(SelectedSource));
@@ -140,10 +130,8 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
-    public string SourceSummary
-    {
-        get
-        {
+    public string SourceSummary {
+        get {
             var current = SourceOptions.FirstOrDefault(o => o.Id == _selectedSourceId);
             if (current is null) return "";
             return HasMultipleSources
@@ -156,8 +144,7 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
     /// 切换播放源：只勾选该源的剧集，并把列表切换成该源。
     /// 下拉框与解析后的弹窗都走这里。
     /// </summary>
-    public void ApplySource(int sourceId)
-    {
+    public void ApplySource(int sourceId) {
         if (_series == null) return;
 
         SeriesDownloader.SelectSource(_series, sourceId);
@@ -165,8 +152,7 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
 
         // 让下拉框跟着走（直接改字段，避免再触发一次 ApplySource）
         var option = SourceOptions.FirstOrDefault(o => o.Id == sourceId);
-        if (!ReferenceEquals(_selectedSource, option))
-        {
+        if (!ReferenceEquals(_selectedSource, option)) {
             _selectedSource = option;
             OnPropertyChanged(nameof(SelectedSource));
         }
@@ -195,13 +181,10 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
     public string SiteInfo { get => _siteInfo; set => Set(ref _siteInfo, value); }
 
     private bool _hasSeries;
-    public bool HasSeries
-    {
+    public bool HasSeries {
         get => _hasSeries;
-        set
-        {
-            if (Set(ref _hasSeries, value))
-            {
+        set {
+            if (Set(ref _hasSeries, value)) {
                 OnPropertyChanged(nameof(CanDownload));
                 OnPropertyChanged(nameof(SelectionSummary));
                 OnPropertyChanged(nameof(HasSeriesVisibility));
@@ -216,13 +199,10 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
     // ---------------- 状态 ----------------
 
     private bool _isBusy;
-    public bool IsBusy
-    {
+    public bool IsBusy {
         get => _isBusy;
-        set
-        {
-            if (Set(ref _isBusy, value))
-            {
+        set {
+            if (Set(ref _isBusy, value)) {
                 OnPropertyChanged(nameof(IsIdle));
                 OnPropertyChanged(nameof(CanParse));
                 OnPropertyChanged(nameof(CanDownload));
@@ -252,10 +232,8 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
 
     public ObservableCollection<string> Logs { get; } = new();
 
-    public string SelectionSummary
-    {
-        get
-        {
+    public string SelectionSummary {
+        get {
             var total = VisibleEpisodes.Count;
             var selected = VisibleEpisodes.Count(e => e.IsSelected);
             return total == 0 ? "" : $"已选 {selected} / 共 {total} 集";
@@ -265,11 +243,9 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
     // ---------------- 操作 ----------------
 
     /// <summary>识别站点并列出剧集</summary>
-    public async Task ParseAsync()
-    {
+    public async Task ParseAsync() {
         if (IsBusy) return;
-        if (string.IsNullOrWhiteSpace(PageUrl))
-        {
+        if (string.IsNullOrWhiteSpace(PageUrl)) {
             StatusText = "请先填写视频页面地址。";
             return;
         }
@@ -280,8 +256,7 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
         ResetResults();
         _cts = new CancellationTokenSource();
 
-        try
-        {
+        try {
             StatusText = "正在识别站点并解析剧集列表…";
             Log($"开始解析：{PageUrl}");
 
@@ -294,13 +269,10 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
             SiteInfo = $"{series.SiteName} · {series.Kind} · 剧集ID {series.SeriesId}" +
                        $" · {series.Sources.Count} 个播放源 · 共 {series.TotalEpisodes} 集";
 
-            foreach (var ep in series.AllEpisodes.OrderBy(e => e.SourceId).ThenBy(e => e.Number))
-            {
+            foreach (var ep in series.AllEpisodes.OrderBy(e => e.SourceId).ThenBy(e => e.Number)) {
                 var vm = new EpisodeItemViewModel(ep);
-                vm.PropertyChanged += (_, args) =>
-                {
-                    if (args.PropertyName == nameof(EpisodeItemViewModel.IsSelected))
-                    {
+                vm.PropertyChanged += (_, args) => {
+                    if (args.PropertyName == nameof(EpisodeItemViewModel.IsSelected)) {
                         OnPropertyChanged(nameof(SelectionSummary));
                         OnPropertyChanged(nameof(CanDownload));
                     }
@@ -331,13 +303,9 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
 
             if (HasSeries)
                 Log($"✔ 解析完成，共 {Episodes.Count} 集 / {SourceOptions.Count} 个播放源。");
-        }
-        catch (OperationCanceledException)
-        {
+        } catch (OperationCanceledException) {
             StatusText = "解析已取消。";
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             // 代理类失败的消息本来就是写给用户看的（自带"该去改什么"），原样弹；
             // 其余异常补一句上下文，免得弹窗里孤零零一行英文堆栈式消息
             LastErrorNeedsProxy = ex is SiteProxyRequiredException;
@@ -348,9 +316,7 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
             // 状态栏只有一行，把多行消息压平再放，否则会被截得莫名其妙
             StatusText = "解析失败：" + ex.Message.ReplaceLineEndings(" ");
             Log("✘ " + ex);
-        }
-        finally
-        {
+        } finally {
             IsBusy = false;
             _cts?.Dispose();
             _cts = null;
@@ -368,8 +334,7 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
     /// 任务已加入下载队列：清空当前页面，让用户可以立刻去贴下一个地址。
     /// 连输入框一起清掉 —— 否则很容易手滑对同一部剧重复建任务。
     /// </summary>
-    public void ClearAfterEnqueue()
-    {
+    public void ClearAfterEnqueue() {
         ResetResults();
         PageUrl = "";
         StatusText = "任务已加入「下载任务」，可继续识别下一部剧。";
@@ -387,24 +352,20 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
     /// 目录本身不在这里创建：真正落盘时 <c>SeriesDownloader.DownloadAsync</c> 会
     /// <c>Directory.CreateDirectory</c>，所以「点了下载但文件夹不存在」不会失败。
     /// </summary>
-    private void AppendSeriesFolder(SiteSeries series)
-    {
+    private void AppendSeriesFolder(SiteSeries series) {
         var root = string.IsNullOrWhiteSpace(_outputRoot) ? OutputDirectory : _outputRoot;
 
-        var full = SeriesDownloader.ResolveSeriesDirectory(series, new SeriesDownloadOptions
-        {
+        var full = SeriesDownloader.ResolveSeriesDirectory(series, new SeriesDownloadOptions {
             // 留空时交给 ResolveSeriesDirectory 回落到系统「下载」目录
             OutputDirectory = root,
             SeriesSubdirectory = SeriesSubdirectory,
         });
 
         _appendingSeriesFolder = true;
-        try { OutputDirectory = full; }
-        finally { _appendingSeriesFolder = false; }
+        try { OutputDirectory = full; } finally { _appendingSeriesFolder = false; }
     }
 
-    private void ResetResults()
-    {
+    private void ResetResults() {
         Episodes.Clear();
         VisibleEpisodes.Clear();
         SourceOptions.Clear();
@@ -432,22 +393,18 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
     /// 把当前已勾选的剧集加入下载队列（立即返回，不阻塞界面）。
     /// 之后由「下载任务」面板负责展示进度与结果。
     /// </summary>
-    public SeriesTask? EnqueueTo(DownloadTaskManager manager)
-    {
+    public SeriesTask? EnqueueTo(DownloadTaskManager manager) {
         if (IsBusy) return null;
-        if (_series is null)
-        {
+        if (_series is null) {
             StatusText = "请先识别剧集。";
             return null;
         }
-        if (!Episodes.Any(e => e.IsSelected))
-        {
+        if (!Episodes.Any(e => e.IsSelected)) {
             StatusText = "请至少勾选一集。";
             return null;
         }
 
-        try
-        {
+        try {
             var options = BuildOptions(_series);
             var task = manager.Enqueue(_series, options);
 
@@ -458,9 +415,7 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
             Log($"产物格式：{(string.IsNullOrWhiteSpace(options.FfmpegPath) ? "TS（未配置 FFmpeg）" : "MP4")}");
 
             return task;
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             StatusText = "加入队列失败：" + ex.Message;
             Log("✘ " + ex);
             return null;
@@ -468,10 +423,8 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
     }
 
     /// <summary>构建下载参数（输出目录、并发、请求头、ffmpeg 路径等）</summary>
-    public SeriesDownloadOptions BuildOptions(SiteSeries series)
-    {
-        var options = new SeriesDownloadOptions
-        {
+    public SeriesDownloadOptions BuildOptions(SiteSeries series) {
+        var options = new SeriesDownloadOptions {
             OutputDirectory = string.IsNullOrWhiteSpace(OutputDirectory) ? "." : OutputDirectory,
             EpisodeConcurrency = Math.Clamp(EpisodeConcurrency, 1, 8),
             SegmentConcurrency = Math.Clamp(SegmentConcurrency, 1, 64),
@@ -490,45 +443,37 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
     /// <summary>ffmpeg 路径（来自设置）；为空则产物保留 TS 格式</summary>
     public string? FfmpegPath { get; set; }
 
-    public void Cancel()
-    {
+    public void Cancel() {
         // 队列化之后，"取消"由「下载任务」面板里的按钮负责；这里只清掉解析中的请求
         _cts?.Cancel();
         StatusText = "已取消当前解析。";
     }
 
-    public void SelectAll(bool selected)
-    {
+    public void SelectAll(bool selected) {
         foreach (var vm in VisibleEpisodes) vm.IsSelected = selected;
         OnPropertyChanged(nameof(SelectionSummary));
         OnPropertyChanged(nameof(CanDownload));
     }
 
     /// <summary>按区间勾选，如 "1-8" 或 "1,3,5"（只在当前播放源内生效）</summary>
-    public void ApplySelectionSpec(string spec)
-    {
+    public void ApplySelectionSpec(string spec) {
         if (_series == null || string.IsNullOrWhiteSpace(spec)) return;
-        try
-        {
+        try {
             SeriesDownloader.ApplySelection(_series, spec);
             // 选集规则只在当前源内生效，避免把其它播放源的同名集也勾上
             foreach (var ep in _series.AllEpisodes)
                 ep.IsSelected = ep.IsSelected && ep.SourceId == SelectedSourceId;
             foreach (var vm in Episodes) vm.IsSelected = vm.Episode.IsSelected;
             StatusText = $"已按「{spec}」勾选：{SelectionSummary}";
-        }
-        catch (Exception ex)
-        {
+        } catch (Exception ex) {
             StatusText = "选集表达式无效：" + ex.Message;
         }
         OnPropertyChanged(nameof(SelectionSummary));
         OnPropertyChanged(nameof(CanDownload));
     }
 
-    private void Log(string message)
-    {
-        _dispatcher.TryEnqueue(() =>
-        {
+    private void Log(string message) {
+        _dispatcher.TryEnqueue(() => {
             Logs.Add($"[{DateTime.Now:HH:mm:ss}] {message}");
             while (Logs.Count > 500) Logs.RemoveAt(0);
         });
@@ -536,8 +481,7 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null)
-    {
+    private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null) {
         if (EqualityComparer<T>.Default.Equals(field, value)) return false;
         field = value;
         OnPropertyChanged(name);
@@ -547,8 +491,7 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
     private void OnPropertyChanged(string? name) =>
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 
-    public void Dispose()
-    {
+    public void Dispose() {
         _cts?.Cancel();
         _cts?.Dispose();
         _downloader.Dispose();
@@ -559,8 +502,7 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable
 /// 播放源选择项（多播放源弹窗用）。
 /// Display 形如「360播放器（16集）」，名字来自站点 playerconfig.js 的 player_list。
 /// </summary>
-public sealed class SourceOption
-{
+public sealed class SourceOption {
     public required int Id { get; init; }
     public required string Display { get; init; }
     public override string ToString() => Display;

@@ -1,8 +1,7 @@
 namespace M3U8Downloader.Core.Sites;
 
 /// <summary>站点类型（对应一套 CMS 模板 / 一类页面结构）</summary>
-public enum SiteKind
-{
+public enum SiteKind {
     Unknown = 0,
 
     /// <summary>苹果 CMS（MacCMS v10）及其衍生模板。国内影视站占比最高。</summary>
@@ -16,8 +15,7 @@ public enum SiteKind
 }
 
 /// <summary>页面上的一个播放源（MacCMS 里对应 URL 中的 sid）。同一部剧常有多个源。</summary>
-public sealed class SitePlaySource
-{
+public sealed class SitePlaySource {
     public required int Id { get; init; }
 
     /// <summary>源名称，如「360播放器」。能从 playerconfig.js 查到，取不到就留空。</summary>
@@ -30,8 +28,7 @@ public sealed class SitePlaySource
 }
 
 /// <summary>一集</summary>
-public sealed class SiteEpisode
-{
+public sealed class SiteEpisode {
     /// <summary>集号（1 基）</summary>
     public required int Number { get; init; }
 
@@ -63,8 +60,7 @@ public sealed class SiteEpisode
 }
 
 /// <summary>「站点识别 + 剧集解析」的结果</summary>
-public sealed class SiteSeries
-{
+public sealed class SiteSeries {
     public required SiteKind Kind { get; init; }
 
     /// <summary>站点名，取自 &lt;title&gt; 或 host</summary>

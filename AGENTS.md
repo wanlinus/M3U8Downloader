@@ -5,16 +5,16 @@
 
 ## 这个项目是什么
 
-WinUI 的 M3U8 下载器。四个项目，**严格单向依赖**：
+WinUI 的 M3U8 下载器。三个项目，**严格单向依赖**：
 
 ```
-M3U8Downloader.Core              纯 BCL，不引任何第三方包
+M3U8Downloader.Core              内核 + 存储（唯一第三方依赖：Microsoft.Data.Sqlite）
   ├── M3U8Downloader.App         WinUI 界面
-  ├── M3U8Downloader.Cli         命令行
   └── tests/M3U8Downloader.SelfTest   自检（无界面、不依赖外网）
 ```
 
-**改 Core 时不要引入外部依赖** —— 另外三个都靠它。
+**Core 的第三方依赖只允许一个方向：存储。** 加了新包就等于把负担摊给另外两个项目，
+动手前先看下面「存储」一节里那笔账。
 
 ## 平台事实与依赖边界（2026-09 核实过，别再重复踩）
 
@@ -50,6 +50,55 @@ M3U8Downloader.Core              纯 BCL，不引任何第三方包
 把通知换成 `AppNotificationManager` 属于可选的体验改进，代价是要额外处理
 `Register()/Unregister()` 与"点通知激活应用"跟单实例逻辑的配合。
 
+## 存储（统一库）
+
+**设置、任务列表、下载历史全在一个 SQLite 库里：`data\m3u8.db`**（路径见 `AppPaths.DatabaseFile`）。
+实现在 `Core/Storage/`：`SqliteDatabase`（连接 + 建表 + 迁移）、`SqliteSettingsStore`、
+`SqliteTaskStore`、`SqliteDownloadHistory`。
+
+```
+settings            一行一列一项（CHECK (id = 1) 保证只有一行）
+downloads           下载历史，主键 (page_url, episode_number)
+tasks               任务本体，一个任务一行
+task_episodes       任务里每一集一行
+task_snapshots      站点快照，一个任务一行
+snapshot_episodes   快照里每一集一行（站点上全部集）
+meta                schema 版本、迁移标记
+```
+
+**为什么允许 Core 引 SQLite（这条约定是改过的，别照旧文档写）**：
+早先的规矩是"Core 零第三方包，存储实现挂界面层"。代价是 Core 里留一套接口、App 里写一份实现 ——
+而自检只依赖 Core，**测不到真实现**，SQL 语句得另起一个 `_diag` 项目单独兜。
+引进来之后的总账：两个项目各多一个 `e_sqlite3.dll`（1.9 MB，自包含发布 228 MB 里占 0.8%），
+换来存储实现只此一份、自检直接测真货。
+**但方向仅限存储** —— 别的功能想引包，先回来把这笔账重算一遍。
+
+**连接约定**（`SqliteDatabase.Open()`）：连接串必须带 `Pooling=false`（理由见
+`docs/pitfalls.md` 第 29 条，那是真被坑过的地方）；每次开连接都设 `busy_timeout=3000`；
+**所有读写都自己吞异常** —— 库坏了不该让程序起不来（设置退回默认值、任务读成空表、
+历史少一条账，程序照常跑）。
+
+**表设计约定**：
+
+- **设置是"一行一列一项"，不是 key-value。** 那样只是把 JSON 的字段拆成行，
+  除了"在数据库里"没有任何好处，还丢掉列类型。
+- **读的时候缺列 / 为 NULL / 压根没有那一行，一律退回代码里的默认值** ——
+  所以以后加设置项是安全的，不需要为它写迁移。
+- 动态 key 的小字典（快照里的请求头）直接存一列 JSON，不单独建表。
+- 需要顺序的东西（任务列表）存 `sort_order`，读回来按它排。
+
+**旧文件迁移**（`SqliteDatabase.MigrateLegacyFiles`，构造库的时候就地跑）：
+
+- 只在**库里还没有对应数据**时搬；搬完把旧文件改名成 `*.migrated` 留档，**绝不删除**；
+- 搬失败（旧库损坏、JSON 坏了、写不进去）就原样留着，下次启动再试；
+- 迁移来源是可以注入的（`SqliteDatabase.LegacySources`）—— **自检必须传临时目录**，
+  否则验证"迁移"会把用户真实的数据搬走；
+- `AppPaths.MigrateLegacyData()`（`%APPDATA%` → `data\`）在**库已存在时跳过那三个文件**：
+  库是权威，而旧文件在迁移后本来就不在 data\ 里了，不判断就会每次启动都抄一份废文件回来。
+
+自检的**阶段 Q** 覆盖这一整块（历史 upsert/销账、设置往返、任务往返含快照、
+三种旧文件的迁移与"非空不搬"），改存储一定要跑它。
+
 ## 常用命令
 
 ```powershell
@@ -60,7 +109,10 @@ dotnet build src\M3U8Downloader.App\M3U8Downloader.App.csproj -c Debug -p:Platfo
 dotnet run --project tests\M3U8Downloader.SelfTest -c Debug
 
 # 自包含发布
-.\scripts\publish.ps1 [-Version x.y.z] [-SkipCli]
+.\scripts\publish.ps1 [-Version x.y.z]
+
+# 按 .editorconfig 重排代码排版（只动空白与换行，不改语义）
+dotnet format whitespace <项目或解决方案>
 ```
 
 - **发布前先杀掉正在运行的 `M3U8Downloader.exe`**，否则 `publish/app-win-x64` 被占用、publish 失败。
@@ -110,28 +162,39 @@ dotnet run --project tests\M3U8Downloader.SelfTest -c Debug
 - **后台线程不要遍历界面绑定的 `ObservableCollection`**，先在 UI 线程快照一份。
 - **站点适配是模块化的**：新增站点 = 在 `Core/Sites/` 加一个 `ISiteAdapter` 实现，
   反射会自动登记（按 `Priority` 排序）。**不要改注册代码**。
-- **第三方存储只挂在界面层，Core 只留接口**。典型例子：下载历史用 SQLite
-  （`Microsoft.Data.Sqlite`），但 `Core` 里只有 `IDownloadHistoryStore` 协议，
-  实现 `SqliteDownloadHistory` 在 `M3U8Downloader.App` 里。理由：Core 被另外三个项目
-  依赖，一旦引包，命令行、自检、界面全都会被带上原生库。
+- **存储只有一份，就在 `Core/Storage/`**。设置、任务、历史都在统一库里 ——
+  别在界面层另起一份存储实现（那正是当初"存储挂界面层"留下的病：自检测不到真实现）。
+  新增要落盘的东西，先想清楚它属于哪张表，而不是新开一个文件。
 - **「下过没有」以磁盘文件为准**。任务记录会被「清理已完成」清掉、重装会丢，
   视频却还躺在文件夹里。判断某集下载过没有，用 `EpisodeFileScanner` 按文件名模板
   正向算出文件名再查文件；任务记录与下载历史只用来说明"为什么没有"。
-- **数据路径一律走 `AppPaths`，不要自己拼 `%APPDATA%`**。设置、任务列表、下载历史、
-  日志都在同一个数据目录里（优先程序目录下的 `data\`，不可写时退回
-  `%APPDATA%\M3U8Downloader\`）。散着拼路径的后果是数据被劈成两半：
-  便携版在程序目录、回退时又在用户目录，用户拷走文件夹却发现任务没跟过去。
-  新增任何需要落盘的东西，都在 `AppPaths` 里加一个属性。
+- **数据路径一律走 `AppPaths`，不要自己拼 `%APPDATA%`**。数据目录优先程序目录下的
+  `data\`（便携：拷走整个文件夹即带走全部数据），不可写时退回 `%APPDATA%\M3U8Downloader\`。
+  散着拼路径的后果是数据被劈成两半：便携版在程序目录、回退时又在用户目录，
+  用户拷走文件夹却发现任务没跟过去。新增任何需要落盘的东西，都在 `AppPaths` 里加一个属性；
+  只有 `m3u8.db` 一个文件是常态，另几个 `*.json` / `downloads.db` 是**旧版本遗留**
+  （迁移来源，见「存储」一节）。
 - **广告识别宁可不跳也不能误删正片**。判断规则的门槛设得保守，
   任何一条不满足就整条放弃；新增规则时同样要留"反例"自检。
 - **做了对用户有价值的事就要显式说出来**。比如过滤掉广告后，任务卡片与完成弹窗
   都会报数量 —— 用户察觉不到"少了几十秒"，不声不响地做等于没做。
+- **代码排版是 K&R：大括号跟在同一行**（类 / 方法 / 属性 / 控制流 / 初始化器都一样）。
+  维护者是 Java 出身，这是他明确要求的风格，由根目录 `.editorconfig` 强制 ——
+  **别按 C# 生态惯例"顺手"改回 Allman（大括号另起一行）**。
+  只影响排版，编译器不在乎；改完跑一遍自检即可。要批量重排用
+  `dotnet format whitespace`（只做空白/换行，不动语义）。
+  注意：**命名仍按 .NET 惯例**（方法 PascalCase、接口 `I` 前缀、私有字段 `_camelCase`），
+  因为 XAML 绑定和框架 API 都是这套 —— 别把它一起"Java 化"了。
 
 ## 文档分工
 
 | 文件 | 面向 | 内容 |
 |---|---|---|
 | `README.md` | 用户 | 怎么用、支持哪些站点、代理策略 |
+| `docs/csharp-for-java-devs.md` | 维护者（Java 出身） | 这份 C# 代码怎么读：语法逐条对照 Java、容易踩的差异 |
 | `docs/internal-design.md` | 维护者 | 分层、数据流、一条流水线两种模式 |
 | `docs/pitfalls.md` | 改代码的人 | 踩过的坑，**动手前先看** |
 | `AGENTS.md` | AI agent | 本文件：约定与发版流程 |
+
+改动仓库结构或存储方式时，`docs/internal-design.md` 的目录树与「存储分工」两处要一起更新 ——
+它们是最容易过期的部分。

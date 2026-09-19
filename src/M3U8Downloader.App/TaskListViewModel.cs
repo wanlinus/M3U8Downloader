@@ -10,12 +10,10 @@ namespace M3U8Downloader;
 /// 「下载任务」面板的视图模型。
 /// 直接暴露 <see cref="DownloadTaskManager.Tasks"/>，列表项绑定 <see cref="SeriesTask"/>。
 /// </summary>
-public sealed class TaskListViewModel : INotifyPropertyChanged
-{
+public sealed class TaskListViewModel : INotifyPropertyChanged {
     public DownloadTaskManager Manager { get; }
 
-    public TaskListViewModel(DownloadTaskManager manager)
-    {
+    public TaskListViewModel(DownloadTaskManager manager) {
         Manager = manager;
         Manager.Tasks.CollectionChanged += OnTasksChanged;
         Manager.Changed += (_, _) => Refresh();
@@ -24,14 +22,11 @@ public sealed class TaskListViewModel : INotifyPropertyChanged
 
     public ObservableCollection<SeriesTask> Tasks => Manager.Tasks;
 
-    private void OnTasksChanged(object? sender, NotifyCollectionChangedEventArgs e)
-    {
-        if (e.NewItems is not null)
-        {
+    private void OnTasksChanged(object? sender, NotifyCollectionChangedEventArgs e) {
+        if (e.NewItems is not null) {
             foreach (SeriesTask t in e.NewItems) t.PropertyChanged += OnTaskPropertyChanged;
         }
-        if (e.OldItems is not null)
-        {
+        if (e.OldItems is not null) {
             foreach (SeriesTask t in e.OldItems) t.PropertyChanged -= OnTaskPropertyChanged;
         }
         Refresh();
@@ -39,8 +34,7 @@ public sealed class TaskListViewModel : INotifyPropertyChanged
 
     private void OnTaskPropertyChanged(object? sender, PropertyChangedEventArgs e) => Refresh();
 
-    private void Refresh()
-    {
+    private void Refresh() {
         OnPropertyChanged(nameof(SummaryText));
         OnPropertyChanged(nameof(HasTasks));
         OnPropertyChanged(nameof(HasNoTasks));
@@ -54,11 +48,9 @@ public sealed class TaskListViewModel : INotifyPropertyChanged
     private string? _notice;
 
     /// <summary>一次性提示（例如「已恢复上次的任务」）。留空表示不显示。</summary>
-    public string? Notice
-    {
+    public string? Notice {
         get => _notice;
-        private set
-        {
+        private set {
             if (_notice == value) return;
             _notice = value;
             OnPropertyChanged(nameof(Notice));
@@ -74,10 +66,8 @@ public sealed class TaskListViewModel : INotifyPropertyChanged
     public bool HasTasks => Tasks.Count > 0;
     public bool HasNoTasks => !HasTasks;
 
-    public string SummaryText
-    {
-        get
-        {
+    public string SummaryText {
+        get {
             if (Tasks.Count == 0) return "";
 
             var running = Tasks.Count(t => t.State == SeriesTaskState.Running);

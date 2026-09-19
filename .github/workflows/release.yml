@@ -62,7 +62,6 @@ jobs:
 
           # 用 /* 打包：解压出来直接就是 exe，不再套一层目录
           Compress-Archive -Path 'publish/app-win-x64/*' -DestinationPath "dist/M3U8Downloader-$tag-win-x64.zip" -CompressionLevel Optimal
-          Compress-Archive -Path 'publish/cli-win-x64/*' -DestinationPath "dist/m3u8dl-$tag-win-x64.zip" -CompressionLevel Optimal
 
           Get-ChildItem dist | ForEach-Object {
             Write-Host ("  {0}  {1} MB" -f $_.Name, [math]::Round($_.Length / 1MB, 1))
@@ -104,8 +103,7 @@ jobs:
             ''
             '| 包 | 用途 |'
             '|---|---|'
-            '| `M3U8Downloader-*-win-x64.zip` | 图形界面（主程序） |'
-            '| `m3u8dl-*-win-x64.zip` | 命令行版 |'
+            '| `M3U8Downloader-*-win-x64.zip` | 主程序（解压即用，免安装） |'
             ''
             '## 本次解决的问题'
             ''
