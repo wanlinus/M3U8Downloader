@@ -25,8 +25,15 @@ M3U8Downloader.Core              内核 + 存储（唯一第三方依赖：Micro
 
 **别把元包换成组件包**：2.x 的 SDK 拆成了 `Microsoft.WindowsAppSDK.WinUI` / `.Base` /
 `.Foundation` / `.AI` / `.ML` / `.Search` / `.Widgets` 等组件，官方说可以按需引用来减小包体。
-但 `H.NotifyIcon.WinUI` 声明依赖的是**元包** `Microsoft.WindowsAppSDK >= 1.6` —— 一旦不显式引
-元包，它会把 1.6 元包拖回来和 2.x 组件混用（还附带 NU1603 警告）。实测过，收益不确定，已回退。
+但 `H.NotifyIcon.WinUI` 的 nuspec 里依赖的是**元包** `Microsoft.WindowsAppSDK >= 1.6` ——
+一旦不显式引元包，它会把 1.6 元包拖回来，和 2.x 的组件**混在一起**。
+2026-09 在 2.4 上复测过（把元包换成 Base / Foundation / InteractiveExperiences / WinUI /
+DWrite / Runtime 六个组件）：`dotnet list package --include-transitive` 里同时出现
+`Microsoft.WindowsAppSDK 1.6.250108002` 与 `WinUI 2.3.6` / `Runtime 2.4.0`，
+而 restore **一条警告都没有** —— 静默混用，比报 NU1603 还难发现。
+元包自己也没有"按组件裁剪"的开关（`WindowsAppSdkComponentPackages` 只是内部用的目录列表）。
+**要真走组件包，前提是先去掉 `H.NotifyIcon`**（自己封 `Shell_NotifyIcon`），
+而它省下的那 51 MB 发布脚本已经拿到了（见下一段）—— 所以不值得。结论：继续用元包 + 发布后清理。
 
 **所以那堆用不到的东西是发布之后清掉的**：元包会把 AI / ML / Search / Widgets / Workloads
 全带上 —— 实测 **61 个文件、51.5 MB**（`onnxruntime.dll` 21 MB、`DirectML.dll` 18 MB、
