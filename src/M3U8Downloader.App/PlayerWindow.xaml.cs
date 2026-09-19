@@ -1,5 +1,6 @@
 using Microsoft.UI.Xaml;
 using Windows.Media.Core;
+using Windows.Media.Playback;
 
 namespace M3U8Downloader;
 
@@ -17,6 +18,7 @@ public sealed partial class PlayerWindow : Window {
 
     private readonly string _seriesTitle;
     private readonly IReadOnlyList<Item> _playlist;
+    private readonly MediaPlayer _player;
     private int _index;
 
     public PlayerWindow(string seriesTitle, IReadOnlyList<Item> playlist, int startIndex) {
@@ -27,15 +29,35 @@ public sealed partial class PlayerWindow : Window {
         _index = startIndex;
 
         // MediaPlayerElement.MediaPlayer 第一次访问时会自己建一个播放器。
-        // **谁创建谁释放**：它建的由它自己收拾，我们只挂事件、不要 Dispose ——
-        // 在窗口关闭途中释放它会让 Window.Close() 本身抛 E_ABORT(0x80004004)，
-        // 而那个异常会让整个进程崩掉（实机表现就是"关视频把软件也关了"）。
-        var player = Player.MediaPlayer;
-        player.MediaOpened += (_, _) => ErrorText.Visibility = Visibility.Collapsed;
-        player.MediaFailed += (_, e) => ShowError(
+        // **谁创建谁释放**：它建的由它自己收拾，我们只挂事件、**不要 Dispose** ——
+        // 在窗口关闭途中释放它，Window.Close() 本身就会抛 E_ABORT(0x80004004)，
+        // 异常没人接，整个进程跟着崩（实机表现："关视频把软件也关了"）。
+        _player = Player.MediaPlayer;
+        _player.MediaOpened += (_, _) => ErrorText.Visibility = Visibility.Collapsed;
+        _player.MediaFailed += (_, e) => ShowError(
             $"这一集放不出来：{e.ErrorMessage}（0x{e.ExtendedErrorCode?.HResult:X8}）");
 
+        // "不 Dispose"不等于"什么都不做"：元素什么时候回收它的播放器是它的事，
+        // 窗口关掉之后声音可能还留在后台继续响（实机反馈）。
+        // 所以在窗口关闭前、以及真的关掉之后，各主动停一次。
+        AppWindow.Closing += (_, _) => StopPlayback();
+        Closed += (_, _) => StopPlayback();
+
         Show(startIndex);
+    }
+
+    /// <summary>
+    /// 停掉播放。**只停、不 Dispose**：这个播放器归 <see cref="MediaPlayerElement"/> 所有
+    /// （见构造函数里的说明），我们把它暂停并松开媒体就够 —— 剩下的交给元素自己收拾。
+    /// 注意别改成 Dispose：那会让关闭动作抛异常并把整个进程崩掉。
+    /// </summary>
+    private void StopPlayback() {
+        try {
+            _player.Pause();
+            _player.Source = null;
+        } catch {
+            // 已经跟窗口一起没了就算了
+        }
     }
 
     /// <summary>切到播放列表的第 <paramref name="index"/> 项并开始播</summary>
