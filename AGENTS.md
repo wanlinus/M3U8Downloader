@@ -28,6 +28,16 @@ M3U8Downloader.Core              内核 + 存储（唯一第三方依赖：Micro
 但 `H.NotifyIcon.WinUI` 声明依赖的是**元包** `Microsoft.WindowsAppSDK >= 1.6` —— 一旦不显式引
 元包，它会把 1.6 元包拖回来和 2.x 组件混用（还附带 NU1603 警告）。实测过，收益不确定，已回退。
 
+**所以那堆用不到的东西是发布之后清掉的**：元包会把 AI / ML / Search / Widgets / Workloads
+全带上 —— 实测 **61 个文件、51.5 MB**（`onnxruntime.dll` 21 MB、`DirectML.dll` 18 MB、
+`Microsoft.Windows.Search.dll` 3.2 MB），而本项目的代码对这些 API **零引用**。
+`scripts/publish.ps1` 在 `dotnet publish` 之后按文件名模式删掉它们，另外把 WinUI 自带的
+~85 个语言资源目录砍到 `zh-CN` / `zh-TW` / `en-us`（**82 个目录、3.2 MB**）。
+这一步是实测过的：清理后启动，窗口正常出现 —— 顺带证明了 SQLite 原生库与 XAML 资源索引
+没被误删。**但哪天真要用到这些 API，必须把名字从脚本里的 `$unusedPattern` 去掉**，
+否则是运行时才炸，编译期完全看不出来。
+（顺带一提：发布体积 225 MB → 174 MB，而**我们自己的代码只占 3.2 MB**。）
+
 **托盘图标（通知区域）没有官方 API**，Windows App SDK 2.4 仍然没有：
 
 - `AppWindow.SetTaskbarIcon` 是**任务栏上的窗口图标**（与 `SetTitleBarIcon` 并列）
@@ -69,7 +79,7 @@ meta                schema 版本
 **为什么允许 Core 引 SQLite（这条约定是改过的，别照旧文档写）**：
 早先的规矩是"Core 零第三方包，存储实现挂界面层"。代价是 Core 里留一套接口、App 里写一份实现 ——
 而自检只依赖 Core，**测不到真实现**，SQL 语句得另起一个 `_diag` 项目单独兜。
-引进来之后的总账：两个项目各多一个 `e_sqlite3.dll`（1.9 MB，自包含发布 228 MB 里占 0.8%），
+引进来之后的总账：两个项目各多一个 `e_sqlite3.dll`（1.9 MB，清理后的自包含发布 174 MB 里占 1.1%），
 换来存储实现只此一份、自检直接测真货。
 **但方向仅限存储** —— 别的功能想引包，先回来把这笔账重算一遍。
 
@@ -109,6 +119,9 @@ dotnet format whitespace <项目或解决方案>
 ```
 
 - **发布前先杀掉正在运行的 `M3U8Downloader.exe`**，否则 `publish/app-win-x64` 被占用、publish 失败。
+- **发布后启动一次产物，确认窗口能出来** —— `publish` 成功不代表能跑：缺 XAML 资源索引（PRI）时
+  build 与 publish 都一声不响，只有真正启动才报 `XamlParseException`。
+  见 `docs/pitfalls.md` 第 34 条。
 - 自检跑的是本地 `HttpListener` 上的假 HLS 服务器，**不访问外网**，CI 里也能跑。
 
 ## 版本号

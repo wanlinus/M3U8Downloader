@@ -46,6 +46,31 @@ if (-not $SkipApp) {
     dotnet publish "src\M3U8Downloader.App\M3U8Downloader.App.csproj" -c Release -r $Runtime -p:Platform=$platform -o $appOut @versionArgs
     if ($LASTEXITCODE -ne 0) { exit 1 }
 
+    # ---- Trim what a plain WinUI app never uses ----
+    #
+    # Microsoft.WindowsAppSDK is a *metapackage*: besides WinUI it also drags in the
+    # AI / ML / Search / Widgets / Workloads components. That is ~51 MB of the publish
+    # output (onnxruntime.dll alone is 21 MB, DirectML.dll 18 MB), and this project's
+    # code references none of those APIs. Verified by trimming a copy and launching it:
+    # the window comes up normally, which also proves the SQLite native library and the
+    # XAML resource index survived the trim.
+    #
+    # If the app ever starts using one of these APIs, the matching name must be removed
+    # from this pattern -- otherwise the app will fail at runtime, not at build time.
+    $unusedPattern = '^(onnxruntime\.dll|DirectML\.dll|PerceptiveStreaming\.dll|NPUDetect\.dll|workloads\.json|workloads\..*\.json|Microsoft\.(Windows\.AI|Windows\.Internal\.AI|Windows\.ImageCreationInternal|Windows\.Internal\.ImageCreation|Windows\.Internal\.Vision|Windows\.Internal\.SemanticSearch|Windows\.Internal\.ContentModeration|Windows\.SemanticSearch|Windows\.Vision|Windows\.Search|Windows\.Widgets|Windows\.Workloads|Windows\.Private\.Workloads|ML\.OnnxRuntime|AI\.MachineLearning|Graphics\.Imaging|Graphics\.Internal\.Imaging|Graphics\.ImagingInternal))'
+    $unused = @(Get-ChildItem $appOut -File | Where-Object { $_.Name -match $unusedPattern })
+    $unusedMb = [math]::Round((($unused | Measure-Object Length -Sum).Sum) / 1MB, 1)
+    $unused | Remove-Item -Force
+
+    # WinUI ships ~85 satellite resource folders; we only ever show a Chinese or English
+    # UI, so the rest are dead weight (and 82 extra folders in the user's face).
+    $keepLanguages = @('zh-CN', 'zh-TW', 'en-us')
+    $langDirs = @(Get-ChildItem $appOut -Directory |
+        Where-Object { $_.Name -match '^[a-z]{2,3}(-[A-Za-z]{2,4})*$' -and $keepLanguages -notcontains $_.Name })
+    $langDirs | Remove-Item -Recurse -Force
+
+    Write-Host ("  trimmed {0} unused files ({1} MB) and {2} language folders" -f $unused.Count, $unusedMb, $langDirs.Count) -ForegroundColor DarkGray
+
     # Verify the private runtime was actually bundled, otherwise the target
     # machine will fail with "required components of the Windows App Runtime are missing".
     # e_sqlite3.dll is the native SQLite library behind the unified database

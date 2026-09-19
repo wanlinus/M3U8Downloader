@@ -14,7 +14,7 @@
       唯一的第三方依赖。原来的约定是"Core 零第三方包、存储实现挂界面层"，
       代价是要在 Core 留一套接口 + 在 App 写一份实现，结果是自检只能测到替身、
       SQL 语句得另起一个 _diag 项目单独兜。
-      引进来之后的账：两个项目各多一个 e_sqlite3.dll（1.9 MB，自包含发布 228 MB 里 0.8%），
+      引进来之后的账：两个项目各多一个 e_sqlite3.dll（1.9 MB，自包含发布约 174 MB 里 1.1%），
       换来存储实现只此一份、自检直接测真货。详见 AGENTS.md。
     -->
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
