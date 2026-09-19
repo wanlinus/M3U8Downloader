@@ -77,9 +77,14 @@ if (-not $SkipApp) {
     # (settings / task list / download history). Missing it is nastier than the
     # others: the app starts fine and only blows up later, the first time storage
     # is touched -- so it belongs in this completeness check.
+    # M3U8Downloader.pri is the XAML resource index, and it is easy to lose silently:
+    # the build always produces it, but it only lands in the *publish* output when
+    # EnableMsixTooling is true (see docs/pitfalls.md #34). A publish that misses it
+    # still reports success and only blows up when the app is launched.
     $required = @(
         'M3U8Downloader.exe', 'hostpolicy.dll', 'coreclr.dll',
         'Microsoft.WindowsAppRuntime.dll', 'Microsoft.ui.xaml.dll',
+        'M3U8Downloader.pri',
         'e_sqlite3.dll', 'Microsoft.Data.Sqlite.dll'
     )
     $missing = @()
