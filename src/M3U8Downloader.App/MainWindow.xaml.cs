@@ -68,6 +68,9 @@ public sealed partial class MainWindow : Window {
         BatchPanel.DataContext = _batch;
         TaskPanel.DataContext = _tasks;
 
+        // 站点下拉框的清单（存在统一库的 sites 表里；库里一条都没有就是内置的那几个）
+        _batch.LoadSearchSites();
+
         // 启动时检查更新（设置里默认关，免得每次启动都联网）。
         // 只有查到新版本才出声 —— 见 CheckForUpdatesOnStartupAsync
         if (AppSettingsStore.Load().CheckUpdateOnStartup)
@@ -527,7 +530,14 @@ public sealed partial class MainWindow : Window {
 
     // ==================== 站点批量下载 ====================
 
-    private async void OnParseSeries(object sender, RoutedEventArgs e) {
+    private async void OnParseSeries(object sender, RoutedEventArgs e) => await ParseSeriesAsync();
+
+    /// <summary>
+    /// 识别一次剧集并把结果铺到界面上；失败时弹窗说明原因。
+    /// 单独抽出来是因为**搜索结果点击**也要走同一条路 —— 那条路是
+    /// "搜到 → 直接出集数 → 下载"，不该让用户自己再复制粘贴一次地址。
+    /// </summary>
+    private async Task ParseSeriesAsync() {
         // 不再弹窗打断：多个播放源时，上方工具栏的「视频源」下拉里直接选
         await _batch.ParseAsync();
 
@@ -540,6 +550,30 @@ public sealed partial class MainWindow : Window {
         // 识别失败必须弹窗 —— 理由见 ShowParseFailureAsync
         if (_batch.LastError is { Length: > 0 } error)
             await ShowParseFailureAsync(error, _batch.LastErrorNeedsProxy);
+    }
+
+    // ==================== 站内搜索 ====================
+
+    /// <summary>
+    /// 「搜索视频…」：搜和选都在弹窗里完成，这里只负责"拿到用户选的那部剧，接着走识别"。
+    /// 弹窗自己不做解析 —— 那要好几秒、失败时还要弹提示，留在主界面上更清楚。
+    /// </summary>
+    private async void OnOpenSearch(object sender, RoutedEventArgs e) {
+        var dialog = new SearchDialog(_batch) { XamlRoot = Content.XamlRoot };
+        await dialog.ShowAsync();
+
+        if (dialog.Selected is null) return;
+
+        _batch.UseSearchHit(dialog.Selected);
+        await ParseSeriesAsync();
+    }
+
+    /// <summary>「站点管理…」：改了清单就整份写回库里</summary>
+    private async void OnManageSites(object sender, RoutedEventArgs e) {
+        var dialog = new SiteListDialog(_batch.SearchSites.ToList()) { XamlRoot = Content.XamlRoot };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+
+        _batch.SaveSearchSites(dialog.Sites);
     }
 
     /// <summary>

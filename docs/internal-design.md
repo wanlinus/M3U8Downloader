@@ -22,10 +22,11 @@ M3U8Downloader/
 │   │   ├── KnownFolders.cs           # 系统「下载」目录（支持被用户移盘）
 │   │   ├── AppInfo.cs                # 版本/版权/许可证/第三方声明
 │   │   ├── Settings/                 # 设置模型（落盘在统一库里）
-│   │   ├── Storage/                  # ★统一库：设置 / 任务 / 历史的 SQLite 实现
+│   │   ├── Storage/                  # ★统一库：设置 / 任务 / 历史 / 站点清单的 SQLite 实现
 │   │   │   ├── SqliteDatabase.cs     # 连接、建表、schema 版本
 │   │   │   ├── SqliteSettingsStore.cs# settings 表（一行一列一项）
 │   │   │   ├── SqliteTaskStore.cs    # tasks / task_episodes / 快照 四张表
+│   │   │   ├── SqliteSiteStore.cs    # sites 表（站内搜索的站点清单）
 │   │   │   └── SqliteDownloadHistory.cs # downloads 表（upsert + 销账）
 │   │   ├── Net/ProxyHelper.cs        # 代理构造、地址规范化、连通性测试
 │   │   ├── Ffmpeg/                   # FFmpeg 探测与自动下载安装
@@ -39,6 +40,8 @@ M3U8Downloader/
 │   │   │   ├── MacCmsAdapter.cs      # 苹果 CMS 适配器
 │   │   │   ├── NnyyAdapter.cs        # 努努影院适配器（自研站点：ep_slug + /_gp/ 接口）
 │   │   │   ├── GenericHtmlAdapter.cs # 通用兜底：直接从页面里找 m3u8
+│   │   │   ├── SiteSearch.cs         # 站内搜索（读首页表单 → 抓搜索页 → 严格/宽松解析）
+│   │   │   ├── SiteCatalog.cs        # 站点清单模型 + 协议（实现在 Storage/SqliteSiteStore）
 │   │   │   └── SeriesDownloader.cs   # 批量下载协调器 + 选集 + 清晰度挑选
 │   │   └── Tasks/
 │   │       ├── DownloadTaskManager.cs  # 下载任务队列（串行执行 + UI 线程封送 + 续传）
@@ -49,10 +52,12 @@ M3U8Downloader/
 │   ├── M3U8Downloader.App/           # WinUI 图形界面
 │   │   ├── MainWindow.xaml(.cs)      # 三模式界面 + 设置/关于入口
 │   │   ├── MainViewModel.cs          # 单文件面板（只搬参数与日志，流程在 Core）
-│   │   ├── SeriesBatchViewModel.cs   # 站点批量下载
+│   │   ├── SeriesBatchViewModel.cs   # 站点批量下载 + 站内搜索（站点下拉框 / 关键词 / 结果）
 │   │   ├── TaskListViewModel.cs      # 下载任务面板（汇总 / 实时速度）
 │   │   ├── EpisodeItemViewModel.cs   # 剧集项（可绑定勾选状态）
 │   │   ├── FetchNewDialog.xaml(.cs)  # 续下更新的勾选框（已下载的置灰）
+│   │   ├── SiteListDialog.xaml(.cs)  # 站点管理（增删搜索用的站点，存进 sites 表）
+│   │   ├── PlayerWindow.xaml(.cs)    # 内置播放器（MediaPlayerElement，零依赖）
 │   │   ├── SettingsDialog.xaml(.cs)  # 设置（FFmpeg / 代理 / 下载默认值）
 │   │   └── AboutDialog.xaml(.cs)     # 关于（版本 / 版权 / 许可证 / 第三方声明）
 ├── tests/
@@ -67,14 +72,15 @@ M3U8Downloader/
 ### 分层与依赖方向
 
 ```
-M3U8Downloader.Core        ← 零外部依赖（纯 BCL）：引擎、编排、持久化都在这里
-      ▲        ▲        ▲
-      │        │        │
-    App       Cli    SelfTest
+M3U8Downloader.Core        ← 引擎、编排、持久化都在这里（唯一第三方包：Microsoft.Data.Sqlite）
+      ▲              ▲
+      │              │
+    App          SelfTest
 ```
 
-- **只允许单向依赖**：App / Cli / SelfTest 都只引用 Core，Core 从不反向引用它们
-  （`Core.csproj` 里没有任何 `PackageReference`，也没有任何 `ProjectReference`）；
+- **只允许单向依赖**：App / SelfTest 都只引用 Core，Core 从不反向引用它们
+  （`Core.csproj` 里没有任何 `ProjectReference`；`PackageReference` 只有 SQLite 一个，
+  理由与那笔账见 `AGENTS.md` 的「存储」一节）；
 - Core 内部按职责分层：引擎（`HlsDownloader`）→ 单集流水线（`Downloads/EpisodePipeline`）→
   站点协调（`Sites/SeriesDownloader`）→ 任务队列（`Tasks/DownloadTaskManager`）；
 - 界面只做两件事：把参数递进去、把日志与进度搬上来 —— **下载流程不写在 ViewModel 里**。
@@ -94,8 +100,42 @@ M3U8Downloader.Core        ← 零外部依赖（纯 BCL）：引擎、编排、
 | `SeriesDownloader` | 站点模式协调器：集间并发、进度聚合、分集报告与续传 |
 
 流水线本身**不含任何站点概念**（没有剧集、没有集号），输入就是「一个播放列表地址 +
-一个暂存目录 + 一个输出文件名」—— 所以图形界面、命令行、站点模式、单文件模式四处
-走的是同一段代码，校验强度不会再出现落差（自检的阶段 I 守着这条）。
+一个暂存目录 + 一个输出文件名」—— 所以图形界面里的单文件模式与站点模式走的是同一段代码，
+校验强度不会再出现落差（自检的阶段 I 守着这条）。
+
+### 站内搜索
+
+搜到的东西直接喂给上面那条既有链路，"搜索"本身不碰下载：
+
+```
+站点下拉框（sites 表）
+   ↓ 选中的站点根地址 + 关键词
+SiteSearch.SearchAsync()
+   ├─ 抓站点**首页** → 读 <form> 拿到 action 与关键词字段名   ← 搜索路径不靠猜
+   ├─ 按表单拼出搜索地址 → 抓搜索页
+   └─ ParseHits()：先严格（只认结果条目特征）→ 一条都没有才宽松
+   ↓ 命中列表（剧名 + 详情页地址 + 海报/角标/类型/简介）
+SearchDialog 的海报卡片列表（海报走 SiteContext.GetBytesAsync，同一条代理回退链）
+   ↓ 点一部
+地址填进「播放页地址」→ 与手工粘贴走同一条解析路线
+```
+
+四条设计约束（都是实测撞出来的，详见 `docs/pitfalls.md` 第 37 / 39 / 40 条）：
+
+- **搜索入口读首页表单，不写死路径**。苹果 CMS 各家的搜索路径毫无规律，
+  首页 `<form>` 里的 `action` + 字段名是唯一可靠来源 —— 换模板、换域名都不用改代码；
+- **严格优先、宽松兜底**。严格模式只认"结果条目"才有的特征（海报 `alt` / `<div class="nm">` /
+  章节数角标），否则页脚推荐位的纯文本链接会混进来（实测一次能混 28 条）；
+- **认不出详情页形态的站会被整站滤空**。白名单里少了 `/video/` 这种形态，
+  表现就是"严格解析 0 条" —— 所以自检阶段 R 同时钉住了该认的与不该认的（斜杠播放页）；
+- **结果给足信息**。同名剧太多（搜「交锋」出来六部不同的），卡片必须带海报、类型和简介，
+  才认得出要的是哪一部 —— 这也是它做成弹窗而不是主界面一行列表的原因。
+- **站点给的角标不能照单全收**。`更新至N集` 是 MacCMS 的 `vod_remarks`（上传者手填、
+  经常不更新），实测同一部剧搜索页写"更新至04集"、详情页却有 28 集，所以解析时就丢掉；
+  只留 `全9集` / `已完结` / `HD中字` 这类结论性标记。
+
+站点清单落在统一库的 `sites` 表里，由用户在「站点管理…」里维护：这类站换域名很勤，
+写死在代码里的清单过一阵就是一堆死链。
 
 ---
 
@@ -239,17 +279,19 @@ MP4 读 `moov → mvhd` 的 duration/timescale。两边都读不出来时会明�
 
 | 数据 | 位置 | 说明 |
 | --- | --- | --- |
-| 设置 / 任务列表 / 下载历史 | `<数据目录>\m3u8.db` | SQLite，实现在 `Core/Storage/` |
+| 设置 / 任务列表 / 下载历史 / 站点清单 | `<数据目录>\m3u8.db` | SQLite，实现在 `Core/Storage/` |
 | 诊断日志 | `<数据目录>\logs\` | Core（每次启动一个文件） |
 
-三样数据**在同一个库里**，对应这些表：`settings`、`tasks` + `task_episodes`、
-`task_snapshots` + `snapshot_episodes`、`downloads`，另有 `meta` 存 schema 版本。
+这几样数据**在同一个库里**，对应这些表：`settings`、`tasks` + `task_episodes`、
+`task_snapshots` + `snapshot_episodes`、`downloads`、`sites`，另有 `meta` 存 schema 版本。
 
 - `SqliteDatabase` —— 连接（`Pooling=false`、每次开连接设 `busy_timeout=3000`）、建表；
 - `SqliteSettingsStore` —— **一行一列一项**（不是 key-value），读的时候缺列/为 NULL 一律退回
   代码里的默认值，所以加设置项不需要写迁移；
 - `SqliteTaskStore` —— 任务 / 集 / 快照拆成四张表，`Save` 是"整表重写放一个事务"
   （中途失败整体回滚，比写 `.tmp` 再改名更稳），列表顺序靠 `sort_order`；
+- `SqliteSiteStore` —— 站内搜索用的站点清单，`sort_order` 定下拉框顺序；**条数为 0 或库读不出来
+  都退回内置清单**（下拉框空着等于这个功能没法用），地址不合法的行直接跳过；
 - `SqliteDownloadHistory` —— 按 `(page_url, episode_number)` upsert（重下同一集只覆盖旧行），
   用户把任务**移除**时按 `page_url` 整部销掉（任务都没了，账留着只会在下次续下时凭空冒出
   "曾下载过"）——「清理已完成」不销账，那只是收拾列表，视频还在盘上，

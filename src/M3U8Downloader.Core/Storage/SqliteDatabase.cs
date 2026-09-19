@@ -21,7 +21,7 @@ namespace M3U8Downloader.Core.Storage;
 /// </summary>
 public sealed class SqliteDatabase {
     /// <summary>schema 版本。加表/加列时 +1，并在 <see cref="EnsureSchema"/> 里补升级语句。</summary>
-    public const int SchemaVersion = 1;
+    public const int SchemaVersion = 2;
 
     private static readonly Lazy<SqliteDatabase> Cached =
         new(() => new SqliteDatabase(AppPaths.DatabaseFile), isThreadSafe: true);
@@ -222,6 +222,16 @@ public sealed class SqliteDatabase {
         CREATE TABLE IF NOT EXISTS meta (
             name  TEXT PRIMARY KEY,
             value TEXT NOT NULL
+        );
+
+        -- 站内搜索的站点清单（界面「站点」下拉框）。单独一张表而不是塞进 settings：
+        -- 它是有序的列表，每项有名字和地址两个字段，塞进设置只能拼成一段 JSON。
+        -- 老库升级到 2 时这张表会被 IF NOT EXISTS 建出来，不需要 ALTER。
+        CREATE TABLE IF NOT EXISTS sites (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT    NOT NULL DEFAULT '',
+            url         TEXT    NOT NULL DEFAULT '',
+            sort_order  INTEGER NOT NULL DEFAULT 0
         );
         """;
 }

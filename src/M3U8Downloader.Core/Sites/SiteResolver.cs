@@ -142,41 +142,80 @@ public sealed class SiteContext : IDisposable {
     public Task<string> GetHtmlAsync(string url, CancellationToken ct = default) =>
         GetHtmlAsync(url, Direct, ct);
 
+    /// <summary>按适配器的需求取页面，**直连不通时自动改走代理重试一次**</summary>
+    public Task<string> GetHtmlAsync(string url, ISiteAdapter adapter, CancellationToken ct = default) =>
+        GetHtmlAsync(url, adapter.NeedsProxy, ct);
+
     /// <summary>
-    /// 按适配器的需求取页面，**直连不通时自动改走代理重试一次**。
+    /// 取页面，**直连不通时自动改走代理重试一次**。
     ///
     /// 这一层回退是必要的：绝大多数影视站在国内、直连又快又不耗代理，
     /// 但确实有一部分（欧乐影院 olevod.com 实测就是这样）挂在外面，国内直连直接超时。
     /// 让每个适配器自己声明 NeedsProxy 既容易漏，又会让国内站点白白绕一圈代理；
     /// 靠"失败了再回退"就两全了 —— 通畅时零代理开销，不通时自动兜底。
+    ///
+    /// <paramref name="needsProxyFirst"/> 是"明确知道要代理"的情形：置 true 就直接走代理、
+    /// 不白等一次连接超时。没有适配器可问的调用方（比如站点搜索，手里只有一个根地址）
+    /// 传 false 即可 —— 回退链本身照样生效。
     /// </summary>
-    public async Task<string> GetHtmlAsync(string url, ISiteAdapter adapter, CancellationToken ct = default) {
+    public async Task<string> GetHtmlAsync(string url, bool needsProxyFirst, CancellationToken ct = default) =>
+        await FetchAsync(url, needsProxyFirst, ReadHtmlAsync, ct).ConfigureAwait(false);
+
+    /// <summary>
+    /// 取一段二进制（搜索弹窗里的海报就是走这里）。
+    ///
+    /// **回退链和取页面完全是同一段代码**，不另写一份：被墙站点的海报同样要能自动改走代理，
+    /// 不能因为"只是张图"就少一层兜底。
+    /// </summary>
+    public Task<byte[]> GetBytesAsync(string url, bool needsProxyFirst, CancellationToken ct = default) =>
+        FetchAsync(url, needsProxyFirst,
+            static (resp, token) => resp.Content.ReadAsByteArrayAsync(token), ct);
+
+    private static async Task<string> ReadHtmlAsync(HttpResponseMessage resp, CancellationToken ct) {
+        var bytes = await resp.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+        return DecodeHtml(bytes, resp.Content.Headers.ContentType?.CharSet);
+    }
+
+    /// <summary>
+    /// 取页面/二进制，**直连不通时自动改走代理重试一次**。
+    ///
+    /// 这一层回退是必要的：绝大多数影视站在国内、直连又快又不耗代理，
+    /// 但确实有一部分（欧乐影院 olevod.com 实测就是这样）挂在外面，国内直连直接超时。
+    /// 让每个适配器自己声明 NeedsProxy 既容易漏，又会让国内站点白白绕一圈代理；
+    /// 靠"失败了再回退"就两全了 —— 通畅时零代理开销，不通时自动兜底。
+    ///
+    /// <paramref name="needsProxyFirst"/> 是"明确知道要代理"的情形：置 true 就直接走代理、
+    /// 不白等一次连接超时。没有适配器可问的调用方（比如站点搜索，手里只有一个根地址）
+    /// 传 false 即可 —— 回退链本身照样生效。
+    /// </summary>
+    private async Task<T> FetchAsync<T>(string url, bool needsProxyFirst,
+        Func<HttpResponseMessage, CancellationToken, Task<T>> read, CancellationToken ct) {
         var host = Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : null;
         var canFallback = host is not null && Proxied is not null;
 
-        // 适配器明确要求代理，或这台主机已经证明直连不通 → 直接用代理，不再白等一次超时
-        if (canFallback && (adapter.NeedsProxy || _proxyRequiredHosts.ContainsKey(host!)))
-            return await GetHtmlAsync(url, Proxied!, ct).ConfigureAwait(false);
+        // 明确要求代理，或这台主机已经证明直连不通 → 直接用代理，不再白等一次超时
+        if (canFallback && (needsProxyFirst || _proxyRequiredHosts.ContainsKey(host!)))
+            return await GetAsync(url, Proxied!, read, ct).ConfigureAwait(false);
 
         try {
-            return await GetHtmlAsync(url, Direct, ct).ConfigureAwait(false);
+            return await GetAsync(url, Direct, read, ct).ConfigureAwait(false);
         } catch (Exception ex) when (canFallback && IsConnectivityFailure(ex, ct)) {
             try {
-                var html = await GetHtmlAsync(url, Proxied!, ct).ConfigureAwait(false);
+                var value = await GetAsync(url, Proxied!, read, ct).ConfigureAwait(false);
                 NoteProxyFallback(url, host!);
-                return html;
+                return value;
             } catch (Exception) when (!ct.IsCancellationRequested && _directPatient is not null) {
                 // 代理也拿不到。但要分清：「直连 5 秒内没连上」并不等于站点不可达 ——
                 // 实测影迷界影院直连耗时在 0.9s~30s 之间剧烈波动，而它的代理 IP 被站点 403。
                 // 把「慢」当成「不通」，就会把本来能成功的一次请求判死（还会顺带污染
                 // _proxyRequiredHosts 的判断），所以给直连一次宽容的重试。
-                return await GetHtmlAsync(url, _directPatient, ct).ConfigureAwait(false);
+                return await GetAsync(url, _directPatient, read, ct).ConfigureAwait(false);
             }
         } catch (HttpRequestException ex) when (canFallback && ShouldRetryViaProxy(ex.StatusCode)) {
             // 连上了但被「按 IP 拒绝」（403/451）：同样换代理再试一次
-            var html = await GetHtmlAsync(url, Proxied!, ct).ConfigureAwait(false);
+            var value = await GetAsync(url, Proxied!, read, ct).ConfigureAwait(false);
             NoteProxyFallback(url, host!);
-            return html;
+            return value;
         }
     }
 
@@ -209,11 +248,15 @@ public sealed class SiteContext : IDisposable {
     }
 
     /// <summary>用指定客户端 GET 一个页面</summary>
-    public async Task<string> GetHtmlAsync(string url, HttpClient client, CancellationToken ct = default) {
-        using var resp = await client.GetAsync(url, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
+    public Task<string> GetHtmlAsync(string url, HttpClient client, CancellationToken ct = default) =>
+        GetAsync(url, client, ReadHtmlAsync, ct);
+
+    private static async Task<T> GetAsync<T>(string url, HttpClient client,
+        Func<HttpResponseMessage, CancellationToken, Task<T>> read, CancellationToken ct) {
+        using var resp = await client.GetAsync(url, HttpCompletionOption.ResponseContentRead, ct)
+            .ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
-        var bytes = await resp.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
-        return DecodeHtml(bytes, resp.Content.Headers.ContentType?.CharSet);
+        return await read(resp, ct).ConfigureAwait(false);
     }
 
     /// <summary>

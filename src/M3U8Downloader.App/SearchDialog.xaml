@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ContentDialog
+    x:Class="M3U8Downloader.SearchDialog"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:M3U8Downloader"
+    Title="搜索视频"
+    CloseButtonText="关闭"
+    MinWidth="900" MaxWidth="900">
+
+    <ContentDialog.Resources>
+        <local:BoolToVisibilityConverter x:Key="BoolToVis" />
+        <!-- 默认最大宽度只有 548，一排放不下"海报 + 剧名 + 简介"，这里放宽 -->
+        <x:Double x:Key="ContentDialogMaxWidth">900</x:Double>
+        <x:Double x:Key="ContentDialogMinWidth">900</x:Double>
+    </ContentDialog.Resources>
+
+    <Grid Width="860" RowSpacing="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- 站点下拉框 + 关键词 + 搜索 -->
+        <Grid Grid.Row="0" ColumnSpacing="8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <TextBlock Grid.Column="0" Text="站点" VerticalAlignment="Center" />
+            <ComboBox Grid.Column="1" MinWidth="168"
+                      ItemsSource="{Binding SearchSites}"
+                      SelectedItem="{Binding SelectedSite, Mode=TwoWay}"
+                      DisplayMemberPath="Display" />
+            <TextBox Grid.Column="2" x:Name="KeywordBox"
+                     PlaceholderText="{Binding SearchPlaceholder}"
+                     KeyDown="OnKeywordKeyDown"
+                     Text="{Binding SearchKeyword, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+            <Button Grid.Column="3" MinWidth="110" Click="OnSearch"
+                    IsEnabled="{Binding CanSearch}"
+                    AutomationProperties.Name="{Binding SearchButtonText}"
+                    Style="{ThemeResource AccentButtonStyle}">
+                <!-- 搜索要抓好几个页面（首页 + 搜索页 + 每张海报），没有转圈会以为卡死 -->
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <ProgressRing Width="16" Height="16"
+                                  IsActive="{Binding IsSearching}"
+                                  Visibility="{Binding IsSearching, Converter={StaticResource BoolToVis}}"
+                                  Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
+                    <TextBlock Text="{Binding SearchButtonText}" />
+                </StackPanel>
+            </Button>
+        </Grid>
+
+        <!-- 结果概要：也承担"这个站搜不了"「一条都没搜到」这类说明 -->
+        <TextBlock Grid.Row="1" Text="{Binding SearchSummary}" FontSize="12" TextWrapping="Wrap"
+                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+        <!--
+            结果列表照青苹果影院搜索页的样子排：左边海报，右边剧名 + 类型 + 简介。
+            搜「交锋」会出来一堆同名的剧（交锋 / 权力交锋 / 宿敌交锋 / 圣诞交锋…），
+            只给一行剧名根本分不清，海报和简介才是能认出"我要的是哪部"的东西。
+        -->
+        <Border Grid.Row="2" BorderThickness="1" CornerRadius="6" MinHeight="280" MaxHeight="440"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
+            <ListView ItemsSource="{Binding SearchHits}" SelectionMode="None"
+                      IsItemClickEnabled="True" ItemClick="OnHitClick"
+                      Padding="4" ScrollViewer.VerticalScrollBarVisibility="Auto">
+                <ListView.ItemContainerStyle>
+                    <Style TargetType="ListViewItem">
+                        <!--
+                            不设这个，ListViewItem 会按内容宽度收缩，卡片里那个 * 列就塌成一条窄缝 ——
+                            表现是简介被挤成八行、海报挨着文字，而弹窗明明有 900 宽。
+                        -->
+                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                    </Style>
+                </ListView.ItemContainerStyle>
+                <ListView.ItemTemplate>
+                    <DataTemplate>
+                        <Grid ColumnSpacing="12" Padding="8,6"
+                              ToolTipService.ToolTip="{Binding PageUrl}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <!-- 海报位固定 84×126（2:3）：取不到图就是一块底色，不会塌成 0 宽 -->
+                            <Border Grid.Column="0" Width="84" Height="126" CornerRadius="4"
+                                    Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
+                                <Image Source="{Binding Poster}" Stretch="UniformToFill" />
+                            </Border>
+
+                            <StackPanel Grid.Column="1" Spacing="3" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding Title}" FontSize="15" FontWeight="SemiBold"
+                                           TextTrimming="CharacterEllipsis" />
+                                <TextBlock Text="{Binding Note}" FontSize="12"
+                                           Visibility="{Binding NoteVisibility}"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Text="{Binding Intro}" FontSize="12" MaxLines="2"
+                                           TextWrapping="Wrap" TextTrimming="CharacterEllipsis"
+                                           Visibility="{Binding IntroVisibility}"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Text="{Binding DisplayUrl}" FontSize="11"
+                                           Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                            </StackPanel>
+
+                            <!-- 角标（更新至04集 / 全9集 / HD中字）挂右边，和站点一样 -->
+                            <TextBlock Grid.Column="2" Text="{Binding Badge}" FontSize="12"
+                                       VerticalAlignment="Top" Margin="0,6,4,0"
+                                       Visibility="{Binding BadgeVisibility}"
+                                       Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                        </Grid>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+
+                <ListView.ItemContainerTransitions>
+                    <TransitionCollection>
+                        <EntranceThemeTransition FromVerticalOffset="14" />
+                        <RepositionThemeTransition />
+                    </TransitionCollection>
+                </ListView.ItemContainerTransitions>
+            </ListView>
+        </Border>
+    </Grid>
+</ContentDialog>

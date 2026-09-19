@@ -213,13 +213,34 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
+            <!--
+                搜索走弹窗：搜一部剧会出来一堆同名的（交锋 / 权力交锋 / 宿敌交锋 …），
+                得配上海报和简介才分得清 —— 那条窄结果列表放不下这些，
+                所以「搜索视频…」开弹窗，选定后回到主界面走识别与下载。
+            -->
+            <Grid Grid.Row="0" ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Button Grid.Column="0" Content="搜索视频…" Click="OnOpenSearch" MinWidth="130"
+                        Style="{ThemeResource AccentButtonStyle}" />
+                <Button Grid.Column="1" Content="站点管理…" Click="OnManageSites" />
+                <TextBlock Grid.Column="2" VerticalAlignment="Center" FontSize="12"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           Text="不知道地址？按剧名搜一下，点一部剧就能列出它的集数。" />
+            </Grid>
+
             <!-- 地址 / 目录 / 并发 -->
-            <Grid Grid.Row="0" ColumnSpacing="12" RowSpacing="8">
+            <Grid Grid.Row="1" ColumnSpacing="12" RowSpacing="8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="*" />
@@ -284,7 +305,7 @@
             </Grid>
 
             <!-- 剧集信息条 -->
-            <Border Grid.Row="1" Padding="12,9" CornerRadius="6" BorderThickness="1"
+            <Border Grid.Row="2" Padding="12,9" CornerRadius="6" BorderThickness="1"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                     Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
                     Visibility="{Binding HasSeriesVisibility}">
@@ -298,7 +319,7 @@
             </Border>
 
             <!-- 选集工具栏 -->
-            <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8"
+            <StackPanel Grid.Row="3" Orientation="Horizontal" Spacing="8"
                         Visibility="{Binding HasSeriesVisibility}">
                 <TextBlock Text="剧集列表" FontWeight="SemiBold" VerticalAlignment="Center" />
                 <TextBlock Text="{Binding SelectionSummary}" VerticalAlignment="Center" FontSize="12"
@@ -319,7 +340,7 @@
             </StackPanel>
 
             <!-- 剧集列表 -->
-            <Border Grid.Row="3" x:Name="EpisodeListBorder" BorderThickness="1" CornerRadius="6"
+            <Border Grid.Row="4" x:Name="EpisodeListBorder" BorderThickness="1" CornerRadius="6"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                     Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
                 <ListView ItemsSource="{Binding VisibleEpisodes}" SelectionMode="None"
@@ -361,14 +382,14 @@
             </Border>
 
             <!-- 总体进度 -->
-            <StackPanel Grid.Row="4" Spacing="6">
+            <StackPanel Grid.Row="5" Spacing="6">
                 <ProgressBar Value="{Binding TotalProgress}" Maximum="100" />
                 <TextBlock Text="{Binding DetailText}" FontSize="12"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
             </StackPanel>
 
             <!-- 操作区 -->
-            <Grid Grid.Row="5" ColumnSpacing="12">
+            <Grid Grid.Row="6" ColumnSpacing="12">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />

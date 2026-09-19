@@ -5,6 +5,7 @@ using Microsoft.UI.Dispatching;
 using M3U8Downloader.Core;
 using M3U8Downloader.Core.Settings;
 using M3U8Downloader.Core.Sites;
+using M3U8Downloader.Core.Storage;
 using M3U8Downloader.Core.Tasks;
 
 namespace M3U8Downloader;
@@ -212,7 +213,7 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable {
     }
 
     public bool IsIdle => !IsBusy;
-    public bool CanParse => !IsBusy && !string.IsNullOrWhiteSpace(PageUrl);
+    public bool CanParse => !IsBusy && !IsSearching && !string.IsNullOrWhiteSpace(PageUrl);
     public bool CanDownload => !IsBusy && _series != null && Episodes.Any(e => e.IsSelected);
 
     /// <summary>
@@ -238,6 +239,205 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable {
             var selected = VisibleEpisodes.Count(e => e.IsSelected);
             return total == 0 ? "" : $"已选 {selected} / 共 {total} 集";
         }
+    }
+
+    // ---------------- 站内搜索 ----------------
+
+    /// <summary>站点清单的存放处（统一库里的 sites 表）</summary>
+    private readonly ISiteCatalogStore _siteStore = new SqliteSiteStore();
+
+    /// <summary>搜索用的站点上下文。懒建：没搜过就不必开两个 HttpClient</summary>
+    private SiteContext? _searchContext;
+
+    /// <summary>下拉框里的站点（来自库里存的清单；库里一条都没有就是内置的那几个）</summary>
+    public ObservableCollection<SearchSite> SearchSites { get; } = new();
+
+    private SearchSite? _selectedSite;
+    public SearchSite? SelectedSite {
+        get => _selectedSite;
+        set {
+            if (!Set(ref _selectedSite, value)) return;
+            OnPropertyChanged(nameof(CanSearch));
+            OnPropertyChanged(nameof(SearchPlaceholder));
+        }
+    }
+
+    private string _searchKeyword = "";
+    public string SearchKeyword {
+        get => _searchKeyword;
+        set { if (Set(ref _searchKeyword, value)) OnPropertyChanged(nameof(CanSearch)); }
+    }
+
+    private bool _isSearching;
+    public bool IsSearching {
+        get => _isSearching;
+        private set {
+            if (!Set(ref _isSearching, value)) return;
+
+            // 搜索和识别共用同一个「忙」的语义：谁在跑，两个按钮都不该能按
+            OnPropertyChanged(nameof(CanSearch));
+            OnPropertyChanged(nameof(CanParse));
+            OnPropertyChanged(nameof(SearchButtonText));
+        }
+    }
+
+    public bool CanSearch => !IsBusy && !IsSearching
+                             && !string.IsNullOrWhiteSpace(SearchKeyword)
+                             && SelectedSite?.Root is not null;
+
+    /// <summary>搜索按钮上的文字。跟「识别」按钮同一套理由：进行时态 + ProgressRing</summary>
+    public string SearchButtonText => IsSearching ? "搜索中…" : "搜索";
+
+    /// <summary>搜索框的提示语带上当前站点名 —— 下拉框选的是哪个站，扫一眼就知道</summary>
+    public string SearchPlaceholder =>
+        SelectedSite is null ? "输入剧名" : $"在「{SelectedSite.Display}」里搜剧名";
+
+    /// <summary>搜索结果（点一条即可列出它的集数）</summary>
+    public ObservableCollection<SearchHitViewModel> SearchHits { get; } = new();
+
+    private string _searchSummary = "";
+    public string SearchSummary { get => _searchSummary; private set => Set(ref _searchSummary, value); }
+
+    /// <summary>把库里的站点清单灌进下拉框（界面构造时调一次）</summary>
+    public void LoadSearchSites() => ApplySearchSites(_siteStore.Load());
+
+    /// <summary>
+    /// 换一份站点清单（「站点管理」点确定时调）：先落库，再刷新下拉框。
+    /// **存不上就不改界面** —— 显示成已保存、下次打开又变回去，比直接报错更坑人。
+    /// </summary>
+    public bool SaveSearchSites(IReadOnlyList<SearchSite> sites) {
+        if (!_siteStore.Save(sites)) {
+            StatusText = "站点清单没能存进数据库，这次改动没有生效。";
+            return false;
+        }
+
+        ApplySearchSites(_siteStore.Load());
+        return true;
+    }
+
+    /// <summary>刷新下拉框，尽量把当前选中的那个站保住（按地址认，不按对象认）</summary>
+    private void ApplySearchSites(IReadOnlyList<SearchSite> sites) {
+        var keep = SelectedSite?.Url;
+
+        SearchSites.Clear();
+        foreach (var site in sites) SearchSites.Add(site);
+
+        SelectedSite = SearchSites.FirstOrDefault(s => s.Url == keep) ?? SearchSites.FirstOrDefault();
+    }
+
+    /// <summary>点了搜索结果里的一部剧：把地址填进「播放页地址」，接下来由界面触发识别</summary>
+    public void UseSearchHit(SearchHitViewModel hit) {
+        PageUrl = hit.PageUrl;
+        StatusText = $"已选中《{hit.Title}》，正在列出它的集数…";
+    }
+
+    /// <summary>
+    /// 在选中的站点里按关键词搜。
+    ///
+    /// **搜索入口是去首页读 &lt;form&gt; 得来的**（见 <see cref="SiteSearch"/>），
+    /// 所以站点换模板、换路径都不用改这里的代码。站点压根没有搜索表单时，
+    /// 明确告诉用户"这个站搜不了"—— 而不是给一个空结果，让人以为是关键词写错了。
+    /// </summary>
+    public async Task SearchAsync() {
+        if (!CanSearch) return;
+
+        var site = SelectedSite!;
+        var root = site.Root!;
+        var keyword = SearchKeyword.Trim();
+
+        IsSearching = true;
+        _searchSummary = "";
+        SearchHits.Clear();
+        OnPropertyChanged(nameof(SearchSummary));
+
+        _cts = new CancellationTokenSource();
+
+        try {
+            StatusText = $"正在「{site.Display}」里搜「{keyword}」…";
+            _searchContext ??= new SiteContext();
+
+            var result = await SiteSearch.SearchAsync(_searchContext, root, keyword, _cts.Token);
+
+            if (result.Unsupported) {
+                // 单独说清楚：这不是"没搜到"，是这个站没有搜索入口
+                SearchSummary = $"「{site.Display}」的首页上没有搜索表单，这个站搜不了。" +
+                                "换个站，或者到「站点管理」里把地址改成这个站现在用的域名。";
+                StatusText = "这个站没有搜索入口。";
+                return;
+            }
+
+            var hits = result.Hits.Select(h => new SearchHitViewModel(h)).ToList();
+            foreach (var hit in hits) SearchHits.Add(hit);
+
+            SearchSummary = hits.Count == 0
+                ? $"「{keyword}」在「{site.Display}」里没搜到 —— 换个关键词，或者换个站试试。"
+                : $"在「{site.Display}」搜到 {hits.Count} 部 —— 点一部就能列出它的集数：";
+            StatusText = hits.Count == 0 ? "没搜到结果。" : $"搜索完成，共 {hits.Count} 部。";
+
+            // 海报单独补：一张图几百 KB，得限并发；拉不到也不影响选剧
+            await LoadPostersAsync(hits, _cts.Token);
+        } catch (OperationCanceledException) {
+            SearchSummary = "搜索已取消。";
+            StatusText = "搜索已取消。";
+        } catch (Exception ex) {
+            // 通讯类失败的消息本来就写给用户看（自带"该去改什么"），原样放；其余补一句上下文
+            var reason = ex.Message.ReplaceLineEndings(" ");
+            SearchSummary = $"搜索失败：{reason}";
+            StatusText = "搜索失败：" + reason;
+        } finally {
+            IsSearching = false;
+            _cts?.Dispose();
+            _cts = null;
+        }
+    }
+
+    /// <summary>
+    /// 把海报拉下来。
+    ///
+    /// 走的是 <see cref="SiteContext.GetBytesAsync"/>，也就是**和抓页面同一条直连/代理回退链** ——
+    /// 被墙站点的图同样会自己改走代理，不能因为"只是张图"就少一层兜底。
+    ///
+    /// 三件事必须做对：**限并发**（十几张图一起轰会把站点惹毛）、
+    /// **失败就当没有**（图挂了不该挡住选剧，卡片上留个空位就行）、
+    /// **在 UI 线程上赋值**（绑定属性只能在 UI 线程改，后台改不报错但界面不刷新）。
+    /// </summary>
+    private async Task LoadPostersAsync(IReadOnlyList<SearchHitViewModel> hits, CancellationToken ct) {
+        if (_searchContext is null) return;
+
+        var pending = hits.Where(h => h.PosterUrl is not null).ToList();
+        if (pending.Count == 0) return;
+
+        using var gate = new SemaphoreSlim(4);
+
+        var tasks = pending.Select(async hit => {
+            await gate.WaitAsync(ct);
+            try {
+                var bytes = await _searchContext.GetBytesAsync(hit.PosterUrl!, needsProxyFirst: false, ct);
+                if (bytes.Length == 0) return;
+
+                using var stream = new Windows.Storage.Streams.InMemoryRandomAccessStream();
+                using (var writer = new Windows.Storage.Streams.DataWriter(stream)) {
+                    writer.WriteBytes(bytes);
+                    await writer.StoreAsync();
+                    await writer.FlushAsync();
+                    writer.DetachStream();
+                }
+
+                stream.Seek(0);
+
+                // 按显示宽度解码（84 → 2 倍图 168），别把原图整张解进内存
+                var image = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage { DecodePixelWidth = 168 };
+                await image.SetSourceAsync(stream);
+
+                hit.Poster = image;
+            } catch {
+                // 海报拿不到就算了：卡片上留个空位，选剧照常
+            } finally {
+                gate.Release();
+            }
+        }).ToList();
+
+        try { await Task.WhenAll(tasks); } catch { /* 每条都已各自吞掉 */ }
     }
 
     // ---------------- 操作 ----------------
@@ -494,8 +694,65 @@ public sealed class SeriesBatchViewModel : INotifyPropertyChanged, IDisposable {
     public void Dispose() {
         _cts?.Cancel();
         _cts?.Dispose();
+        _searchContext?.Dispose();
         _downloader.Dispose();
     }
+}
+
+/// <summary>
+/// 搜索结果里的一项（弹窗里的一张卡片）。
+///
+/// 字段照着青苹果影院搜索页的条目来：海报、角标（更新至04集 / 全9集）、类型、简介。
+/// 少任何一个都会退化成"只有剧名"—— 而搜「交锋」出来的一堆同名剧，光看剧名分不清。
+///
+/// <see cref="DisplayUrl"/> 只留主机名之后的路径：卡片宽度有限，
+/// 一串 https://www.xxx.com/... 里真正有信息量的是后面那段。
+/// </summary>
+public sealed class SearchHitViewModel : INotifyPropertyChanged {
+    public SearchHitViewModel(SiteSearchHit hit) {
+        Title = hit.Title;
+        PageUrl = hit.PageUrl;
+        PosterUrl = hit.PosterUrl;
+        Badge = hit.Badge ?? "";
+        Note = hit.Note ?? "";
+        Intro = hit.Intro ?? "";
+
+        DisplayUrl = Uri.TryCreate(hit.PageUrl, UriKind.Absolute, out var uri)
+            ? uri.Host + uri.PathAndQuery
+            : hit.PageUrl;
+    }
+
+    public string Title { get; }
+    public string PageUrl { get; }
+    public string DisplayUrl { get; }
+    public string? PosterUrl { get; }
+    public string Badge { get; }
+    public string Note { get; }
+    public string Intro { get; }
+
+    public Microsoft.UI.Xaml.Visibility BadgeVisibility => Visible(Badge);
+    public Microsoft.UI.Xaml.Visibility NoteVisibility => Visible(Note);
+    public Microsoft.UI.Xaml.Visibility IntroVisibility => Visible(Intro);
+
+    private static Microsoft.UI.Xaml.Visibility Visible(string text) =>
+        text.Length > 0 ? Microsoft.UI.Xaml.Visibility.Visible : Microsoft.UI.Xaml.Visibility.Collapsed;
+
+    private Microsoft.UI.Xaml.Media.ImageSource? _poster;
+
+    /// <summary>海报位图。取不到就是 null，卡片上留一块底色，不影响点选</summary>
+    public Microsoft.UI.Xaml.Media.ImageSource? Poster {
+        get => _poster;
+        set {
+            if (ReferenceEquals(_poster, value)) return;
+            _poster = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Poster)));
+        }
+    }
+
+    /// <summary>列表项在 UI Automation 里显示剧名，而不是类名（也顺带方便排查）</summary>
+    public override string ToString() => Title;
+
+    public event PropertyChangedEventHandler? PropertyChanged;
 }
 
 /// <summary>

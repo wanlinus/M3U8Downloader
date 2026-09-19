@@ -71,7 +71,7 @@ DWrite / Runtime 六个组件）：`dotnet list package --include-transitive` �
 
 **设置、任务列表、下载历史全在一个 SQLite 库里：`data\m3u8.db`**（路径见 `AppPaths.DatabaseFile`）。
 实现在 `Core/Storage/`：`SqliteDatabase`（连接 + 建表）、`SqliteSettingsStore`、
-`SqliteTaskStore`、`SqliteDownloadHistory`。
+`SqliteTaskStore`、`SqliteDownloadHistory`、`SqliteSiteStore`（站内搜索的站点清单）。
 
 ```
 settings            一行一列一项（CHECK (id = 1) 保证只有一行）
@@ -80,6 +80,7 @@ tasks               任务本体，一个任务一行
 task_episodes       任务里每一集一行
 task_snapshots      站点快照，一个任务一行
 snapshot_episodes   快照里每一集一行（站点上全部集）
+sites               站内搜索的站点清单（界面「站点」下拉框，按 sort_order 排）
 meta                schema 版本
 ```
 
@@ -181,6 +182,25 @@ dotnet format whitespace <项目或解决方案>
 - **后台线程不要遍历界面绑定的 `ObservableCollection`**，先在 UI 线程快照一份。
 - **站点适配是模块化的**：新增站点 = 在 `Core/Sites/` 加一个 `ISiteAdapter` 实现，
   反射会自动登记（按 `Priority` 排序）。**不要改注册代码**。
+- **站内搜索的入口只能"读首页的 `<form>`"，不许猜路径。** 苹果 CMS 各家的搜索路径毫无规律
+  （实测青苹果影院 `/vodsearch/-------------.html`、影迷界影院 `/search.html`），
+  第一版挨个试了六种、五种都是错的。首页表单里写着 action 和字段名，读它就不用猜。
+  同理，结果条目要**先严格后宽松**解析：严格模式只认"结果条目"才有的特征
+  （海报 `alt` / `<div class="nm">` / 章节数角标），否则页脚的推荐位会混进来 ——
+  实测影迷界影院搜一次能混进 28 条推荐位。站点没有搜索表单时报"这个站搜不了"，
+  不要显示成空结果（那会被当成"关键词写错了"）。
+- **搜索结果在弹窗里给足信息，不要只列一行剧名。** 搜「交锋」出来的是
+  交锋 / 权力交锋 / 宿敌交锋 / 圣诞交锋 …… 一堆同名剧，只给剧名根本分不清。
+  `SearchDialog` 的卡片照站点搜索页排：海报 + 剧名 + 类型 + 简介 + 角标。
+  海报走 `SiteContext.GetBytesAsync`（**和抓页面同一条直连/代理回退链**），
+  限并发、失败就当没有 —— 图挂了绝不能挡住选剧。
+- **角标只留结论性的，`更新至N集` 一律丢掉。** 那个字段就是 MacCMS 的 `vod_remarks`，
+  **上传者手填、经常不更新**：实测青苹果影院给《交锋》写"更新至04集"，而同一个详情页
+  有第 01 集…第 28 集（换 UA、走代理四种抓法抓到的都是同一份 HTML，不是我们取错元素）。
+  `全9集` / `已完结` / `HD中字` 这类说的是"就这样了"、不随时间漂移，留着才有用。
+  判断在 `SiteSearch.IsUpdatingBadge`，自检阶段 R 一正一反各钉一条。
+- **站点清单不写死在代码里**，存统一库的 `sites` 表、界面「站点管理…」里改 ——
+  这类站换域名很勤，写死过一阵就是一堆死链。内置的三个只在库里空着时兜底。
 - **存储只有一份，就在 `Core/Storage/`**。设置、任务、历史都在统一库里 ——
   别在界面层另起一份存储实现（那正是当初"存储挂界面层"留下的病：自检测不到真实现）。
   新增要落盘的东西，先想清楚它属于哪张表，而不是新开一个文件。

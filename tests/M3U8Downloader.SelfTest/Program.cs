@@ -2236,12 +2236,186 @@ var okUnified = qUpsert.Count == 3
                 && qTasksRoundTrip && qRecorderRule;
 Console.WriteLine($"  统一库: {(okUnified ? "✔" : "✘")}");
 
+// ---------------------------------------------------------------- 阶段 R：站内搜索解析
+//
+// 全是**离线的假页面**，结构照抄真实站点（2026-09 抓下来的原样）——
+// 自检不碰外网，所以只能把真实页面的骨架搬进来守住解析规则。
+//
+// 守的是这几条（都真被坑过）：
+//   1. 影迷界影院的搜索结果条目是 /video/{id}.html，不是 /t/{id}.html ——
+//      漏了 /video/ 这个前缀，真正搜到的那部剧会被整个滤掉，只剩页脚推荐位；
+//   2. /play/{id}/{sid}/{nid}.html 这种斜杠播放页**不是**详情页，不能当结果收；
+//   3. 推荐位那种纯文本链接没有「结果条目」特征（海报 alt / 标题 div），严格解析必须不认。
+
+Console.WriteLine();
+Console.WriteLine("阶段 R：站内搜索解析（离线假页面）");
+
+var searchRoot = new Uri("https://www.example.com");
+
+// --- 影迷界影院：真命中 1 条（/video/）+ 推荐位 2 条（/t/，纯文本）---
+const string wakuredoSearchPage = """
+    <html><body>
+    <form action="/search.html" method="get"><input name="wd" type="text"></form>
+    <div class="list">
+      <a class="c" href="/video/2337178967.html" title="交锋">
+        <div class="pic"><img src="https://img.example.com/a.jpg" alt="交锋" loading="lazy">
+          <span class="ep">更新至第25集</span><span class="sc">★9.0</span></div>
+        <div class="nm">交锋</div>
+        <div class="m">当代国安剧 · 2026</div>
+      </a>
+    </div>
+    <div class="recommend">
+      <a href="/t/482750.html">他们的谎言短剧免费播放</a>
+      <a href="/t/392408.html">带着空间养兽夫我成团宠了电视剧在线观看免费星辰</a>
+    </div>
+    </body></html>
+    """;
+
+// --- 青苹果影院：真命中 2 条（/voddetail/ + 海报 alt），外加一条斜杠播放页做反例 ---
+//
+// 这张卡片**故意照真实页面抄**：同一个详情页在卡片里有 5 个链接（海报、更新至04集、
+// 剧名、导演、简介）。划分"这一条的范围"如果拿"下一个链接"当边界，就会在第二个同 URL
+// 的链接处截断 —— 海报、标签、简介一个都取不到。
+const string qmaoSearchPage = """
+    <html><body>
+    <form action="/vodsearch/-------------.html"><input name="wd" type="text"></form>
+    <div class="TagBookList_tagBookBox">
+    <div class="TagBookList_tagItem">
+      <a class="image_imageScaleBox TagBookList_bookImageBox" href="/voddetail/30450.html">
+        <img alt="交锋" loading="lazy" width="184" height="264" src="/upload/vod/a.webp"></a>
+      <a class="TagBookList_totalChapterNum" href="/voddetail/30450.html">更新至04集</a>
+      <div class="TagBookList_bookInfo">
+        <a class="TagBookList_bookName" href="/voddetail/30450.html"><b>交锋</b></a>
+        <a class="TagBookList_bookAuthor" href="/voddetail/30450.html">
+          <span>姚晓峰</span><span>王凯 , 周依然</span></a>
+        <div class="TagBookList_tagsBox">
+          <a href="/vodsearch/----国产---------.html" target="_blank">国产</a>&nbsp;</div>
+        <a class="TagBookList_intro" href="/voddetail/30450.html">　故事由一宗世纪之交的泄密大案而起。</a>
+      </div>
+    </div>
+    <div class="TagBookList_tagItem">
+      <a class="TagBookList_bookImageBox" href="/voddetail/31779.html">
+        <img alt="权力交锋" loading="lazy" src="/upload/vod/b.webp"></a>
+      <a class="TagBookList_totalChapterNum" href="/voddetail/31779.html">全9集</a>
+      <div class="TagBookList_bookInfo">
+        <a class="TagBookList_bookName" href="/voddetail/31779.html"><b>权力交锋</b></a>
+        <div class="TagBookList_tagsBox"><a href="/vodsearch/x.html">海外</a></div>
+        <a class="TagBookList_intro" href="/voddetail/31779.html">母女之间的一场碰撞。</a>
+      </div>
+    </div>
+    </div>
+    <div class="episodes">
+      <a href="/play/2337178967/7/1.html"><img alt="第01集" src="/x.jpg"></a>
+    </div>
+    </body></html>
+    """;
+
+// --- 反例：没有搜索表单的站（连搜索框都没有）---
+const string noSearchPage = """
+    <html><body><div class="hero">本站不提供搜索</div>
+    <a href="/voddetail/1.html">某部剧</a></body></html>
+    """;
+
+var rWakuredo = SiteSearch.ParseStrict(wakuredoSearchPage, searchRoot);
+var rWakuredoLoose = SiteSearch.ParseLoose(wakuredoSearchPage, searchRoot);
+var rQmao = SiteSearch.ParseStrict(qmaoSearchPage, searchRoot);
+var rFormWakuredo = SiteSearch.FindSearchForm(wakuredoSearchPage);
+var rFormNone = SiteSearch.FindSearchForm(noSearchPage);
+var rSearchUrl = SiteSearch.BuildSearchUrl(searchRoot, "/search.html", "wd", "交锋 第2季");
+
+// 严格解析只留真命中：影迷界 1 条（推荐位的 /t/ 没有条目特征，滤掉）；
+// 青苹果 2 条（/play/ 那条是播放页，不算结果 —— 少了斜杠播放页的排除就会多出"第01集"）
+var rWakuredoOk = rWakuredo.Count == 1
+                  && rWakuredo[0].Title == "交锋"
+                  && rWakuredo[0].PageUrl == "https://www.example.com/video/2337178967.html";
+var rQmaoOk = rQmao.Count == 2
+              && rQmao[0].Title == "交锋"
+              && rQmao[0].PageUrl == "https://www.example.com/voddetail/30450.html"
+              && rQmao[1].Title == "权力交锋";
+
+// 卡片上的额外信息：海报、角标、类型、简介。缺任何一个，弹窗里就只剩剧名，
+// 而搜「交锋」出来的一堆同名剧光看剧名分不清 —— 这几条是"能不能认出是哪部"的关键。
+//
+// 角标还分两类，一正一反都要钉住：**"更新至04集"必须丢掉**（vod_remarks 是上传者手填的，
+// 实测青苹果给《交锋》写"更新至04集"、而同一个详情页有第01集…第28集，站点自己就不一致），
+// **"全9集"必须留着**（结论性标记，用来分辨电影还是剧、完结没有）。
+var rEntryOk = rQmao[0] is {
+    Badge: null,                            // 「更新至04集」→ 丢掉
+    Note: "国产",
+    PosterUrl: "https://www.example.com/upload/vod/a.webp",
+    Intro: "故事由一宗世纪之交的泄密大案而起。",
+}
+               && rQmao[1] is {
+                   Badge: "全9集",               // 结论性标记 → 留着
+                   Note: "海外",
+                   PosterUrl: "https://www.example.com/upload/vod/b.webp",
+               }
+               // 影迷界：角标在 span.ep（这条也是"更新至…"，同样丢掉）、类型在 div.m，评分拼在类型后面
+               && rWakuredo[0] is {
+                   Badge: null,
+                   Note: "当代国安剧 · 2026 · ★9.0",
+                   PosterUrl: "https://img.example.com/a.jpg",
+               }
+               // 宽松解析拿不准"这是不是结果条目"，所以不抓图，只留剧名
+               && rWakuredoLoose.All(h => h.PosterUrl is null && h.Badge is null);
+
+// 宽松解析会连推荐位一起收（28 条那种垃圾），但**剧名不能是状态文本**：
+// 结果是 1 条真命中 + 2 条推荐位 = 3 条，且没有一条叫"更新至第25集"
+var rLooseOk = rWakuredoLoose.Count == 3
+               && rWakuredoLoose.All(h => !h.Title.Contains("更新至"));
+
+var rFormOk = rFormWakuredo is { Action: "/search.html", Field: "wd" } && rFormNone is null;
+var rUrlOk = rSearchUrl == "https://www.example.com/search.html?wd=%E4%BA%A4%E9%94%8B%20%E7%AC%AC2%E5%AD%A3";
+
+Console.WriteLine($"  影迷界影院（/video/ 详情页）: 严格 {rWakuredo.Count} 条" +
+                  $"（应 1）首发《{rWakuredo.FirstOrDefault()?.Title}》→ {rWakuredoOk}");
+Console.WriteLine($"  青苹果影院（/voddetail/ + 海报 alt）: 严格 {rQmao.Count} 条（应 2，" +
+                  $"斜杠播放页 /play/… 不算）→ {rQmaoOk}");
+Console.WriteLine($"  卡片信息（海报 / 角标 / 类型 / 简介）: 《{rQmao[0].Title}》" +
+                  $"类型={rQmao[0].Note} 简介={(rQmao[0].Intro is null ? "无" : "有")}" +
+                  $" 海报={(rQmao[0].PosterUrl is null ? "无" : "有")} → {rEntryOk}");
+Console.WriteLine($"  角标取舍（更新至…是手填的会过期→丢，全…集是结论→留）: " +
+                  $"「更新至04集」→{(rQmao[0].Badge is null ? "已丢弃" : rQmao[0].Badge)}、" +
+                  $"「全9集」→{rQmao[1].Badge ?? "（不该丢！）"}");
+Console.WriteLine($"  宽松解析含推荐位但剧名不是状态文本: {rWakuredoLoose.Count} 条（应 3）→ {rLooseOk}");
+Console.WriteLine($"  首页搜索表单: 影迷界 {rFormWakuredo?.Action}/{rFormWakuredo?.Field}、" +
+                  $"没有搜索框的站 {(rFormNone is null ? "判为不支持" : "误判为支持")} → {rFormOk}");
+Console.WriteLine($"  搜索地址拼接（关键词要转义）: {rSearchUrl} → {rUrlOk}");
+
+var okSearch = rWakuredoOk && rQmaoOk && rEntryOk && rLooseOk && rFormOk && rUrlOk;
+Console.WriteLine($"  站内搜索解析: {(okSearch ? "✔" : "✘")}");
+
+// --- 站点清单（下拉框的数据源）：空库退回内置；写一轮再读回来，顺序和校验都要对 ---
+var siteDbPath = Path.Combine(dbDir, "sites.db");
+var rSiteStore = new SqliteSiteStore(new SqliteDatabase(siteDbPath));
+var rSitesDefault = rSiteStore.Load();
+var rSitesWritten = rSiteStore.Save(new[] {
+    new SearchSite("站点一", "www.example.com"),           // 省了协议：要能自动补 https://
+    new SearchSite("", "https://www.example.org"),         // 没填名字：显示时退回域名
+    new SearchSite("空地址", ""),                           // 空地址 → 丢掉
+    new SearchSite("协议不对", "ftp://www.example.com"),    // 不是 http(s) → 丢掉
+    new SearchSite("站点三", "https://www.example.net"),
+});
+var rSitesBack = new SqliteSiteStore(new SqliteDatabase(siteDbPath)).Load();
+var rSitesOk = rSitesDefault.Count == SiteCatalog.BuiltIn.Count
+               && rSitesWritten
+               && rSitesBack.Count == 3
+               && rSitesBack[0].Root?.ToString() == "https://www.example.com/"
+               && rSitesBack[1].Display == "https://www.example.org"
+               && rSitesBack[2].Name == "站点三";
+Console.WriteLine($"  站点清单: 空库退回内置 {rSitesDefault.Count} 个（应 {SiteCatalog.BuiltIn.Count}）；" +
+                  $"写 5 条（空地址 / 协议不对各 1 条）读回 {rSitesBack.Count} 条、" +
+                  $"顺序 {rSitesBack[0].Name}→{rSitesBack[^1].Name} → {rSitesOk}");
+
+var okSiteCatalog = rSitesOk;
+Console.WriteLine($"  站点清单存取: {(okSiteCatalog ? "✔" : "✘")}");
+
 Console.WriteLine();
 var ok = okB && okC && okPaused && okStopped && okResume && okSettled && okRetry
          && okResumeSubset && okFallback && okDuration && encOk && okSingle
          && okRegistry && okNnyy && okNnyyMovie && okGeneric && okEmpty && okWakuredo
          && okNoSystemProxy && okInserted && okInsertedGuard && okVersionCompare
-         && okFetchNew && okDiskFirst && okSnapshot && okUnified;
+         && okFetchNew && okDiskFirst && okSnapshot && okUnified && okSearch && okSiteCatalog;
 Console.WriteLine(ok
     ? "自检结果       : ✔ 通过"
     : $"自检结果       : ✘ 失败（阶段B {okB} / 阶段C {okC} / 暂停 {okPaused} / 暂停后静止 {okStopped}" +
@@ -2252,7 +2426,7 @@ Console.WriteLine(ok
       $" / 空页面报错 {okEmpty} / 影迷界影院 {okWakuredo} / 直连不走代理 {okNoSystemProxy}" +
       $" / 插播广告识别 {okInserted}(反例 {okInsertedGuard}) / 版本比较 {okVersionCompare}" +
       $" / 续下更新 {okFetchNew} / 已下载置灰 {okDiskFirst} / 站点快照 {okSnapshot}" +
-      $" / 统一库 {okUnified}）");
+      $" / 统一库 {okUnified} / 站内搜索解析 {okSearch} / 站点清单 {okSiteCatalog}）");
 
 listener.Stop();
 return ok ? 0 : 1;
