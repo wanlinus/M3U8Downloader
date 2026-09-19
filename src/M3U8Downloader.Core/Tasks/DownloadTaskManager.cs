@@ -34,8 +34,23 @@ public sealed class TaskEpisodeItem : INotifyPropertyChanged {
     /// </summary>
     public EpisodeDownloadStatus State { get; set; } = EpisodeDownloadStatus.Pending;
 
-    /// <summary>产物路径（完成后才有）—— 续传时据此确认这一集还在磁盘上</summary>
-    public string? OutputPath { get; set; }
+    /// <summary>
+    /// 产物路径（完成后才有）—— 续传时据此确认这一集还在磁盘上，内置播放器也看它。
+    /// 改了一定要通知 <see cref="CanPlay"/>，否则刚下完的集不会冒出播放按钮。
+    /// </summary>
+    private string? _outputPath;
+    public string? OutputPath {
+        get => _outputPath;
+        set { if (Set(ref _outputPath, value)) OnPropertyChanged(nameof(CanPlay)); }
+    }
+
+    /// <summary>这一集的产物是不是还在磁盘上、能不能播（播放按钮的可见性绑它）</summary>
+    public bool CanPlay => !string.IsNullOrWhiteSpace(_outputPath) && File.Exists(_outputPath);
+
+    /// <summary>
+    /// 这一集属于哪个任务 —— 播放时要用它取出整部剧的分集清单，才能"上一集 / 下一集"。
+    /// </summary>
+    public SeriesTask? Owner { get; init; }
 
     private string _statusText = "等待中";
     public string StatusText { get => _statusText; set => Set(ref _statusText, value); }
@@ -1028,6 +1043,7 @@ public sealed class DownloadTaskManager : IDisposable {
                 Bytes = e.Bytes,
                 OutputPath = e.OutputPath,
                 Error = e.Error,
+                Owner = task,
             });
         }
 
@@ -1710,6 +1726,7 @@ public sealed class DownloadTaskManager : IDisposable {
                         Title = string.IsNullOrWhiteSpace(ep.Title)
                             ? $"第{ep.Number:00}集"
                             : ep.Title,
+                        Owner = task,
                     });
                 }
                 task.TotalEpisodes = task.Episodes.Count;
@@ -1870,8 +1887,13 @@ public sealed class DownloadTaskManager : IDisposable {
         };
 
         // 入队时就把分集清单建好，用户不用等开始下载才看得到
-        foreach (var ep in episodes.OrderBy(e => e.Number))
-            task.Episodes.Add(new TaskEpisodeItem { Number = ep.Number, Title = ep.DisplayTitle });
+        foreach (var ep in episodes.OrderBy(e => e.Number)) {
+            task.Episodes.Add(new TaskEpisodeItem {
+                Number = ep.Number,
+                Title = ep.DisplayTitle,
+                Owner = task,
+            });
+        }
 
         // 顺手把该源上**全部集**的元数据存下来（不只是勾选的）：
         // 以后点「续下」不必联网就能列出全部集，站点解析不了也能续下。

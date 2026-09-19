@@ -541,6 +541,7 @@
                                                                 <ColumnDefinition Width="56" />
                                                                 <ColumnDefinition Width="96" />
                                                                 <ColumnDefinition Width="100" />
+                                                                <ColumnDefinition Width="32" />
                                                             </Grid.ColumnDefinitions>
 
                                                             <TextBlock Grid.Column="0" Text="{Binding Title}" FontSize="12"
@@ -563,6 +564,13 @@
                                                                        FontSize="11" VerticalAlignment="Center"
                                                                        TextTrimming="CharacterEllipsis"
                                                                        Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                                            <!-- 播放：只有产物还在磁盘上的集才出现（TaskEpisodeItem.CanPlay） -->
+                                                            <Button Grid.Column="5" Content="▶" FontSize="10"
+                                                                    MinWidth="26" Height="22" Padding="0"
+                                                                    VerticalAlignment="Center"
+                                                                    Click="OnEpisodePlay"
+                                                                    ToolTipService.ToolTip="在程序里播放这一集"
+                                                                    Visibility="{Binding CanPlay, Converter={StaticResource BoolToVis}}" />
                                                         </Grid>
                                                         <TextBlock Text="{Binding Error}" FontSize="11"
                                                                    TextWrapping="Wrap"

@@ -421,6 +421,30 @@ public sealed partial class MainWindow : Window {
         }
     }
 
+    /// <summary>
+    /// 播放这一集：用内置播放器打开。播放列表取**同一个任务里所有产物还在的集**，
+    /// 所以播放窗口里能直接切上一集 / 下一集，不用回列表重新点。
+    /// </summary>
+    private void OnEpisodePlay(object sender, RoutedEventArgs e) {
+        if ((sender as FrameworkElement)?.DataContext is not TaskEpisodeItem episode) return;
+        if (episode.Owner is not { } task) return;
+
+        var playlist = task.Episodes
+            .Where(x => x.CanPlay)
+            .OrderBy(x => x.Number)
+            .Select(x => new PlayerWindow.Item(x.Number, x.Title, x.OutputPath!))
+            .ToList();
+
+        var index = playlist.FindIndex(x => x.Number == episode.Number);
+        if (index < 0) return;
+
+        try {
+            App.OpenPlayer(task.Title, playlist, index);
+        } catch (Exception ex) {
+            task.Message = "打开播放器失败：" + ex.Message;
+        }
+    }
+
     private void OnTaskRemove(object sender, RoutedEventArgs e) {
         if (TaskOf(sender) is { } task) _taskManager.Remove(task);
     }

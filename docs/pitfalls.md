@@ -74,5 +74,7 @@
 
 35. **Windows PowerShell 5.1 按 ANSI 读无 BOM 脚本 —— 仓库里的 `.ps1` 必须 ASCII-only**：`scripts/` 下的脚本都没有 BOM，而 PS 5.1 对无 BOM 文件用的是系统 ANSI 代码页（这台机器是 GBK）。UTF-8 的中文是 3 字节，按 GBK 双字节读就会**落单一个字节**，它与后面的字节重新组合，最典型的后果是**把字符串的结束引号吃掉**：`Write-Host "核心库构建失败"` 是 7 个汉字 = 21 字节（奇数），整行解析成 `"内核库构建失败? -ForegroundColor Red; exit 1` 这种残缺字符串，脚本报 `The string is missing the terminator` **整个跑不起来**。`build.ps1` 就这么坏了很久没人发现（它不在 AGENTS.md 的常用命令里，也没人跑过它）。更阴的是**侥幸成立**的情况：`publish.ps1` 里也有一行中文注释却一直正常 —— 因为它在注释里、且位于行尾，落单字节吃掉的只是 `\r`，语法不受影响。所以别用"它现在能跑"当证据：规则是 **`scripts/` 下的 .ps1 一律 ASCII-only**（两个脚本头部都写了这条注释）。CI 里没事是因为 `shell: pwsh` 是 PowerShell 7（默认按 UTF-8 读脚本），**只有本地 PS 5.1 会中招**。自查手法：`[System.IO.File]::ReadAllBytes()` 数一遍 `> 127` 的字节，再用 ANSI 解码后交给 `Parser::ParseInput` 跑一遍。注意这条和"提交信息文件要用**无 BOM** 的 UTF-8"**方向相反** —— 那个文件是给 git 读的（BOM 会混进提交标题），脚本是给 PS 5.1 读的（中文要么带 BOM，要么干脆别写）。
 
+36. **别去 Dispose `MediaPlayerElement` 自己创建的 `MediaPlayer` —— 关闭窗口时会把整个进程崩掉**：`MediaPlayerElement.MediaPlayer` 是**按需自动创建**的（第一次访问那个属性时它就建一个）。这种"它建的"播放器由它自己收拾，外部再调 `Dispose()` 就出事：在窗口关闭途中释放它，**`Window.Close()` 本身**会抛 `COMException 0x80004004`（E_ABORT），而异常是在事件处理器里抛的、没人接，于是整个进程崩掉。实机表现是"关掉内置播放器，整个软件跟着消失"—— 很容易误判成"退出时机不对"（我一开始就往 `DispatcherShutdownMode` 上找）。**排查手法**：加一个临时入口把用户那套操作自动走一遍、每步打一条日志，就能看出进程是在哪一步没的 —— 日志停在"播放窗口已打开"、进程退出码 `0xC000027B`，崩溃日志里 `Window.Close()` 的堆栈把问题钉死。**验证方式**：同样的流程改完再跑，五步日志齐全、退出码 0、无崩溃日志。
+
 ---
 

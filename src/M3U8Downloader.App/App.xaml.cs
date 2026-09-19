@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using H.NotifyIcon;
+using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Input;
 
@@ -45,6 +46,36 @@ public partial class App : Application {
     public App() {
         InitializeComponent();
         UnhandledException += OnUnhandledException;
+
+        // 托盘常驻的应用必须显式声明"什么时候退出"。
+        // Application.Start 会把 DispatcherShutdownMode 设成 OnLastWindowClose ——
+        // 即"这个线程上的 XAML 窗口全关了就收摊"。可本程序的设计是主窗口缩进托盘
+        // （只是隐藏、并没有关闭）、程序继续在后台下载 —— 这时用户再关掉别的窗口
+        // （比如内置播放器），整个程序就被一起带走了。实机反馈的
+        // "关闭视频的时候把整个软件都关掉了"就是这么来的。
+        // 改成 OnExplicitShutdown：只有托盘菜单的「退出」才真的结束进程
+        // （那一处必须显式调 Exit()，见 ExitApplication）。
+        DispatcherShutdownMode = Microsoft.UI.Xaml.DispatcherShutdownMode.OnExplicitShutdown;
+    }
+
+    /// <summary>
+    /// 开着的播放窗口。**必须留住引用**：WinUI 的 Window 不会自己保活，
+    /// 没有托管引用的窗口会被 GC 回收（表现是窗口自己突然消失）——
+    /// 官方多窗口文档的建议也是拿 WindowId 存一个字典。
+    /// </summary>
+    private static readonly Dictionary<WindowId, Window> OpenPlayers = new();
+
+    /// <summary>打开一个内置播放器窗口（引用由 <see cref="OpenPlayers"/> 持有，关掉时自动移出）</summary>
+    public static void OpenPlayer(string seriesTitle, IReadOnlyList<PlayerWindow.Item> playlist,
+                                 int startIndex) {
+        var window = new PlayerWindow(seriesTitle, playlist, startIndex);
+
+        // Id 先取出来存着：窗口关掉之后再回头问 AppWindow 就晚了
+        var id = window.AppWindow.Id;
+        OpenPlayers[id] = window;
+        window.Closed += (_, _) => OpenPlayers.Remove(id);
+
+        window.Activate();
     }
 
     protected override void OnLaunched(LaunchActivatedEventArgs args) {
@@ -135,11 +166,9 @@ public partial class App : Application {
 
         MainWindow?.Close();
 
-        // 没有窗口时关无可关，只能直接结束进程
-        // （见 https://github.com/HavenDV/H.NotifyIcon/issues/66）
-        if (MainWindow == null) {
-            Exit();
-        }
+        // DispatcherShutdownMode 是 OnExplicitShutdown，光关窗口不会结束消息循环，
+        // 必须显式叫一声 —— 少了这句，托盘菜单的「退出」会留下一个关不掉的进程。
+        Exit();
     }
 
     /// <summary>
