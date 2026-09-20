@@ -26,7 +26,63 @@ using M3U8Downloader.Core.Tasks;
 //
 // 运行： dotnet run --project tests/M3U8Downloader.SelfTest
 // 退出码 0 = 全部通过。
+//
+// ---------------------------------------------------------------------------
+// 临时目录：**整个自检只用下面这一个 runRoot**，各阶段在它下面建自己的子目录。
+// 所以本文件里不该再出现 `Path.GetTempPath()` —— 要临时目录就用 runRoot。
+//
+// 退出时按结果决定去留：
+//   · 全部通过   → 整个根删掉，`%TEMP%` 不留东西；
+//   · 有阶段失败 → **保留**并把路径打印出来。暂存目录、合并产物、SQLite 库都是排查证据，
+//     stdout 有时给不出来（比如"产物字节数不对"得看实际文件）。
+//     保留是有界的 —— 下一次运行的启动兜底清理会把它扫掉，最多只留一轮。
+//
+// 为什么用退出钩子而不是 try/finally：本文件是顶层语句、主体 2500 多行，包一层 try
+// 就得把每一行重新缩进（diff 会盖住全部内容、还容易误伤断言）。顶层语句的局部变量
+// 能被 lambda 捕获，所以钩子里读得到 runRoot / runOk。
+//
+// 已确认：阶段 C 的「关程序」是**进程内模拟**（Dispose 掉 manager，再用同一个 SQLite
+// 库文件新建一个恢复），**不是**真的拉起子进程 —— 所以单一钩子就够，不存在
+// "把子进程还在用的目录删掉"的问题。哪天阶段 C 改成真起子进程了，这里要跟着改。
 // ============================================================================
+
+// ---- 临时根：先建自己的，再清别人留下的 ----
+
+var runRoot = Path.Combine(Path.GetTempPath(), "m3u8-selftest-" + Guid.NewGuid().ToString("N")[..6]);
+Directory.CreateDirectory(runRoot);
+
+// 记下"谁在用这个目录"：兜底清理靠它判断主人还在不在（并发跑多个自检时不会互删）
+File.WriteAllText(Path.Combine(runRoot, "owner.pid"), Environment.ProcessId.ToString());
+
+// 上一次被强杀 / 断电 / CI 取消作业留下的（进程没走到退出钩子）在这里清掉
+CleanStaleSelfTestTemp();
+
+var tempSettled = false;
+
+/// <summary>
+/// 收尾：通过就删掉整个临时根，失败就留证据。两个退出钩子都会调它，所以只能跑一次。
+/// </summary>
+void SettleSelfTestTemp(bool passed) {
+    if (tempSettled) return;
+    tempSettled = true;
+
+    if (passed) {
+        TryDeleteDirectory(runRoot);
+        return;
+    }
+
+    // 失败时把路径打出来 —— 不然"保留供排查"等于没保留
+    Console.WriteLine();
+    Console.WriteLine($"⚠ 自检没有全过，临时目录保留下来供排查：{runRoot}");
+    Console.WriteLine("  （下次运行自检会自动清掉它；也可以现在手动删。）");
+}
+
+var runOk = false;
+
+// 正常退出（包括结尾的 return ok ? 0 : 1）走 ProcessExit；
+// 未捕获异常再单独挂一个 —— 异常路径下 ProcessExit 不保证跑得到。
+AppDomain.CurrentDomain.ProcessExit += (_, _) => SettleSelfTestTemp(runOk);
+AppDomain.CurrentDomain.UnhandledException += (_, _) => SettleSelfTestTemp(passed: false);
 
 const int Port = 18742;
 const int SegmentCount = 20;
@@ -402,7 +458,7 @@ _ = Task.Run(async () => {
 
 // ---------------------------------------------------------------- 剧集数据
 
-var outputDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-" + Guid.NewGuid().ToString("N")[..6]);
+var outputDir = Path.Combine(runRoot, "out");
 Directory.CreateDirectory(outputDir);
 
 SiteSeries BuildSeries(int episodeCount = 3) {
@@ -497,7 +553,7 @@ Console.WriteLine();
 Console.WriteLine("阶段 A2：直接用 HlsDownloader，看分片级上报频率");
 
 {
-    var hlsDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-hls-" + Guid.NewGuid().ToString("N")[..6]);
+    var hlsDir = Path.Combine(runRoot, "hls");
     Directory.CreateDirectory(hlsDir);
 
     using var hls = new HlsDownloader();
@@ -529,7 +585,7 @@ Console.WriteLine("阶段 A2：直接用 HlsDownloader，看分片级上报频�
 
 // ---------------------------------------------------------------- 阶段 B：走任务队列
 
-var queueDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-" + Guid.NewGuid().ToString("N")[..6]);
+var queueDir = Path.Combine(runRoot, "queue");
 Directory.CreateDirectory(queueDir);
 var queueOptions = new SeriesDownloadOptions {
     OutputDirectory = queueDir,
@@ -660,7 +716,7 @@ var okB = task.State == SeriesTaskState.Completed
 Console.WriteLine();
 Console.WriteLine("阶段 C：断点续传（保存任务 → 关程序 → 重开恢复）");
 
-var resumeRoot = Path.Combine(Path.GetTempPath(), "m3u8-selftest-resume-" + Guid.NewGuid().ToString("N")[..6]);
+var resumeRoot = Path.Combine(runRoot, "resume");
 var resumeOut = Path.Combine(resumeRoot, "out");
 Directory.CreateDirectory(resumeOut);
 var store = new TaskStore(Path.Combine(resumeRoot, "m3u8.db"));
@@ -782,7 +838,7 @@ var okC = restoredCount == 1
 Console.WriteLine();
 Console.WriteLine("阶段 D：暂停 → 继续下载");
 
-var pauseDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-pause-" + Guid.NewGuid().ToString("N")[..6]);
+var pauseDir = Path.Combine(runRoot, "pause");
 Directory.CreateDirectory(pauseDir);
 
 var dispatcher3 = new FakeDispatcher();
@@ -948,7 +1004,7 @@ var okResume = await dispatcher3.InvokeAsync(() => task3.State) == SeriesTaskSta
 Console.WriteLine();
 Console.WriteLine("阶段 E：重试失败集（任务数不能变多）");
 
-var retryDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-retry-" + Guid.NewGuid().ToString("N")[..6]);
+var retryDir = Path.Combine(runRoot, "retry");
 Directory.CreateDirectory(retryDir);
 
 var dispatcher4 = new FakeDispatcher();
@@ -1047,7 +1103,7 @@ Console.WriteLine("阶段 F：续传只下选中的那一集（21 集里只勾�
 const int FullEpisodeCount = 21;
 const int PickedEpisode = 12;
 
-var subsetDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-subset-" + Guid.NewGuid().ToString("N")[..6]);
+var subsetDir = Path.Combine(runRoot, "subset");
 Directory.CreateDirectory(subsetDir);
 
 var dispatcher5 = new FakeDispatcher();
@@ -1125,7 +1181,7 @@ var okResumeSubset = subsetResumed
 Console.WriteLine();
 Console.WriteLine("阶段 F2：首选源对不上时的兜底（21 集 × 2 个源，只有备源有第 12 集）");
 
-var fallbackDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-fallback-" + Guid.NewGuid().ToString("N")[..6]);
+var fallbackDir = Path.Combine(runRoot, "fallback");
 Directory.CreateDirectory(fallbackDir);
 
 var dispatcher6 = new FakeDispatcher();
@@ -1191,7 +1247,7 @@ Console.WriteLine();
 Console.WriteLine("阶段 G：转 MP4 后的时长核对（用真实 ffmpeg）");
 
 // G1：先单独验证"内置时长探测"本身（不依赖任何外部工具）
-var pcrDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-pcr-" + Guid.NewGuid().ToString("N")[..6]);
+var pcrDir = Path.Combine(runRoot, "pcr");
 Directory.CreateDirectory(pcrDir);
 var pcrPath = Path.Combine(pcrDir, "pcr-42s.ts");
 File.WriteAllBytes(pcrPath, BuildTsWithPcr(42));
@@ -1212,7 +1268,7 @@ var ffmpegPath = new[]
 //     "核对逻辑不会误报通过"：要么读不出来并如实报告，要么读出来且与 80s 相符）
 var okDuration = probeOk;
 {
-    var mp4Dir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-mp4-" + Guid.NewGuid().ToString("N")[..6]);
+    var mp4Dir = Path.Combine(runRoot, "mp4");
     Directory.CreateDirectory(mp4Dir);
 
     using var mp4Downloader = new SeriesDownloader();
@@ -1246,7 +1302,7 @@ var okDuration = probeOk;
 Console.WriteLine();
 Console.WriteLine("阶段 H：密文首字节为 '<'（0x3C）的加密分片必须下载成功");
 
-var encDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-enc-" + Guid.NewGuid().ToString("N")[..6]);
+var encDir = Path.Combine(runRoot, "enc");
 Directory.CreateDirectory(encDir);
 
 var encOk = false;
@@ -1294,7 +1350,7 @@ var encOk = false;
 Console.WriteLine();
 Console.WriteLine("阶段 I：单文件下载服务（SingleFileDownloadService）");
 
-var singleDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-single-" + Guid.NewGuid().ToString("N")[..6]);
+var singleDir = Path.Combine(runRoot, "single");
 Directory.CreateDirectory(singleDir);
 
 var okSingle = false;
@@ -1399,7 +1455,7 @@ var okWakuredo = false;
 
     // 下载目录要带上站点标识：同一部剧在不同站点往往是不同版本，不能混进同一个目录
     var folder = SeriesDownloader.ResolveSeriesDirectory(parsed, new SeriesDownloadOptions {
-        OutputDirectory = Path.Combine(Path.GetTempPath(), "m3u8-selftest-out"),
+        OutputDirectory = Path.Combine(runRoot, "batch-out"),
         SeriesSubdirectory = true,
     });
     Console.WriteLine($"  下载目录: {folder}");
@@ -1638,7 +1694,7 @@ var okVersionCompare = false;
 Console.WriteLine();
 Console.WriteLine("阶段 N：续下更新（预检列候选 → 用户勾选 → 只下勾中的）");
 
-var fetchNewDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-fetchnew-" + Guid.NewGuid().ToString("N")[..6]);
+var fetchNewDir = Path.Combine(runRoot, "fetchnew");
 Directory.CreateDirectory(fetchNewDir);
 
 // 站点"当前"的集数 —— 首轮 2 集，之后模拟隔天更新成 4 集
@@ -1760,7 +1816,7 @@ Console.WriteLine();
 Console.WriteLine("阶段 O：续下置灰（磁盘上的文件说了算）");
 
 // O1：扫描器本身 —— .mp4 也算、0 字节不算、集号补零与不补零都要对
-var scanDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-scan-" + Guid.NewGuid().ToString("N")[..6]);
+var scanDir = Path.Combine(runRoot, "scan");
 Directory.CreateDirectory(scanDir);
 var scanSeries = BuildSeries(4);
 File.WriteAllText(Path.Combine(scanDir, "自检剧集.01.ts"), "x");
@@ -1797,7 +1853,7 @@ foreach (var c in previewHistory?.Candidates ?? new List<FetchNewCandidate>())
     Console.WriteLine($"    第{c.Number:00}集 {c.Note}{(c.IsDownloaded ? "（置灰，不可勾）" : "")}");
 
 // O4：下载完成后必须**自动记账**（"每次下载记住下载了哪些视频"）
-var histDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-hist-" + Guid.NewGuid().ToString("N")[..6]);
+var histDir = Path.Combine(runRoot, "hist");
 Directory.CreateDirectory(histDir);
 
 var recorded = new MemoryHistory();
@@ -1869,7 +1925,7 @@ Console.WriteLine($"  已下载置灰 + 自动记账 + 移除销账: {(okDiskFir
 Console.WriteLine();
 Console.WriteLine("阶段 P：站点快照（续下不必联网）");
 
-var snapDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-snapshot-" + Guid.NewGuid().ToString("N")[..6]);
+var snapDir = Path.Combine(runRoot, "snapshot");
 Directory.CreateDirectory(snapDir);
 
 // 只勾第 2 集：快照里仍应有全部 3 集，请求头也要一起存（下载分片要带 Referer）
@@ -2015,7 +2071,7 @@ Console.WriteLine($"  站点快照: {(okSnapshot ? "✔" : "✘")}");
 Console.WriteLine();
 Console.WriteLine("阶段 Q：统一库（真 SQLite：下载历史 + 设置 + 任务）");
 
-var dbDir = Path.Combine(Path.GetTempPath(), "m3u8-selftest-db-" + Guid.NewGuid().ToString("N")[..6]);
+var dbDir = Path.Combine(runRoot, "db");
 Directory.CreateDirectory(dbDir);
 
 const string urlQ = "https://example.com/vodplay/9-1-1.html";
@@ -2429,9 +2485,50 @@ Console.WriteLine(ok
       $" / 统一库 {okUnified} / 站内搜索解析 {okSearch} / 站点清单 {okSiteCatalog}）");
 
 listener.Stop();
+runOk = ok;                    // 退出钩子据此决定删临时根还是留证据
 return ok ? 0 : 1;
 
 // ---------------------------------------------------------------- 辅助
+
+/// <summary>
+/// 清掉上一次没走到退出钩子的残留（进程被强杀、断电、CI 取消作业）。
+/// **只删主人已经不在的**：每个临时根里写着创建者的 PID（owner.pid），
+/// 那个进程还活着就跳过 —— 否则同一台机器上并发跑的自检会互相把目录删掉。
+/// </summary>
+static void CleanStaleSelfTestTemp() {
+    try {
+        foreach (var dir in Directory.GetDirectories(Path.GetTempPath(), "m3u8-selftest-*")) {
+            if (IsOwnedByLiveProcess(dir)) continue;
+            TryDeleteDirectory(dir);
+        }
+    } catch {
+        // 兜底清理本身失败不该影响自检
+    }
+}
+
+/// <summary>这个临时根的主人还在跑吗（没写 pid / pid 读不出来 / 进程已经没了 → 当残留）</summary>
+static bool IsOwnedByLiveProcess(string dir) {
+    try {
+        var pidFile = Path.Combine(dir, "owner.pid");
+        if (!File.Exists(pidFile)) return false;
+        if (!int.TryParse(File.ReadAllText(pidFile).Trim(), out var pid)) return false;
+
+        using var process = System.Diagnostics.Process.GetProcessById(pid);
+        return !process.HasExited;
+    } catch {
+        // GetProcessById 对不存在的 pid 会抛 —— 那就是残留
+        return false;
+    }
+}
+
+/// <summary>删一个目录树，删不掉就算了（有文件被占用时留给下次兜底清理）</summary>
+static void TryDeleteDirectory(string path) {
+    try {
+        if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+    } catch {
+        // 忽略：清理失败不能让自检本身失败
+    }
+}
 
 /// <summary>轮询等待条件成立，超时就抛异常（自检失败要立刻可见）</summary>
 static async Task WaitUntilAsync(Func<Task<bool>> condition, TimeSpan timeout, string what) {
